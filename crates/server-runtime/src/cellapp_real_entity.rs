@@ -1056,6 +1056,10 @@ impl CellApp {
             }
         };
 
+        // `RealEntity`'s ctor takes the creation tick
+        // (`creationTime_( CellApp::instance().time() )`).
+        entity_rc.borrow_mut().creation_time = self.time;
+
         // `Entity::callbacksPermitted( false )` around the whole build.
         self.callbacks_permitted(false);
 
@@ -2688,9 +2692,13 @@ mod tests {
                 space_id: SID,
                 app_addr: 10,
                 node: CellInfoNode::first(),
+                rect: (0.0, 0.0, 0.0, 0.0),
+                is_delete_pending: false,
             },
             space_gone_count: 0,
             reuse_count: 0,
+            should_offload: true,
+            is_removed: false,
         }));
         {
             let space = spaces.get_mut(&SID).expect("fixture space");

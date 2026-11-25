@@ -17,7 +17,7 @@
 //! live dispatcher pass, which keeps the one-second delay observable.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use crate::cellappmgr::SpaceId;
@@ -177,7 +177,7 @@ impl SpaceDataMapping {
 }
 
 /// One cell of a Space (`CellInfo` in the space's tree).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CellInfo {
     /// The space this cell partitions.
     pub space_id: SpaceId,
@@ -185,6 +185,29 @@ pub struct CellInfo {
     pub app_addr: u32,
     /// The cell's tree identity.
     pub node: CellInfoNode,
+    /// `rect()`: the cell's partition rectangle, `(minX, minZ, maxX,
+    /// maxZ)`. The ghost maintainer intersects it against the real's
+    /// hysteresis area; `pCellAt` contains-checks it.
+    pub rect: (f32, f32, f32, f32),
+    /// `isDeletePending()`: the cell is being deleted; no ghosts are
+    /// created on it and it is no offload destination.
+    pub is_delete_pending: bool,
+}
+
+impl CellInfo {
+    /// `rect().contains( x, z )`: the cell owns this point.
+    pub fn contains(&self, x: f32, z: f32) -> bool {
+        let (min_x, min_z, max_x, max_z) = self.rect;
+        x >= min_x && x <= max_x && z >= min_z && z <= max_z
+    }
+
+    /// `Rect::intersects`: any overlap with the other
+    /// `(minX, minZ, maxX, maxZ)` rectangle.
+    pub fn intersects(&self, other: (f32, f32, f32, f32)) -> bool {
+        let (min_x, min_z, max_x, max_z) = self.rect;
+        let (o_min_x, o_min_z, o_max_x, o_max_z) = other;
+        min_x <= o_max_x && max_x >= o_min_x && min_z <= o_max_z && max_z >= o_min_z
+    }
 }
 
 /// The identity a `Cell`'s info holds; [`Space::has_single_cell`] compares
@@ -216,6 +239,12 @@ pub struct Cell {
     /// How many `Cell::reuse` deliveries this cell has had ("Cell did not
     /// fully remove; reusing.").
     pub reuse_count: u32,
+    /// `shouldOffload_` (the constructor's `true`): the check drives
+    /// offloads and ghost maintenance for this cell.
+    pub should_offload: bool,
+    /// `isRemoved_`: the cell has been removed and may be deleted once
+    /// empty (`isReadyForDeletion`).
+    pub is_removed: bool,
 }
 
 impl Cell {
@@ -329,6 +358,20 @@ pub struct Entity {
     /// The `CellAppInterface::witnessed` sends a ghost's witnessed arm
     /// made: the ghost ids the real was told about.
     pub witnessed_sends: Vec<u32>,
+    /// `RealEntity::creationTime()`: the tick the real was created at —
+    /// the ghost maintainer keeps ghosts of brand-new reals.
+    pub creation_time: u32,
+    /// `pRealChannel_`'s address on a ghost: where the real lives
+    /// (`readGhostDataFromStreamInternal`), `None` while real or unset.
+    pub real_addr: Option<u32>,
+    /// `numTimesRealOffloaded_`: the offload tally the ghost stream
+    /// carries (`BufferedGhostMessage` also reads it off the head).
+    pub num_times_real_offloaded: u32,
+    /// `aoiUpdateSchemeID_` (uint8).
+    pub aoi_update_scheme_id: u8,
+    /// `RealEntity::haunts_`: the ghosts this real maintains, per remote
+    /// CellApp address, with each haunt's creation tick.
+    pub haunts: Vec<crate::cellapp_ghost::Haunt>,
 }
 
 impl Entity {
@@ -371,6 +414,11 @@ impl Entity {
             accel_velocity: [0.0; 3],
             range_node: None,
             range_triggers: Vec::new(),
+            creation_time: 0,
+            real_addr: None,
+            num_times_real_offloaded: 0,
+            aoi_update_scheme_id: 0,
+            haunts: Vec::new(),
         }
     }
 }
@@ -1206,6 +1254,17 @@ impl Space {
         self.timer_armed_at.is_some()
     }
 
+    /// `cellInfos_`: every cell this space spans, tree order.
+    pub fn cells(&self) -> impl Iterator<Item = &CellInfo> + '_ {
+        self.cells.iter()
+    }
+
+    /// `spaceEntities()` (`entities_`): every entity the space holds,
+    /// reals and ghosts alike.
+    pub fn space_entities(&self) -> &[Rc<RefCell<Entity>>] {
+        &self.entities
+    }
+
     /// `addEntity( Entity * )`.
     pub fn add_entity(&mut self, entity: Rc<RefCell<Entity>>) {
         assert_eq!(
@@ -1697,6 +1756,25 @@ pub struct CellApp {
     pub send_detailed_player_vehicles: bool,
     /// The `onWitnessed` callback deliveries the send pass made.
     pub witnessed_notifications: Vec<(u32, bool)>,
+    /// `CellAppConfig::ghostDistance()` (the `DEFAULT_AOI_RADIUS`, 500).
+    pub ghost_distance: f32,
+    /// `CellAppConfig::maxGhostsToDelete()` (default 100).
+    pub max_ghosts_to_delete: u32,
+    /// The ghost wires the maintainer sent: `createGhost`/`delGhost`
+    /// bundles, in send order, per destination address. The tests deliver
+    /// them into the peer CellApp; the reference hands them to
+    /// `CellAppChannels`' bundles.
+    pub ghost_outbox: Vec<crate::cellapp_ghost::GhostWire>,
+    /// `CellAppChannels`' per-channel `mark()` — the ghost maintainer's
+    /// this-round mark bookkeeping, by remote address.
+    pub channel_marks: BTreeMap<u32, i32>,
+    /// `CellAppChannel::isGood()`'s failed set: the addresses a
+    /// `channel failure` took down. Empty by default.
+    pub dead_channels: BTreeSet<u32>,
+    /// `BufferedGhostMessages`' create entries: the creates that arrived
+    /// for an entity that already exists here (or behind an earlier
+    /// buffered one) — held for `playSubsequenceFor` (the replay cluster).
+    pub buffered_ghost_creates: Vec<crate::cellapp_ghost::BufferedGhostCreate>,
 }
 
 impl Default for CellApp {
@@ -1769,6 +1847,12 @@ impl Default for CellApp {
             packed_xz_scale: 500.0 / 28.0,
             send_detailed_player_vehicles: false,
             witnessed_notifications: Vec::new(),
+            ghost_distance: crate::cellapp_ghost::DEFAULT_AOI_RADIUS,
+            max_ghosts_to_delete: crate::cellapp_ghost::MAX_GHOSTS_TO_DELETE,
+            ghost_outbox: Vec::new(),
+            channel_marks: BTreeMap::new(),
+            dead_channels: BTreeSet::new(),
+            buffered_ghost_creates: Vec::new(),
             max_time_between_player_updates: 0,
         }
     }
@@ -1908,6 +1992,8 @@ impl CellApp {
                     info: info.clone(),
                     space_gone_count: 0,
                     reuse_count: 0,
+                    should_offload: true,
+                    is_removed: false,
                 }));
                 space.set_cell(cell.clone());
                 self.cells.push(cell);
@@ -1942,6 +2028,8 @@ mod tests {
             space_id,
             app_addr: APP_ADDR,
             node: CellInfoNode(node),
+            rect: (0.0, 0.0, 0.0, 0.0),
+            is_delete_pending: false,
         }
     }
 
@@ -1953,6 +2041,8 @@ mod tests {
             info: cell_info(id, node),
             space_gone_count: 0,
             reuse_count: 0,
+            should_offload: true,
+            is_removed: false,
         }));
         let mut space = Space::new(id);
         space.update_geometry(&mut cell_app, vec![cell_info(id, node)]);
@@ -2065,6 +2155,8 @@ mod tests {
             space_id: 2,
             app_addr: APP_ADDR,
             node: CellInfoNode::next(CellInfoNode(0)),
+            rect: (0.0, 0.0, 0.0, 0.0),
+            is_delete_pending: false,
         });
         let e = entity(1, true);
         multi.add_entity(e.clone());
@@ -2079,6 +2171,8 @@ mod tests {
             info: cell_info(3, 1),
             space_gone_count: 0,
             reuse_count: 0,
+            should_offload: true,
+            is_removed: false,
         }));
         not_started.update_geometry(&mut unstarted_app, vec![cell_info(3, 1)]);
         not_started.set_cell(cell);
@@ -2142,6 +2236,8 @@ mod tests {
             space_id: 5,
             app_addr: APP_ADDR,
             node: CellInfoNode::next(CellInfoNode(0)),
+            rect: (0.0, 0.0, 0.0, 0.0),
+            is_delete_pending: false,
         });
         assert!(space.shut_down_space(0));
         assert!(space.tick(1_000_000, &mut app));
@@ -2221,11 +2317,15 @@ mod tests {
                 space_id: 5,
                 app_addr: 10,
                 node: CellInfoNode(0),
+                rect: (0.0, 0.0, 0.0, 0.0),
+                is_delete_pending: false,
             },
             CellInfo {
                 space_id: 5,
                 app_addr: 11,
                 node: CellInfoNode(1),
+                rect: (0.0, 0.0, 0.0, 0.0),
+                is_delete_pending: false,
             },
         ];
 
@@ -2369,6 +2469,8 @@ mod tests {
                     space_id: 5,
                     app_addr: 11,
                     node: CellInfoNode(0),
+                    rect: (0.0, 0.0, 0.0, 0.0),
+                    is_delete_pending: false,
                 }],
                 is_first_cell: false,
                 is_from_db: false,

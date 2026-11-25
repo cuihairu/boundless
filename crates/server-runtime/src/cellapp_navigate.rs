@@ -314,7 +314,7 @@ enum NavigationStatus {
 }
 
 /// The port's stable type code of a kind (`Controller::type()`).
-fn controller_type_code(kind: &ControllerKind) -> u32 {
+pub(crate) fn controller_type_code(kind: &ControllerKind) -> u32 {
     match kind {
         ControllerKind::Timer { .. } => CONTROLLER_TYPE_TIMER,
         ControllerKind::Exclusive { .. } => CONTROLLER_TYPE_EXCLUSIVE,
@@ -331,7 +331,7 @@ fn controller_type_code(kind: &ControllerKind) -> u32 {
 /// One kind's `writeRealToStream` payload, in the reference's field
 /// order. `entity_velocity` feeds the acceleration family's
 /// `currVelocity_` (this port keeps that state on the entity).
-fn write_controller_payload(
+pub(crate) fn write_controller_payload(
     stream: &mut BinaryStream,
     kind: &ControllerKind,
     entity_velocity: [f32; 3],
@@ -431,7 +431,10 @@ fn write_controller_payload(
 
 /// One kind's `readRealFromStream` payload. `None` is a malformed stream
 /// face (an unknown type code or an out-of-range facing).
-fn read_controller_payload(stream: &mut BinaryStream, type_code: u32) -> Option<ControllerKind> {
+pub(crate) fn read_controller_payload(
+    stream: &mut BinaryStream,
+    type_code: u32,
+) -> Option<ControllerKind> {
     let kind = match type_code {
         CONTROLLER_TYPE_TIMER => ControllerKind::Timer {
             start: stream.read_u32().ok()?,
@@ -534,6 +537,10 @@ fn read_controller_payload(stream: &mut BinaryStream, type_code: u32) -> Option<
                 dst_loc: None,
             }
         }
+        // The ghost-domain face (`readGhostsFromStream`): the zero-byte
+        // passenger payload leaves the vehicle link detached — it
+        // re-forms when the ghost's controller starts.
+        CONTROLLER_TYPE_PASSENGER => ControllerKind::Passenger { vehicle_id: 0 },
         _ => return None,
     };
     Some(kind)
