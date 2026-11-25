@@ -506,6 +506,9 @@ pub struct PostgresStorage {
     /// would be holding as an open `MySqlTransaction`
     /// (`transaction.cpp:15-23` keeps `inTransaction` on the connection).
     in_transaction: bool,
+    /// The stored connection string, `connectInfo_` (`wrapper.hpp:111`) —
+    /// [`PostgresStorage::reconnect`] re-runs it.
+    conninfo: String,
 }
 
 impl std::fmt::Debug for PostgresStorage {
@@ -522,7 +525,24 @@ impl PostgresStorage {
             client: RefCell::new(client),
             schemas: HashMap::new(),
             in_transaction: false,
+            conninfo: conninfo.to_string(),
         })
+    }
+
+    /// Replaces this connection with a fresh one to the same database:
+    /// the reference's `MySql` keeps `connectInfo_` for exactly this
+    /// (`wrapper.hpp:111`), so a connection the server dropped comes
+    /// back without the caller knowing the string. The registered
+    /// entity types survive — they are the connection's own knowledge
+    /// of the table shapes, not server state — and a transaction that
+    /// was open on the dead connection is gone with it, the way the
+    /// reference's `hasLostConnection` flag abandons one.
+    pub fn reconnect(&mut self) -> Result<(), DbError> {
+        let client =
+            Client::connect(self.conninfo.as_str(), postgres::NoTls).map_err(map_db_error)?;
+        self.client = RefCell::new(client);
+        self.in_transaction = false;
+        Ok(())
     }
 
     /// The underlying client, for the schema tools (BW-09-07).
