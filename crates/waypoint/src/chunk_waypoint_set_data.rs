@@ -10,9 +10,12 @@
 //! decode).
 
 use super::chunk_waypoint::{ChunkWaypoint, ChunkWaypointVertexProvider, Edge};
+use super::chunk_waypoint_set::{ChunkWaypointConns, EdgeLabel, NeighbourEdge};
 use super::{EdgeIndex, WaypointIndex};
 use foundation::math::{Vector2, Vector3};
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, HashMap};
+use std::rc::Rc;
 
 /// `NAVPOLY_ELEMENT_SIZE` (`chunk_waypoint_set_data.cpp:437-438`):
 /// `sizeof(float) + sizeof(float) + sizeof(int32)`.
@@ -125,6 +128,12 @@ impl ChunkWaypointVertexProvider for VertexIndices {
 
 /// `ChunkWaypointSetData` (`chunk_waypoint_set_data.hpp:39-69`): the data
 /// read in from a waypoint set, possibly shared between chunks.
+///
+/// The runtime connection face the reference keeps on the wrapping
+/// `ChunkWaypointSet` (`connections_`/`edgeLabels_`/`backlinks_`, plus the
+/// mounted chunk identity) rides here as `RefCell` fields — see
+/// `chunk_waypoint_set.rs` for the semantics and the registered
+/// container-model boundaries.
 #[derive(Debug, Default)]
 pub struct ChunkWaypointSetData {
     /// `girth_`.
@@ -140,6 +149,21 @@ pub struct ChunkWaypointSetData {
     base_index: WaypointIndex,
     /// `vertices_`.
     vertices: Vec<Vector2>,
+    /// `ChunkWaypointSet::connections_`.
+    pub(crate) connections: RefCell<ChunkWaypointConns>,
+    /// `ChunkWaypointSet::edgeLabels_`: the labels `connect` recorded,
+    /// keyed by the absolute edge index.
+    pub(crate) edge_labels: RefCell<BTreeMap<EdgeIndex, EdgeLabel>>,
+    /// `ChunkWaypointSet::backlinks_`.
+    pub(crate) backlinks: RefCell<Vec<Rc<ChunkWaypointSetData>>>,
+    /// `ChunkWaypointSet::neighbourEdges_`: the boundary-edge records the
+    /// reference constructor fills and `bind()`/`deleteConnection` move
+    /// through (`isBound`).
+    pub(crate) neighbour_edges: RefCell<BTreeMap<EdgeIndex, NeighbourEdge>>,
+    /// `ChunkWaypointSet::chunk()`: the identity of the mounted chunk.
+    pub(crate) chunk_id: Cell<Option<usize>>,
+    /// `Chunk::isOutsideChunk` of the mounted chunk.
+    pub(crate) outside_chunk: Cell<bool>,
 }
 
 impl ChunkWaypointSetData {

@@ -121,14 +121,18 @@ impl ChunkWaypointState {
         0
     }
 
-    /// `getAdjacency` (`chunk_waypoint_state.cpp:53-190`): the neighbour
+    /// `getAdjacency` (`chunk_waypoint_state.cpp:53-232`): the neighbour
     /// over edge `index`, its connection point computed where the straight
     /// line to the goal crosses the shared edge (or the closer of the
-    /// edge's two vertices).
+    /// edge's two vertices). Chunk-adjacent edges cross through the
+    /// bind-time `edgeLabel` with `crossedPortal_` set — no permissive
+    /// gate here; that check belongs to the neighbour iterator and the
+    /// set-level search.
     ///
-    /// Registered boundary: the cross-set branch (`waypointAdjToChunk`,
-    /// resolved through `edgeLabel`) answers false until the connections
-    /// and portal data land in the cross-chunk face (BW-10-04-05).
+    /// Registered boundary: the chunk-box clamp of the cross-set arm
+    /// (`chunk_waypoint_state.cpp:196-205`) needs the destination chunk's
+    /// bounding box; the chunk lane owns that face and the clamp is left
+    /// out (the fixture maps keep every crossing inside it).
     pub fn get_adjacency(
         &self,
         index: usize,
@@ -147,6 +151,7 @@ impl ChunkWaypointState {
         let cw = &set.waypoints()[waypoint as usize];
         let edge_range = cw.edge_range();
         let cwe = set.edges()[edge_range.start + index];
+        let absolute_edge = set.absolute_edge_index(waypoint as usize, index);
         let waypoint = cwe.neighbouring_waypoint();
         let waypoint_adj_to_chunk = cwe.adjacent_to_chunk();
 
@@ -154,16 +159,30 @@ impl ChunkWaypointState {
             return false;
         }
 
+        let neigh_set;
         if waypoint >= 0 {
             // In-set neighbour: rebuild the neighbour location in place.
-            let set2 = Rc::clone(set);
-            neigh.nav_loc = NavLoc::from_parts(set2, waypoint, Vector3::default());
+            neigh_set = Rc::clone(set);
+            neigh.nav_loc = NavLoc::from_parts(Rc::clone(&neigh_set), waypoint, Vector3::default());
             neigh.crossed_portal = false;
         } else if waypoint_adj_to_chunk {
-            // `edgeLabel` carries the neighbouring chunk's set; the port has
-            // no edge labels yet, so the reference's null-label early-out is
-            // what always answers here.
-            return false;
+            // `edgeLabel` (`chunk_waypoint_state.cpp:104-118`): the
+            // neighbour across the boundary comes from the bind-time
+            // label. A label miss answers the reference's static
+            // `{NULL, -1}` record whose null `pSet_` the guard refuses.
+            let label = match set.edge_label(absolute_edge) {
+                Some(label) => label,
+                None => return false,
+            };
+            neigh_set = Rc::clone(&label.set);
+            neigh.nav_loc =
+                NavLoc::from_parts(Rc::clone(&neigh_set), label.waypoint, label.entry_point);
+            neigh.crossed_portal = true;
+            if neigh_set.chunk_identity().is_none() {
+                // "!neigh.navLoc_.pSet()->chunk()": the destination set's
+                // chunk is gone (or was never mounted).
+                return false;
+            }
         } else {
             return false;
         }
@@ -200,9 +219,10 @@ impl ChunkWaypointState {
         }
 
         // `wway( way.x, cw.maxHeight_, way.y )` through the identity
-        // mapping (registered).
+        // mapping (registered): the point rides the source waypoint's
+        // max height onto the neighbour's set.
         neigh.nav_loc = NavLoc::from_parts(
-            Rc::clone(set),
+            neigh_set,
             neigh.nav_loc.waypoint(),
             Vector3::new(way.x, cw.max_height, way.y),
         );
@@ -216,8 +236,8 @@ impl ChunkWaypointState {
             vp2,
         );
 
-        // The chunk-box clamp of `waypointAdjToChunk` needs the chunk face;
-        // registered with the branch above (BW-10-04-05).
+        // The chunk-box clamp of the cross-set arm needs the destination
+        // chunk's bounding box (registered above).
 
         neigh.nav_loc.clip_in_place();
         let np = neigh.nav_loc.point();
@@ -233,9 +253,9 @@ impl ChunkWaypointState {
 
 /// The goal-only neighbour's boundary step (`neigh.navLoc_.waypoint_ ==
 /// -1` branch of `getAdjacency`): `del.normalise(); way += del * 0.2f`.
-/// The port only reaches it through edge labels landing on waypoint -1
-/// (the cross-chunk face, BW-10-04-05), so it is factored out for direct
-/// testing.
+/// A real `bind()` never labels an edge with waypoint -1, so the nudge is
+/// defensive in both engines; the port only reaches it through direct
+/// construction, so it is factored out for direct testing.
 fn nudge_past_boundary(way: &mut Vector2, del: Vector2) {
     let len = (del.x * del.x + del.y * del.y).sqrt();
     let (nx, ny) = if len > 0.0 {
@@ -245,6 +265,54 @@ fn nudge_past_boundary(way: &mut Vector2, del: Vector2) {
     };
     way.x += nx * 0.2;
     way.y += ny * 0.2;
+}
+
+/// The `AStar` template's view of `ChunkWaypointState` (`astar.hpp`'s
+/// `State` requirements): the inherent methods are the reference's own,
+/// the close-set key is the (set pointer, waypoint) pair `hash` derives.
+impl super::astar::AStarState for ChunkWaypointState {
+    type SearchData = ChunkWaypointStateSearchData;
+    type Key = (usize, WaypointIndex);
+
+    /// `hash` (`chunk_waypoint_state.hpp:65-72`): the set identity plus
+    /// the waypoint; the null-set arm mirrors the reference's hashing of
+    /// a null pointer (the search never reaches it).
+    fn search_key(&self) -> Self::Key {
+        match self.nav_loc().p_set() {
+            Some(set) => (Rc::as_ptr(set) as usize, self.nav_loc().waypoint()),
+            None => (0, self.nav_loc().waypoint()),
+        }
+    }
+
+    fn compare(&self, other: &Self) -> i64 {
+        ChunkWaypointState::compare(self, other)
+    }
+
+    fn is_goal(&self, goal: &Self) -> bool {
+        ChunkWaypointState::is_goal(self, goal)
+    }
+
+    fn distance_to_goal(&self, goal: &Self) -> f32 {
+        ChunkWaypointState::distance_to_goal(self, goal)
+    }
+
+    fn distance_from_parent(&self) -> f32 {
+        ChunkWaypointState::distance_from_parent(self)
+    }
+
+    fn adjacency_count(&self) -> usize {
+        ChunkWaypointState::adjacency_count(self)
+    }
+
+    fn get_adjacency(
+        &self,
+        index: usize,
+        neigh: &mut Self,
+        goal: &Self,
+        search_data: &mut Self::SearchData,
+    ) -> bool {
+        ChunkWaypointState::get_adjacency(self, index, neigh, goal, search_data)
+    }
 }
 
 /// The connection map's shapes: the ordered from/to (set pointer,
@@ -366,6 +434,82 @@ mod tests {
             ChunkWaypointState::for_destination(Rc::clone(&set), Vector3::new(1.5, 0.5, 1.0));
         assert_eq!(goal.nav_loc().waypoint(), -1);
         assert_eq!(goal.nav_loc().point(), Vector3::new(1.5, 0.5, 1.0));
+    }
+
+    #[test]
+    fn a_state_without_a_set_never_matches_a_goal_only_state() {
+        use crate::astar::AStarState;
+
+        let set = split_square();
+        let goal =
+            ChunkWaypointState::for_destination(Rc::clone(&set), Vector3::new(1.5, 0.5, 1.0));
+        let orphan = ChunkWaypointState::default();
+        // The goal-only arm with mismatched set presence: false, and the
+        // search key of a set-less state is the null-pointer slot.
+        assert!(!orphan.is_goal(&goal));
+        assert_eq!(orphan.search_key(), (0, 0), "the null set hashes as 0");
+    }
+
+    #[test]
+    fn a_label_to_an_unmounted_set_refuses_the_crossing() {
+        let set = split_square();
+        set.set_chunk_identity(0);
+        // wp0's edge 0 (absolute 0) is the chunk-adjacent north edge; a
+        // label there points at a set that never mounted a chunk.
+        let ghost = split_square();
+        set.edge_labels.borrow_mut().insert(
+            0,
+            super::super::chunk_waypoint_set::EdgeLabel {
+                set: Rc::clone(&ghost),
+                waypoint: 0,
+                entry_point: Vector3::new(0.5, 0.5, 2.0),
+            },
+        );
+
+        let state = state_on(&set, 0, 0.5, 1.0);
+        let goal =
+            ChunkWaypointState::for_destination(Rc::clone(&ghost), Vector3::new(0.5, 0.5, 1.0));
+        let mut neigh = ChunkWaypointState::default();
+        let mut data = ChunkWaypointStateSearchData::default();
+        assert!(!state.get_adjacency(0, &mut neigh, &goal, &mut data));
+    }
+
+    #[test]
+    fn a_goal_only_label_nudges_the_crossing_past_the_boundary() {
+        let set = split_square();
+        set.set_chunk_identity(0);
+        let ghost = split_square();
+        ghost.set_chunk_identity(1);
+        // The label's waypoint -1 is the goal-only marker: the crossing
+        // point is pushed 0.2 along the (normalised) direction to the goal
+        // so the neighbour lands inside the far waypoint.
+        set.edge_labels.borrow_mut().insert(
+            0,
+            super::super::chunk_waypoint_set::EdgeLabel {
+                set: Rc::clone(&ghost),
+                waypoint: -1,
+                entry_point: Vector3::new(0.5, 0.5, 2.0),
+            },
+        );
+
+        let state = state_on(&set, 0, 0.5, 1.0);
+        let goal =
+            ChunkWaypointState::for_destination(Rc::clone(&ghost), Vector3::new(0.5, 0.5, 3.0));
+        let mut neigh = ChunkWaypointState::default();
+        let mut data = ChunkWaypointStateSearchData::default();
+        assert!(state.get_adjacency(0, &mut neigh, &goal, &mut data));
+        assert_eq!(neigh.nav_loc().waypoint(), -1);
+        assert!(neigh.crossed_portal);
+        // src (0.5, 1.0) -> dst (0.5, 3.0) crosses the north edge
+        // z=2 straight on at (0.5, 2.0); the nudge moves it to z=2.2.
+        let p = neigh.nav_loc().point();
+        assert!((p.x - 0.5).abs() <= 1e-5, "x stays on the crossing");
+        assert!(
+            (p.z - 2.2).abs() <= 1e-5,
+            "z carries the 0.2 nudge, got {}",
+            p.z
+        );
+        assert!((p.y - 1.0).abs() <= 1e-5, "y rides the source maxHeight");
     }
 
     #[test]
