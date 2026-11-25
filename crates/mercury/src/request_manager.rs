@@ -27,7 +27,7 @@ use crate::endpoint::Address;
 use crate::event_dispatcher::EventDispatcher;
 use crate::interfaces::{InputMessageHandler, ReplyMessageHandler};
 use crate::message_framing::FrameError;
-use crate::misc::{MessageID, Reason, ReplyID, REPLY_ID_MAX};
+use crate::misc::{MessageID, REPLY_ID_MAX, Reason, ReplyID};
 use crate::reply_order::ReplyOrder;
 use crate::request::Request;
 use crate::unpacked_message_header::UnpackedMessageHeader;
@@ -983,9 +983,11 @@ mod tests {
         let channel = Address::new(0x7f000001, 6000);
         let order = ReplyOrder::new(Rc::clone(&handler) as Rc<dyn ReplyMessageHandler>, 1, 0, 2);
         let mut frame = [0u8; 12];
-        assert!(manager
-            .add_reply_order(&order, Some(channel), &mut frame)
-            .is_ok());
+        assert!(
+            manager
+                .add_reply_order(&order, Some(channel), &mut frame)
+                .is_ok()
+        );
         assert_eq!(manager.num_pending(), 1);
     }
 
