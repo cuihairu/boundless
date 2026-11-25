@@ -1442,6 +1442,8 @@
 - [x] **BW-10-01-03 装载相邻 Chunk**。**验收** 流式进出时绑定序列吻合。
   - 证据：`ChunkSpace::scan` 复刻 `ChunkManager::scan`（GridComp 平方半径序、maxLoadPath 世界距离断、inWorldBounds 过滤、find-or-create、MAX_WORTHY_CHUNKS=50 截断，同层 tie-break 登记为确定性分歧）；`bind`/`bind_back` 复刻 `bindPortals` + `Chunk::bind(Chunk*)`（heaven 即绑、目标已绑才连、双向对移、centre=transform∘lcentre，extern/invasive 解析登记为 BW-10-02 缺口）。夹具绑定序列 `[00000000o,00000001o,00010000o,00010001o]` 钉死，缺文件块拒载、未装载拒绑、重入幂等均有测。llvm-cov 全 crate 行 98.62%。详见 docs/review/bw10-01-chunk-load.md 的 BW-10-01-03 节。commit `934a268`。
 - [ ] **BW-10-01-04 卸载 Chunk 及场景对象**。**验收** 查询结果和资源释放符合基线。
+  - 卡点更新（2026-11-25）：交付本体已在 `b57e4b9`（feat: unload chunks and release scene objects，`Chunk::removable`+`ChunkSpace::{unbind,unload_chunk,unload_chunks,unload_farthest}`+`intersects_with_bias`，space.rs 99.54%）且 **`b57e4b9`、`2801186` 皆实测为 main 祖先**——但 main 活树 `crates/chunk/src/space.rs` 只 588 行且 **`grep HullTree`=0、无卸载面**：五条 lane 合并（`fa01ada` 一族）保留了 hull 树代新增的 `hulltree.rs`/`column.rs`（与 `2801186` 逐字节一致），却把 `space.rs` 解回旧代（`934a268`+`5b5080a` 的 scan/bind/`find_chunk_from_point` 17 pub fn 版），因此 `unbind`/`unload_chunk`/`unload_chunks`/`unload_farthest`/`column()`/`focus`/`focus_span`/blurred 系全从活树消失（`git diff 2801186 origin/main -- crates/chunk/src/space.rs` 逐条 `-` 实证）。`Chunk::unload` 本体仍在 main `chunk.rs:186`，`Chunk::removable` 仍在 `chunk.rs:89`。
+  - 结论：本行**维持未勾=真卡点**，须主席在 main 侧把 `2801186` 的 space.rs 1726 行重接（同一裁定连带 BW-10-01-05 空间索引——main 自身该行也未勾）。
 - [ ] **BW-10-01-05 实现空间索引**。**验收** 跨 Chunk 与空白区查询返回正确集合。
 
 #### BW-10-02 编译空间和场景查询
@@ -1496,30 +1498,47 @@
 
 - [x] **BW-10-05-01 核查 waypoint flood 与 Recast 的构建入口**。**验收** 记录算法、格式及启用条件。（commit 9c6d65c）
   - 证据：`docs/review/bw10-05-01-navgen-build-entries.md`（9c6d65c）——两个生成族：**flood 路径**（`lib/waypoint_generator/`，`WaypointFlood` 采样网格洪泛：每格 ≤16 高度层 × 8 向 4 位邻接位图 `AdjGridElt`，`IPhysics` 台阶容差 `DROP_FUDGE=0.1f`；`WaypointGenerator` 转 BSP 多边形 + streamline/跨块边/门户延伸/集合划分，`readTGA` 替代输入）+ **Recast 路径**（`lib/navigation_recast/`，标准 Recast 流水线：`CELL_SIZE=0.23/CELL_HEIGHT=0.2/REGION_MAX_AREA=400/MAX_VERTS_PER_POLY=6/EDGE_MAX_ERROR=1.3` 等常量（recast_generator.cpp:222-244），`rcCreateHeightfield→rasterize→3×filter→compact→erode→regions(monotone 或 distancefield)→contours→polyMesh→polyMeshDetail`（:393-528），`useMono` 选区域算法，产物 `convertRecastMeshToNavgenMesh` 转回 navgen 格式）；**格式（两路统一）**：块 `.cdata/worldNavmesh` 二进制节，version-0 记录流 `[int32 version(读侧 MF_ASSERT==0)][float girth][int32 numWaypoints][int32 numEdges]` + 每 waypoint 12 字节（minH/maxH/vertexCount）+ 每顶点 12 字节（x/z/adjacency：>0=多边形索引、65535=跨块门户、≤0=vista），多 girth 记录同文件（写 `IWaypointView::asBinary`/`saveOut` 合并非默认 girth 旧记录，waypoint_view.cpp:171/308-404；读 `navmeshFactory` chunk_waypoint_set_data.cpp:398-418）；**启用条件**：① 构建 Windows-only CMake，`BW_CMAKE_TARGET=navgen`（`_NAVGEN`，lib waypoint_generator + `tools/navgen` WIN32/MFC 图形工具，链接 physics2/terrain/romp）或 `=tools`（lib navigation_recast + waypoint_generator + tools_common），配置类型 Debug;Hybrid（CMakeLists.txt:22）；② 每空间设置 `navmeshGenerator`：`none|recast|""|navgen`（base_chunk_space.cpp:753-785），构造默认 NONE（:74），worldeditor 开旧世界未设则写 `navgen`（world_manager.cpp:3703-3707）、新建空间写 `navgen`（new_space_dlg.cpp:418），设置经 `geometry_mapping.cpp:111` 注入；③ 运行时门 `clientNavigation/enable` 默认 false（chunk_space.cpp:514），`navmeshFactory` 双门（`isNavigationEnabled && generator!=NONE`，chunk_waypoint_set_data.cpp:328-331）；④ 每块 `.cdata` `navmeshDirty` 标志后台触发（editor_chunk_navmesh_cache_base.cpp:270-318，NAVGEN→`NavmeshProcessor` flood+generate 按 girth 循环，RECAST→`RecastProcessor`）；⑤ girth 列表 `helpers/girths.xml`（`AutoConfigString editor/girthSettings`，girth.cpp:10/31-54；width/height/depth 必填、maxSlope 默认 45°、maxClimb 默认 height/3、`always` 常生成；navgen 要求 **girth 0.5 必含**否则 CRITICAL_MSG，navgen.cpp:3735-3738；种子=实体位置 + `NavGenUDO` GirthSeeds（girth+generateRange 范围判定，navgen.cpp:1600-1625））。**资源缺口**：参考 res（fantasydemo 仅 scripts/+server/）无 girths.xml/resources.xml/空间/块——navgen 启动即 CRITICAL_MSG，BW-10-05-04 图形工作流与 BW-10-07 固定测试地图需内容侧先提供演示世界（档 §5）。
-- [ ] **BW-10-05-02 移植 flood 生成**。**验收** 斜坡和室内外交界产物可对照。
+- [x] **BW-10-05-02 移植 flood 生成**。**验收** 斜坡和室内外交界产物可对照。
+- 落账（2026-11-25，本席零代码同步）：flood 生成=e572b23（`git merge-base --is-ancestor` 实证 main 祖先），main 活面 `waypoint-gen/src/flood.rs` 1026 行+flood/{artifacts,covers,tests}.rs 全在树，e572b23 --stat 3731 insertions。
 - [ ] **BW-10-05-03 移植选用的 Recast 生成**。**验收** 固定输入生成可读导航资源。
 - [ ] **BW-10-05-04 实现原版 NavGen 图形工作流**。**验收** 同图可选择目标、生成和保存。
-- [ ] **BW-10-05-05 验证旧导航资产读取**。**验收** 固定地图可寻路。
-- [ ] **BW-10-05-06 验证新产物往返**。**验收** 由支持该格式的原版目标重载。
+- [x] **BW-10-05-05 验证旧导航资产读取**。**验收** 固定地图可寻路。
+- 落账（2026-11-25，本席零代码同步）：旧导航资产读取=bbfb5ef（main 祖先实证），main 行附证据（读侧 harness `gen_navpaths.cpp` 走原版 navmeshFactory）。
+- [x] **BW-10-05-06 验证新产物往返**。**验收** 由支持该格式的原版目标重载。
+- 落账（2026-11-25，本席零代码同步）：新产物往返=0684f78（main 祖先实证），main 行附证据（端口终流写盘+fnv 钉住 slope）。
 
 #### BW-10-06 CellApp 与 Python 寻路
 
 沿 `entity_navigate.cpp`、`navmesh_navigation_system.cpp`、`navigation_controller.cpp` 对齐 `navigate`、`navigateStep`、`canNavigateTo`、`navigateFollow`、`navigatePathPoints`、`getStopPoint`、`waySetPathLength` 与移动/加速 API。核对轨迹、控制器取消、成功/失败回调和跨 Cell 迁移后的状态。
 
-- [ ] **BW-10-06-01 实现 navigate**。**验收** 固定路线到达时触发对应回调。
-- [ ] **BW-10-06-02 实现 navigateStep**。**验收** 单步目标、返回值与越界行为吻合。
-- [ ] **BW-10-06-03 实现 canNavigateTo**。**验收** 可达与不可达样本结果吻合。
-- [ ] **BW-10-06-04 实现 navigateFollow**。**验收** 目标移动后跟随轨迹对照。
-- [ ] **BW-10-06-05 实现 navigatePathPoints**。**验收** 成功路径与无路径错误对照。
-- [ ] **BW-10-06-06 实现 getStopPoint**。**验收** 同一位置、方向和停止距离输入返回原版停止点。
-- [ ] **BW-10-06-07 实现 waySetPathLength**。**验收** 跨两个 waypoint set 的路径长度返回值与原版一致。
-- [ ] **BW-10-06-08 实现 moveToPoint**。**验收** 逐 tick 对照位置、终点容差和到达回调。
-- [ ] **BW-10-06-09 实现 moveToEntity**。**验收** 目标实体移动时，跟随结果和停止条件与原版一致。
-- [ ] **BW-10-06-10 实现 accelerateToPoint**。**验收** 逐 tick 比较速度、位置和到达结果。
-- [ ] **BW-10-06-11 实现 accelerateAlongPath**。**验收** 多段路径拐点的减速与终点行为与原版一致。
-- [ ] **BW-10-06-12 实现 accelerateToEntity**。**验收** 目标移动及销毁时的控制器结果与原版一致。
-- [ ] **BW-10-06-13 取消活动寻路控制器**。**验收** 取消后下一 tick 停止推进，回调序列与原版一致。
-- [ ] **BW-10-06-14 迁移活动寻路控制器**。**验收** 移动中穿越 Cell 边界后，目标位置和回调次数与原版一致。
+- [x] **BW-10-06-01 实现 navigate**。**验收** 固定路线到达时触发对应回调。
+- 落账（2026-11-25，本席零代码同步）：9c3c086（main 祖先实证），main 活面 `server-runtime/src/entity_navigate.rs` 148KB/24 pub fn 在树，验收映射见 main todo 该行 → 证据。
+- [x] **BW-10-06-02 实现 navigateStep**。**验收** 单步目标、返回值与越界行为吻合。
+- 落账（2026-11-25，本席零代码同步）：b282d07（main 祖先实证），main 活面 `server-runtime/src/entity_navigate.rs` 148KB/24 pub fn 在树，验收映射见 main todo 该行 → 证据。
+- [x] **BW-10-06-03 实现 canNavigateTo**。**验收** 可达与不可达样本结果吻合。
+- 落账（2026-11-25，本席零代码同步）：a0028ff（main 祖先实证），main 活面 `server-runtime/src/entity_navigate.rs` 148KB/24 pub fn 在树，验收映射见 main todo 该行 → 证据。
+- [x] **BW-10-06-04 实现 navigateFollow**。**验收** 目标移动后跟随轨迹对照。
+- 落账（2026-11-25，本席零代码同步）：df0f88d（main 祖先实证），main 活面 `server-runtime/src/entity_navigate.rs` 148KB/24 pub fn 在树，验收映射见 main todo 该行 → 证据。
+- [x] **BW-10-06-05 实现 navigatePathPoints**。**验收** 成功路径与无路径错误对照。
+- 落账（2026-11-25，本席零代码同步）：045a5b0（main 祖先实证），main 活面 `server-runtime/src/entity_navigate.rs` 148KB/24 pub fn 在树，验收映射见 main todo 该行 → 证据。
+- [x] **BW-10-06-06 实现 getStopPoint**。**验收** 同一位置、方向和停止距离输入返回原版停止点。
+- 落账（2026-11-25，本席零代码同步）：54ec362（main 祖先实证），main 活面 `server-runtime/src/entity_navigate.rs` 148KB/24 pub fn 在树，验收映射见 main todo 该行 → 证据。
+- [x] **BW-10-06-07 实现 waySetPathLength**。**验收** 跨两个 waypoint set 的路径长度返回值与原版一致。
+- 落账（2026-11-25，本席零代码同步）：347d7bc（main 祖先实证），main 活面 `server-runtime/src/entity_navigate.rs` 148KB/24 pub fn 在树，验收映射见 main todo 该行 → 证据。
+- [x] **BW-10-06-08 实现 moveToPoint**。**验收** 逐 tick 对照位置、终点容差和到达回调。
+- 落账（2026-11-25，本席零代码同步）：cc15de4（main 祖先实证），main 活面 `server-runtime/src/entity_navigate.rs` 148KB/24 pub fn 在树，验收映射见 main todo 该行 → 证据。
+- [x] **BW-10-06-09 实现 moveToEntity**。**验收** 目标实体移动时，跟随结果和停止条件与原版一致。
+- 落账（2026-11-25，本席零代码同步）：ec2cfc4（main 祖先实证），main 活面 `server-runtime/src/entity_navigate.rs` 148KB/24 pub fn 在树，验收映射见 main todo 该行 → 证据。
+- [x] **BW-10-06-10 实现 accelerateToPoint**。**验收** 逐 tick 比较速度、位置和到达结果。
+- 落账（2026-11-25，本席零代码同步）：a41fa63（main 祖先实证），main 活面 `server-runtime/src/entity_navigate.rs` 148KB/24 pub fn 在树，验收映射见 main todo 该行 → 证据。
+- [x] **BW-10-06-11 实现 accelerateAlongPath**。**验收** 多段路径拐点的减速与终点行为与原版一致。
+- 落账（2026-11-25，本席零代码同步）：a1ac603（main 祖先实证），main 活面 `server-runtime/src/entity_navigate.rs` 148KB/24 pub fn 在树，验收映射见 main todo 该行 → 证据。
+- [x] **BW-10-06-12 实现 accelerateToEntity**。**验收** 目标移动及销毁时的控制器结果与原版一致。
+- 落账（2026-11-25，本席零代码同步）：dcd527a（main 祖先实证），main 活面 `server-runtime/src/entity_navigate.rs` 148KB/24 pub fn 在树，验收映射见 main todo 该行 → 证据。
+- [x] **BW-10-06-13 取消活动寻路控制器**。**验收** 取消后下一 tick 停止推进，回调序列与原版一致。
+- 落账（2026-11-25，本席零代码同步）：4402d7f（main 祖先实证），main 活面 `server-runtime/src/entity_navigate.rs` 148KB/24 pub fn 在树，验收映射见 main todo 该行 → 证据。
+- [x] **BW-10-06-14 迁移活动寻路控制器**。**验收** 移动中穿越 Cell 边界后，目标位置和回调次数与原版一致。
+- 落账（2026-11-25，本席零代码同步）：b0916c1（main 祖先实证），main 活面 `server-runtime/src/entity_navigate.rs` 148KB/24 pub fn 在树，验收映射见 main todo 该行 → 证据。
 
 #### BW-10-07 地图端到端验收
 
@@ -1589,23 +1608,35 @@
 
   - 证据：新增 `crates/client/src/skeleton.rs`（模型/骨骼动画加载与求值）为**原版资产关节姿态端到端模型**。**参考对齐**：节点树取自 `Node::loadRecursive`（`lib/moo/node.cpp:200-226`）与 `Moo::Visual` 的 `openSection("node")` 根（`lib/moo/visual.cpp:586-591`）、`asMatrix34`（`lib/resmgr/xml_section.cpp:915-931`，row0..row3 读 Vector3、col3 钉 `(0,0,0,1)`）；`.animation` 取自 `Animation::load`（`lib/moo/animation.cpp:509-677`）与五类通道 `discrete_animation_channel.cpp`/`interpolated_animation_channel.cpp`/`streamed_animation_channel.cpp`/`cue_channel.cpp`/`translation_override_channel.cpp`（type 2 morph 不支持即停读，`animation.cpp:578-582`）；插值取自 `interpolateKeys`/`buildTransform`/`buildIndex`/`valid()`（`interpolated_animation_channel.cpp:93-237,788-819`）与 discrete 的 `upper_bound`（`discrete_animation_channel.cpp`）——客户端直接调 D3DX（`interpolated_animation_channel.cpp:138-170`），故用 `D3DXQuaternionSlerp`（短弧、`cos>0.9999` 线性）/`D3DXVec3Lerp`/`D3DXMatrixRotationQuaternion`，非 BW `Quaternion::slerp` 标量回退；模型层取自 `createModelFromFile`（`lib/model/model_common.hpp:14-34`）、`Model::loadAnimations`（`lib/model/model.cpp:1449-1595`）、帧映射 `NodefullModelAnimation`（`lib/model/nodefull_model_animation.cpp:21-42`，firstFrame/lastFrame 默认 0/-1、负值相对 rawFrames、`Math::clamp(0,x,rawFrames)`、`frame=time*frameRate`）。**模型**：`Channel`（Discrete/Interpolated/Streamed/Cue/TranslationOverride，Cue 无 identifier、Streamed 仅头无求值）、`Animation::from_bytes`（f32 totalTime+2 string+i32 numBinders，type2 停读）、`Skeleton`（visual `<node>` 单根 71 节点前序扁平表、`find`=前序首匹配、`compose_world`=`local x parent`）、`BoundAnimation::world_pose`（绑定通道覆盖局部、无绑定通道用 visual 静态变换、无节点通道不贡献姿态）、`Model`/`LoadedAnimation`/`FrameRange`（`frame_at`）。**验收测试**：**`crab_world_pose_matches_oracle`（验收本体）**——原版 crab 资产（`res/crab.visual`+`crab.model`+`crab_walkforward.animation`，字节级与 BigWorld `lib/model/unit_test/res` 一致）在 6 帧（0/4.5/7.5/12/18/25）×7 探针节点的世界矩阵与独立 Python 神谕逐位对照（`skeleton_oracle_data.rs` 为参考算术产出的精确 f32，容差 5e-6）；`skeleton_tree_matches_reference`（71 节点、DFS 序、无节点通道）；`crab_animation_parses_exactly`（45 type-1 通道、键首键 0、严格递增）；`pose_at_keyframe_is_exact`（关键帧上局部=buildTransform 原键，无插值漂移）；`model_layer_loads_crab`（6 动画、帧映射 0..25、play(0.5s)=15）；`frame_range_maps_reverse_order`/`frame_range_clamps_to_raw_frames`；`morph_channel_stops_reading`；`nodeless_channels_do_not_affect_pose`；`discrete_channel_result`；`lerp_and_slerp_follow_d3dx`（短弧翻转/线性分支）；`build_transform_scales_rows`。**门禁**：`cargo fmt -p client --check` PASS、`cargo clippy -p client --all-targets` 对 skeleton/oracle 0 发现（resources 既有 31 条为兄弟席旧债）、`cargo test --workspace --lib` 1378 全过。**登记差异**：① `client` 依赖 `foundation`/`resources` 后 `test-support` 分层注册表补 `client`→`LAYER_APPLICATION`（应用层，向下依赖 domain/foundation 合法；此前 client 无工作区内部依赖故从未被校验）；② oracle 数据（`skeleton_oracle_data.rs`）为生成物、全精度 f32 字面量防 clippy `excessive_precision` 截短（截短后读数仍同 f32，但生成物保留参考算术原样）；③ `Crab`+8 `Platform` 通道无节点（参考落全局 `NodeCatalogue`，不参与模型姿态）；④ `.animation` 尾部三段 index 序列读出即弃（`buildIndex` 重建），`valid()` 以重建索引校验；⑤ 帧映射 clamp 使 `firstFrame>rawFrames` 落到 rawFrames（测试用 total_time=10 规避 clamp 演示反向区间）。证据为源码级对齐+独立神谕逐位对照+字节级资产比对，不虚勾。commit `8c346db`。
 - [x] **BW-11-04-01 加载模型和骨骼动画**。**验收** 原版资产关节姿态吻合。
-- [ ] **BW-11-04-02 绑定材质、纹理与特效**。**验收** 固定材质样图符合视觉容差。
-- [ ] **BW-11-04-03 渲染光照与阴影**。**验收** 固定场景对照。
-- [ ] **BW-11-04-04 渲染地形与环境**。**验收** 固定镜头对照。
-- [ ] **BW-11-04-05 渲染植被和粒子**。**验收** 固定种子序列可重放。
-- [ ] **BW-11-04-06 移植后处理与相机效果**。**验收** 启用与关闭模式均有对照。
-- [ ] **BW-11-04-07 验证各端图形后端**。**验收** 三端生成可对比截图与状态。
+- [x] **BW-11-04-02 绑定材质、纹理与特效**。**验收** 固定材质样图符合视觉容差。
+- 落账（2026-11-25，本席零代码同步）：main 已勾，活面在 `client/src/material.rs`+`texture.rs`+`particle_system.rs`（绑定材质/纹理/特效）。
+- [x] **BW-11-04-03 渲染光照与阴影**。**验收** 固定场景对照。
+- 落账（2026-11-25，本席零代码同步）：main 已勾，活面在 `client/src/lighting.rs`+`shadow_math.rs`。
+- [x] **BW-11-04-04 渲染地形与环境**。**验收** 固定镜头对照。
+- 落账（2026-11-25，本席零代码同步）：main 已勾，活面在 `client/src/terrain_height.rs`+`time_of_day.rs`。
+- [x] **BW-11-04-05 渲染植被和粒子**。**验收** 固定种子序列可重放。
+- 落账（2026-11-25，本席零代码同步）：main 已勾，活面在 `client/src/flora.rs`+`particle.rs`（perlin 固定种子）。
+- [x] **BW-11-04-06 移植后处理与相机效果**。**验收** 启用与关闭模式均有对照。
+- 落账（2026-11-25，本席零代码同步）：main 已勾，活面在 `client/src/post_processing.rs`+`camera.rs`。
+- [x] **BW-11-04-07 验证各端图形后端**。**验收** 三端生成可对比截图与状态。
+- 落账（2026-11-25，本席零代码同步）：main 已勾，活面在 `client/src/conditional_integrations.rs`+`screen_shot.rs`。
 
 #### BW-11-05 GUI、音频和集成
 
 覆盖 Python GUI、界面事件、迷你地图、声音、VOIP、网页嵌入及 SDK 条件功能。以原版样本比较接口和行为，给缺 SDK 的功能保留兼容待办。
 
-- [ ] **BW-11-05-01 复现 Python GUI 与交互事件**。**验收** 回调顺序及参数吻合。
-- [ ] **BW-11-05-02 实现迷你地图**。**验收** 地图投影及标记位置正确。
-- [ ] **BW-11-05-03 接入声音**。**验收** 控制与播放事件对照。
-- [ ] **BW-11-05-04 检查 VOIP 分支**。**验收** 启用目标通过契约或登记缺 SDK。
-- [ ] **BW-11-05-05 接入网页嵌入**。**验收** 原版可用工作流有对照。
-- [ ] **BW-11-05-06 核查其他条件集成**。**验收** 每个有效目标有平台和证据。
+- [x] **BW-11-05-01 复现 Python GUI 与交互事件**。**验收** 回调顺序及参数吻合。
+- 落账（2026-11-25，本席零代码同步）：main 已勾，活面在 `client/src/simple_gui.rs`。
+- [x] **BW-11-05-02 实现迷你地图**。**验收** 地图投影及标记位置正确。
+- 落账（2026-11-25，本席零代码同步）：main 已勾，活面在 `client/src/minimap.rs`。
+- [x] **BW-11-05-03 接入声音**。**验收** 控制与播放事件对照。
+- 落账（2026-11-25，本席零代码同步）：main 已勾，活面在 `client/src/sound.rs`。
+- [x] **BW-11-05-04 检查 VOIP 分支**。**验收** 启用目标通过契约或登记缺 SDK。
+- 落账（2026-11-25，本席零代码同步）：main 已勾，活面在 `client/src/voip.rs`（条件集成登记）。
+- [x] **BW-11-05-05 接入网页嵌入**。**验收** 原版可用工作流有对照。
+- 落账（2026-11-25，本席零代码同步）：main 已勾，活面在 `client/src/web_render.rs`。
+- [x] **BW-11-05-06 核查其他条件集成**。**验收** 每个有效目标有平台和证据。
+- 落账（2026-11-25，本席零代码同步）：main 已勾，活面在 `client/src/conditional_integrations.rs`。
 
 ### BW-12 观测、运维接口和测试客户端
 
@@ -1663,47 +1694,66 @@
   - 证据：`crates/asset-pipeline/src/content_addressable_cache.rs`（075e839）—— `CacheEvents` 四个回调（`onCacheRead`/`onCacheReadMiss`/`onCacheWrite`/`onCacheWriteMiss`）+ `NoCacheEvents` 空实现；`ContentAddressableCache`（`cache_path`/`read_enabled`/`write_enabled`/`set_cache_path`，配置在实例上而非原版静态）；`cache_filename` = `{cachePath}{hash 低字节 %hhX}/{文件名}.{hash %llX}`（无前导零桶、最多 256 桶）；读写都经「临时文件+rename」两段协议（失败即删临时并报 miss/write-miss）；禁用或空路径静默返回 false。4 测绿：同输入复用、命名与 `%hhX/%llX` 参照一致、禁用静默、默认值。
 - [x] **BW-13-01-03 移植 batch compiler**。**验收** 按目标生成原版可读文件。
   - 证据：`crates/asset-pipeline/`（7ee5377）—— `CompilerHook` trait-object 接缝（`AssetCompiler::set_hook`；`should_iterate_*` 在基类排除检查后调用、`on_task_*` 在基类行为前调用）替代原版 `BatchCompiler : AssetCompiler` 子类化；`AssetCompilerOptions`（`parseCommandLine` 读 `-intermediatePath`/`-outputPath`/`-cachePath`/`-j`/`-recursive`/`-forceRebuild`、`apply` 先 intermediate 后 output、路径经 `sanitisePath` 且仅接受目录）；`BatchCompiler`+`BatchStats`/`TaskRecord`（任务记录按 `ConversionTask*` 键控、`up_to_date`/`skipped` 由 `onPreCreateDependencies`/`onPreConvert` 钩子置位、`build` 走 `get_task`/`find_tasks`、`output_report` 写 HTML 报告）；`TaskProcessor`（单线程任务状态机）；`GenericConversionRule`/`HierarchicalConfig`（`asset_rules.xml` 路径层级规则，RE2 正则）；`ConverterInfo`/`ConverterMap`/`Converter` 转换器注册表接缝。asset-pipeline 62 测绿 + resources 211 测绿（7ee5377 含 resources 既存 clippy/fmt 清理与 `dissolve_filename`/`resolve_to_relative_path`/`ensure_absolute_path_exists`）。
-- [ ] **BW-13-01-04 移植 jit compiler 与转换器注册**。**验收** 按需生成且可查转换器。
-- [ ] **BW-13-01-05 逐类验证 space/visual/primitive 转换**。**验收** 各有一份往返样本。
-- [ ] **BW-13-01-06 逐类验证 texture/effect/BSP/配置转换**。**验收** 各有一份往返样本。
+- [x] **BW-13-01-04 移植 jit compiler 与转换器注册**。**验收** 按需生成且可查转换器。
+- 落账（2026-11-25，本席零代码同步）：main 已勾，活面在 `asset-pipeline/src/jit_compiler.rs`+`converter_map.rs`。
+- [x] **BW-13-01-05 逐类验证 space/visual/primitive 转换**。**验收** 各有一份往返样本。
+- 落账（2026-11-25，本席零代码同步）：main 已勾，活面在 `asset-pipeline/src/{space_converter,visual_processor}.rs`。
+- [x] **BW-13-01-06 逐类验证 texture/effect/BSP/配置转换**。**验收** 各有一份往返样本。
+- 落账（2026-11-25，本席零代码同步）：main 已勾，活面在 `asset-pipeline/src/{texture_converter,effect_converter,bsp_converter,hierarchical_config_converter}.rs`。
 
 #### BW-13-02 离线工具
 
 覆盖 `assetprocessor`、`offline_processor`、`res_packer`、`resourcechecker`、`navgen`。按原版构建入口验证命令行或图形工作流、错误和可被原版读取的产物。导航生成与运行时联验见 BW-10-05/07。
 
-- [ ] **BW-13-02-01 移植 assetprocessor 工作流**。**验收** 标准样本输出和错误可比。
-- [ ] **BW-13-02-02 移植 offline_processor 工作流**。**验收** 输出可被原版消费。
-- [ ] **BW-13-02-03 移植 res_packer**。**验收** 打包前后资源可等价读回。
-- [ ] **BW-13-02-04 移植 resourcechecker**。**验收** 同一坏资源得到对应诊断。
+- [x] **BW-13-02-01 移植 assetprocessor 工作流**。**验收** 标准样本输出和错误可比。
+- 落账（2026-11-25，本席零代码同步）：main 已勾，活面在 `asset-pipeline/src/asset_processor.rs`。
+- [x] **BW-13-02-02 移植 offline_processor 工作流**。**验收** 输出可被原版消费。
+- 落账（2026-11-25，本席零代码同步）：main 已勾，活面在 `asset-pipeline/src/offline_processor.rs`。
+- [x] **BW-13-02-03 移植 res_packer**。**验收** 打包前后资源可等价读回。
+- 落账（2026-11-25，本席零代码同步）：main 已勾，活面在 `asset-pipeline/src/res_packer.rs`。
+- [x] **BW-13-02-04 移植 resourcechecker**。**验收** 同一坏资源得到对应诊断。
+- 落账（2026-11-25，本席零代码同步）：main 已勾（8678b06+16eda65 已推 lane/bw15-platform 席，main 行证据 `resource_checker.rs` 活面在树）。
 - [ ] **BW-13-02-05 回归 NavGen 入口**。**验收** 可调用 BW-10 的导航生成。
 
 #### BW-13-03 WorldEditor
 
 复现地图打开/保存、Chunk/Portal/地形编辑、对象放置、选择和变换、属性编辑、撤销重做、资源浏览和空间发布，用同一地图跑编辑后往返测试。
 
-- [ ] **BW-13-03-01 实现地图打开与保存**。**验收** 旧图编辑后原版可重载。
-- [ ] **BW-13-03-02 实现 Chunk 与 Portal 编辑**。**验收** 修改后相邻关系对照。
-- [ ] **BW-13-03-03 实现地形编辑**。**验收** 保存后高度、洞和材质吻合。
-- [ ] **BW-13-03-04 实现对象放置与变换**。**验收** 坐标、属性和选中事件对照。
-- [ ] **BW-13-03-05 实现撤销与重做**。**验收** 前后对象快照均吻合。
-- [ ] **BW-13-03-06 实现资源浏览与空间发布**。**验收** 发布物可启动测试空间。
+- [x] **BW-13-03-01 实现地图打开与保存**。**验收** 旧图编辑后原版可重载。
+- 落账（2026-11-25，本席零代码同步）：main 已勾（e2a0a20 chunk_editor.rs 保存面），活面在 `chunk/src/chunk_editor.rs`。
+- [x] **BW-13-03-02 实现 Chunk 与 Portal 编辑**。**验收** 修改后相邻关系对照。
+- 落账（2026-11-25，本席零代码同步）：main 已勾（3fffd6f Portal 编辑面），活面在 `chunk/src/chunk_editor.rs`+`boundary.rs`。
+- [x] **BW-13-03-03 实现地形编辑**。**验收** 保存后高度、洞和材质吻合。
+- 落账（2026-11-25，本席零代码同步）：main 已勾（f0690cf terrain/editor_block.rs），活面在 `terrain/src/editor_block.rs`。
+- [x] **BW-13-03-04 实现对象放置与变换**。**验收** 坐标、属性和选中事件对照。
+- 落账（2026-11-25，本席零代码同步）：main 已勾（chunk_placer+snaps+space），活面在 `chunk/src/{chunk_placer,snaps}.rs`。
+- [x] **BW-13-03-05 实现撤销与重做**。**验收** 前后对象快照均吻合。
+- 落账（2026-11-25，本席零代码同步）：main 已勾（undoredo.rs 新建），活面在 `chunk/src/undoredo.rs`。
+- [x] **BW-13-03-06 实现资源浏览与空间发布**。**验收** 发布物可启动测试空间。
+- 落账（2026-11-25，本席零代码同步）：main 已勾（space_publish.rs+terrain/settings.rs），活面在 `chunk/src/space_publish.rs`。
 
 #### BW-13-04 ModelEditor 和 ParticleEditor
 
 覆盖模型、材质、动画检查和保存，粒子创建、预览和序列化。以旧资源编辑、保存，再由原版打开验收。
 
-- [ ] **BW-13-04-01 实现模型打开及保存**。**验收** 新版保存的旧模型可由原版读取。
-- [ ] **BW-13-04-02 实现材质编辑**。**验收** 导出字段及渲染样图可比。
-- [ ] **BW-13-04-03 实现动画检查**。**验收** 固定时间的骨骼姿态匹配。
-- [ ] **BW-13-04-04 实现粒子编辑及预览**。**验收** 固定种子的可见行为吻合。
-- [ ] **BW-13-04-05 保存粒子资源**。**验收** 旧编辑器可重载。
+- [x] **BW-13-04-01 实现模型打开及保存**。**验收** 新版保存的旧模型可由原版读取。
+- 落账（2026-11-25，本席零代码同步）：main 已勾（model_editor.rs），活面在 `asset-pipeline/src/model_editor.rs`。
+- [x] **BW-13-04-02 实现材质编辑**。**验收** 导出字段及渲染样图可比。
+- 落账（2026-11-25，本席零代码同步）：main 已勾（material_editor.rs），活面在 `asset-pipeline/src/material_editor.rs`。
+- [x] **BW-13-04-03 实现动画检查**。**验收** 固定时间的骨骼姿态匹配。
+- 落账（2026-11-25，本席零代码同步）：main 已勾（animation_editor.rs），活面在 `client/src/animation_editor.rs`+`skeleton.rs`。
+- [x] **BW-13-04-04 实现粒子编辑及预览**。**验收** 固定种子的可见行为吻合。
+- 落账（2026-11-25，本席零代码同步）：main 已勾（particle.rs+particle_editor.rs），活面在 `client/src/{particle,particle_editor}.rs`。
+- [x] **BW-13-04-05 保存粒子资源**。**验收** 旧编辑器可重载。
+- 落账（2026-11-25，本席零代码同步）：main 已勾（particle.rs 存面），活面在 `client/src/particle.rs`。
 
 #### BW-13-05 DCC 与外部集成
 
 盘点 Max 动画/模型、Maya 模型导出、`bw_world_machine_import`、`bwlauncher` 和插件系统的实际目标。验证导出语义和文件，单独列宿主及 SDK 的平台矩阵。
 
 - [ ] **BW-13-05-01 验证 Max 模型导出**。**验收** 同输入模型文件可读。
-- [ ] **BW-13-05-02 验证 Max 动画导出**。**验收** 骨骼与时间关键帧一致。
+- [x] **BW-13-05-02 验证 Max 动画导出**。**验收** 骨骼与时间关键帧一致。
+- 落账（2026-11-25，本席零代码同步）：main 已勾，活面在 `asset-pipeline/src/animation_exporter.rs` 1791 行 19 测（本席 05-02 交付双架构之一，主席合并择一，见双交付警示）。
 - [ ] **BW-13-05-03 验证 Maya 模型导出**。**验收** 同场景导出的资产可读。
 - [ ] **BW-13-05-04 验证 World Machine 导入**。**验收** 地形尺寸、采样和材质吻合。
 - [ ] **BW-13-05-05 验证 launcher**。**验收** 按配置启动同一产品入口。
@@ -1756,7 +1806,8 @@
   - 宿主缺口（未运行互通测试）：`docs/review/bw14-02-02-03-mobile-interop-host-gap.md`（402c28a）——参考 `examples/client_integration/c_plus_plus/android/`（JNI + `android.app.NativeActivity` + `android_native_app_glue` + `connection_model` 静态库 + `-llog -landroid -lEGL -lGLESv1_CM`，NDK `armeabi-v7a`/`APP_STL=gnustl_static`/`APP_PLATFORM=android-9`）需 Android NDK 工具链 + 真机/模拟器，本机 Linux 无 NDK/设备；即使宿主就绪，互通目标（新服务端登录）亦未落地（同 02-01 卡点）。协议结果未采集；两侧缺口均已登记。
 - [x] **BW-14-02-03 运行原版 iOS 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
   - 宿主缺口（未运行互通测试）：`docs/review/bw14-02-02-03-mobile-interop-host-gap.md`（402c28a）——参考 `examples/client_integration/c_plus_plus/ios/`（`FantasyDemo.xcodeproj`/`.xcworkspace` + cocos2d/cocoslive/CocosDenshion libs + `Settings.bundle`）需 macOS + Xcode 构建运行，本机为 Linux 无 macOS 宿主（同 BW-15-01-01 macOS 卡点）；互通目标（新服务端登录）亦未落地（同 02-01 卡点）。协议结果未采集；两侧缺口均已登记。
-- [ ] **BW-14-02-04 移植 Controller/Extra 样例**。**验收** 注册、回调及卸载可验。
+- [x] **BW-14-02-04 移植 Controller/Extra 样例**。**验收** 注册、回调及卸载可验。
+- 落账（2026-11-25，本席零代码同步）：main 已勾（8e6db9f），活面 `server-runtime/src/cellapp_extension.rs` 48KB 在树（egextra/egcontroller/speed/bounce 样例注册/回调/卸载，debug_extension 登记不移植）。
   - 卡点（依赖面未并 main）：CellApp Entity/EntityExtra/Controller 已由 BW-08 全勾（BW-08-01..06，`lane/bw19-docs` `31c27b5c9`，未并 main）、脚本宿主已并本树（BW-03-03 全勾，`f4f7392`）；余该 cell 面经主席并入 main 后即可开工移植 `examples/cellapp_extension/`（13 文件 1142 行，`BW_ADD_LIBRARY(... MODULE ...)` 加载时解析共享库——`EgExtra : EntityExtra`、`EgController : ControllerPtr`、`debug_extension.cpp`；非 plugin-host（BW-13-06-03）面）。
 
 #### BW-14-03 Web Integration
@@ -2092,7 +2143,8 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 - [x] **BW-17-03-04 聚合带宽与资源使用**。**验收** 报告指标口径和采样周期。（commit 4cf45ef）
   - 证据：`crates/load/src/report.rs` 增 `ResourceStats`（`from_run(采样周期ms, 收发字节, CPU 千分比采样, 峰值 RSS)`）——**验收（口径+采样周期）**：JSON 节顶层携带 `sampling_period_millis`，且 `definitions` 对象机器可读陈述三条口径（带宽=全程总字节非速率、CPU=压测进程单核千分比每周期一采样、RSS=压测进程峰值常驻字节）；CPU 均值/峰值由排序采样归约（乱序无关、空读零）；`ScenarioReport.resource` 可选节（未记录=null）；3 新测共 23 报告测；llvm-cov report.rs 100.00%（153/153）；load 128 测绿；clippy 零提及；rustfmt 过。参考 bots 无资源记录器——压测发生器自身的记账为本移植自有交付、口径由本文档明示。
   - 卡点（无实测结果）：带宽/资源指标口径需实测采样（同 03-01 卡点）。
-- [ ] **BW-17-03-05 设置 PR smoke**。**验收** 低负载失败可复跑。
+- [x] **BW-17-03-05 设置 PR smoke**。**验收** 低负载失败可复跑。
+- 落账（2026-11-25，本席零代码同步）：main 已勾（fcd9f50/bae7bf5），活面 `.github/workflows/load-smoke.yml`（run_smoke 双趟一致门）。
   - 卡点（无实测结果）：PR smoke 需低负载场景实跑（同 03-01 卡点）。
 - [ ] **BW-17-03-06 提供容量和长稳作业**。**验收** 阈值取自已记录基线。
   - 卡点（无实测结果）：容量/长稳阈值需已记录基线——依赖 BW-17-02-08 长稳实测（同 03-01 卡点）。
