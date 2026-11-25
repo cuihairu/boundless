@@ -1,0 +1,7 @@
+INFO: [Chunk] Registering factory for worldNavmesh
+INFO: [Chunk] Registering factory for overlapper
+INFO: [Chunk] Registering factory for model
+INFO: [Chunk] Registering factory for shell
+INFO: [Chunk] Registering factory for terrain
+WARNING: [Chunk] Chunk::load: DataSection for chunkA is NULL (FNF)
+WARNING: [Chunk] Chunk::load: DataSection for chunkB is NULL (FNF)
