@@ -87,7 +87,13 @@
 //! - [`material_editor`] — the ModelEditor's material editing face: the
 //!   material/dye/tint census, mfm instantiation and overloading, the
 //!   clean/property/naming/feed/flag moves and the shader gates
-//!   (`tools/modeleditor_core/Models/mutant_materials.cpp`).
+//!   (`tools/modeleditor_core/Models/mutant_materials.cpp`);
+//! - [`visual_exporter`] — the Max visual exporter's portable core: the
+//!   `ExportSettings` IO, the `BloatVertex`/`Triangle`/`Material` model
+//!   and the `VisualMesh::save` pipeline (dedup, sorting, primitive
+//!   groups, the `xyznuv`/`xyznuvi`/`xyznuvtb` vertex streams and the
+//!   `.visual` XML) with the Max-plugin host seams documented
+//!   (`tools/visualexporter/`).
 
 pub mod asset_compiler;
 pub mod asset_compiler_options;
@@ -126,4 +132,5 @@ pub mod texformat_converter;
 pub mod texture_converter;
 pub mod texture_detail_level;
 pub mod vertex_format;
+pub mod visual_exporter;
 pub mod visual_processor;
