@@ -2805,19 +2805,19 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 减少 Python/native 转换和跨语言回调开销，衡量 GIL 占用与回调耗时，复跑引用生命周期、异常及热重载。
 
-- [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 b4d6afe/2f093ba/f6a5f7e, lane/bw15-platform：crates/python-host/tests/bridge_baseline.rs 窗测 13 面（标量/字符串/复合对象双向转换+句柄层 INCREF/DECREF+GIL 括号+两种回调形态+post 与 drain），结构断言随行（八面往返精确值/回调返回 6/500 post 按序完成）；TSV docs/review/fixtures/python-baseline/bridge-baseline.tsv，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；python-host 151 lib+1 新测全绿，clippy/fmt 净；基线判读：标量双向 17–34ns 已是下限、回调 111–116ns 贴 CPython 下限、优化收益上限在字符串/复合面（115–3249ns）与 port 侧排队面（160ns 摊派））
-- [x] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。（b3728d6/eac5ee7：math 三面入基线+TYPES/DIMS 换 AtomicPtr 写时复制快照，交错 15 轮钉核 A/B 全指标单调向好，p50 −9%/−9%/−27%，p99 −12%~−30%，证据 docs/review/opt-03-01-02-python-conversion-opt.md）
-- [x] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。（7464d06/6f69a00：队列加 QUEUED 原子计数空闲快路径，交错 12 轮钉核 A/B 空队过账 p50 148→18ns(8.2×)，满帧 500 回调 GIL 占用 0.852% 帧预算，尾延迟 p50~1.3-2.1ms 由调度支配，报告 docs/review/opt-03-01-03-callback-gil-report.md）
-- [x] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。（ca9cbaa 树零代码：15 场景逐名 --ignored --exact 复跑全绿=引用 5+异常 5+重载 4+原版 math 回归 1，优化期间零行为断言改动，证据 docs/review/opt-03-01-04-consistency-rerun.md）
+- [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 b4d6afe/2f093ba/f6a5f7e, lane/bw15-platform：crates/python-host/tests/bridge_baseline.rs 窗测 13 面（标量/字符串/复合对象双向转换+句柄层 INCREF/DECREF+GIL 括号+两种回调形态+post 与 drain），结构断言随行（八面往返精确值/回调返回 6/500 post 按序完成）；TSV docs/review/fixtures/python-baseline/bridge-baseline.tsv，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；python-host 151 lib+1 新测全绿，clippy/fmt 净；基线判读：标量双向 17–34ns 已是下限、回调 111–116ns 贴 CPython 下限、优化收益上限在字符串/复合面（115–3249ns）与 port 侧排队面（160ns 摊派））**⚠️ 与 main 席同面双交付（主席择一）**：OPT-03 段 main 已并 e10ccbd/85aad7c/353fed4+2d67612/03e87d7（tip c169cd3），本席 lane/bw15-platform 交付为 b3728d6..2bc7dcd 独立实现。
+- [x] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。（b3728d6/eac5ee7：math 三面入基线+TYPES/DIMS 换 AtomicPtr 写时复制快照，交错 15 轮钉核 A/B 全指标单调向好，p50 −9%/−9%/−27%，p99 −12%~−30%，证据 docs/review/opt-03-01-02-python-conversion-opt.md）**⚠️ 与 main 席同面双交付（主席择一）**：OPT-03 段 main 已并 e10ccbd/85aad7c/353fed4+2d67612/03e87d7（tip c169cd3），本席 lane/bw15-platform 交付为 b3728d6..2bc7dcd 独立实现。
+- [x] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。（7464d06/6f69a00：队列加 QUEUED 原子计数空闲快路径，交错 12 轮钉核 A/B 空队过账 p50 148→18ns(8.2×)，满帧 500 回调 GIL 占用 0.852% 帧预算，尾延迟 p50~1.3-2.1ms 由调度支配，报告 docs/review/opt-03-01-03-callback-gil-report.md）**⚠️ 与 main 席同面双交付（主席择一）**：OPT-03 段 main 已并 e10ccbd/85aad7c/353fed4+2d67612/03e87d7（tip c169cd3），本席 lane/bw15-platform 交付为 b3728d6..2bc7dcd 独立实现。
+- [x] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。（ca9cbaa 树零代码：15 场景逐名 --ignored --exact 复跑全绿=引用 5+异常 5+重载 4+原版 math 回归 1，优化期间零行为断言改动，证据 docs/review/opt-03-01-04-consistency-rerun.md）**⚠️ 与 main 席同面双交付（主席择一）**：OPT-03 段 main 已并 e10ccbd/85aad7c/353fed4+2d67612/03e87d7（tip c169cd3），本席 lane/bw15-platform 交付为 b3728d6..2bc7dcd 独立实现。
 
 ### OPT-04-01 EntityDef 启动和编解码
 
 缓存解析结果并评估预生成编解码器，衡量启动和序列化开销，锁定定义摘要和产出字节。
 
-- [ ] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。
-- [ ] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。
-- [ ] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。
-- [ ] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。
+- [x] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。（a041efd/9623715=main 席交付，本席 lane/bw15-platform 真机复测勾账：临时 worktree 挂 origin/main c169cd3，entitydef 全套 247 lib+三新 target baseline 1/codec_gen 2/rerun 1 全绿，三腿=digest 钉 oracle+编解码 20k 轮逐值恒等+暖启动，证据页 docs/review/opt-04-01-01-entitydef-baseline.md）
+- [x] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。（9881c37=main 席交付，本席复测同上全绿；FsResolver parse 缓存冷/热 0.916→0.297ms，digest 恒等，证据页 OPT-04-01-02 节）
+- [x] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。（f428168=main 席交付，本席复测同上全绿；codec_gen 评估 2 测，裁定=不采纳入引擎，TSV codec-gen.tsv 92 行）
+- [x] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。（6ce8e4c=main 席交付，本席复测同上全绿；rerun 1 测=四 digest+双 hex 逐字节==oracle，OPT-04 段全收官）
 
 ### OPT-05-01 录制负载热点和故障基线
 
@@ -4358,19 +4358,19 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 减少 Python/native 转换和跨语言回调开销，衡量 GIL 占用与回调耗时，复跑引用生命周期、异常及热重载。
 
-- [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 b4d6afe/2f093ba/f6a5f7e, lane/bw15-platform：crates/python-host/tests/bridge_baseline.rs 窗测 13 面（标量/字符串/复合对象双向转换+句柄层 INCREF/DECREF+GIL 括号+两种回调形态+post 与 drain），结构断言随行（八面往返精确值/回调返回 6/500 post 按序完成）；TSV docs/review/fixtures/python-baseline/bridge-baseline.tsv，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；python-host 151 lib+1 新测全绿，clippy/fmt 净；基线判读：标量双向 17–34ns 已是下限、回调 111–116ns 贴 CPython 下限、优化收益上限在字符串/复合面（115–3249ns）与 port 侧排队面（160ns 摊派））
-- [x] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。（b3728d6/eac5ee7：math 三面入基线+TYPES/DIMS 换 AtomicPtr 写时复制快照，交错 15 轮钉核 A/B 全指标单调向好，p50 −9%/−9%/−27%，p99 −12%~−30%，证据 docs/review/opt-03-01-02-python-conversion-opt.md）
-- [x] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。（7464d06/6f69a00：队列加 QUEUED 原子计数空闲快路径，交错 12 轮钉核 A/B 空队过账 p50 148→18ns(8.2×)，满帧 500 回调 GIL 占用 0.852% 帧预算，尾延迟 p50~1.3-2.1ms 由调度支配，报告 docs/review/opt-03-01-03-callback-gil-report.md）
-- [x] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。（ca9cbaa 树零代码：15 场景逐名 --ignored --exact 复跑全绿=引用 5+异常 5+重载 4+原版 math 回归 1，优化期间零行为断言改动，证据 docs/review/opt-03-01-04-consistency-rerun.md）
+- [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 b4d6afe/2f093ba/f6a5f7e, lane/bw15-platform：crates/python-host/tests/bridge_baseline.rs 窗测 13 面（标量/字符串/复合对象双向转换+句柄层 INCREF/DECREF+GIL 括号+两种回调形态+post 与 drain），结构断言随行（八面往返精确值/回调返回 6/500 post 按序完成）；TSV docs/review/fixtures/python-baseline/bridge-baseline.tsv，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；python-host 151 lib+1 新测全绿，clippy/fmt 净；基线判读：标量双向 17–34ns 已是下限、回调 111–116ns 贴 CPython 下限、优化收益上限在字符串/复合面（115–3249ns）与 port 侧排队面（160ns 摊派））**⚠️ 与 main 席同面双交付（主席择一）**：OPT-03 段 main 已并 e10ccbd/85aad7c/353fed4+2d67612/03e87d7（tip c169cd3），本席 lane/bw15-platform 交付为 b3728d6..2bc7dcd 独立实现。
+- [x] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。（b3728d6/eac5ee7：math 三面入基线+TYPES/DIMS 换 AtomicPtr 写时复制快照，交错 15 轮钉核 A/B 全指标单调向好，p50 −9%/−9%/−27%，p99 −12%~−30%，证据 docs/review/opt-03-01-02-python-conversion-opt.md）**⚠️ 与 main 席同面双交付（主席择一）**：OPT-03 段 main 已并 e10ccbd/85aad7c/353fed4+2d67612/03e87d7（tip c169cd3），本席 lane/bw15-platform 交付为 b3728d6..2bc7dcd 独立实现。
+- [x] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。（7464d06/6f69a00：队列加 QUEUED 原子计数空闲快路径，交错 12 轮钉核 A/B 空队过账 p50 148→18ns(8.2×)，满帧 500 回调 GIL 占用 0.852% 帧预算，尾延迟 p50~1.3-2.1ms 由调度支配，报告 docs/review/opt-03-01-03-callback-gil-report.md）**⚠️ 与 main 席同面双交付（主席择一）**：OPT-03 段 main 已并 e10ccbd/85aad7c/353fed4+2d67612/03e87d7（tip c169cd3），本席 lane/bw15-platform 交付为 b3728d6..2bc7dcd 独立实现。
+- [x] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。（ca9cbaa 树零代码：15 场景逐名 --ignored --exact 复跑全绿=引用 5+异常 5+重载 4+原版 math 回归 1，优化期间零行为断言改动，证据 docs/review/opt-03-01-04-consistency-rerun.md）**⚠️ 与 main 席同面双交付（主席择一）**：OPT-03 段 main 已并 e10ccbd/85aad7c/353fed4+2d67612/03e87d7（tip c169cd3），本席 lane/bw15-platform 交付为 b3728d6..2bc7dcd 独立实现。
 
 ### OPT-04-01 EntityDef 启动和编解码
 
 缓存解析结果并评估预生成编解码器，衡量启动和序列化开销，锁定定义摘要和产出字节。
 
-- [ ] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。
-- [ ] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。
-- [ ] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。
-- [ ] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。
+- [x] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。（a041efd/9623715=main 席交付，本席 lane/bw15-platform 真机复测勾账：临时 worktree 挂 origin/main c169cd3，entitydef 全套 247 lib+三新 target baseline 1/codec_gen 2/rerun 1 全绿，三腿=digest 钉 oracle+编解码 20k 轮逐值恒等+暖启动，证据页 docs/review/opt-04-01-01-entitydef-baseline.md）
+- [x] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。（9881c37=main 席交付，本席复测同上全绿；FsResolver parse 缓存冷/热 0.916→0.297ms，digest 恒等，证据页 OPT-04-01-02 节）
+- [x] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。（f428168=main 席交付，本席复测同上全绿；codec_gen 评估 2 测，裁定=不采纳入引擎，TSV codec-gen.tsv 92 行）
+- [x] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。（6ce8e4c=main 席交付，本席复测同上全绿；rerun 1 测=四 digest+双 hex 逐字节==oracle，OPT-04 段全收官）
 
 ### OPT-05-01 录制负载热点和故障基线
 
@@ -5884,19 +5884,19 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 减少 Python/native 转换和跨语言回调开销，衡量 GIL 占用与回调耗时，复跑引用生命周期、异常及热重载。
 
-- [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 b4d6afe/2f093ba/f6a5f7e, lane/bw15-platform：crates/python-host/tests/bridge_baseline.rs 窗测 13 面（标量/字符串/复合对象双向转换+句柄层 INCREF/DECREF+GIL 括号+两种回调形态+post 与 drain），结构断言随行（八面往返精确值/回调返回 6/500 post 按序完成）；TSV docs/review/fixtures/python-baseline/bridge-baseline.tsv，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；python-host 151 lib+1 新测全绿，clippy/fmt 净；基线判读：标量双向 17–34ns 已是下限、回调 111–116ns 贴 CPython 下限、优化收益上限在字符串/复合面（115–3249ns）与 port 侧排队面（160ns 摊派））
-- [x] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。（b3728d6/eac5ee7：math 三面入基线+TYPES/DIMS 换 AtomicPtr 写时复制快照，交错 15 轮钉核 A/B 全指标单调向好，p50 −9%/−9%/−27%，p99 −12%~−30%，证据 docs/review/opt-03-01-02-python-conversion-opt.md）
-- [x] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。（7464d06/6f69a00：队列加 QUEUED 原子计数空闲快路径，交错 12 轮钉核 A/B 空队过账 p50 148→18ns(8.2×)，满帧 500 回调 GIL 占用 0.852% 帧预算，尾延迟 p50~1.3-2.1ms 由调度支配，报告 docs/review/opt-03-01-03-callback-gil-report.md）
-- [x] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。（ca9cbaa 树零代码：15 场景逐名 --ignored --exact 复跑全绿=引用 5+异常 5+重载 4+原版 math 回归 1，优化期间零行为断言改动，证据 docs/review/opt-03-01-04-consistency-rerun.md）
+- [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 b4d6afe/2f093ba/f6a5f7e, lane/bw15-platform：crates/python-host/tests/bridge_baseline.rs 窗测 13 面（标量/字符串/复合对象双向转换+句柄层 INCREF/DECREF+GIL 括号+两种回调形态+post 与 drain），结构断言随行（八面往返精确值/回调返回 6/500 post 按序完成）；TSV docs/review/fixtures/python-baseline/bridge-baseline.tsv，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；python-host 151 lib+1 新测全绿，clippy/fmt 净；基线判读：标量双向 17–34ns 已是下限、回调 111–116ns 贴 CPython 下限、优化收益上限在字符串/复合面（115–3249ns）与 port 侧排队面（160ns 摊派））**⚠️ 与 main 席同面双交付（主席择一）**：OPT-03 段 main 已并 e10ccbd/85aad7c/353fed4+2d67612/03e87d7（tip c169cd3），本席 lane/bw15-platform 交付为 b3728d6..2bc7dcd 独立实现。
+- [x] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。（b3728d6/eac5ee7：math 三面入基线+TYPES/DIMS 换 AtomicPtr 写时复制快照，交错 15 轮钉核 A/B 全指标单调向好，p50 −9%/−9%/−27%，p99 −12%~−30%，证据 docs/review/opt-03-01-02-python-conversion-opt.md）**⚠️ 与 main 席同面双交付（主席择一）**：OPT-03 段 main 已并 e10ccbd/85aad7c/353fed4+2d67612/03e87d7（tip c169cd3），本席 lane/bw15-platform 交付为 b3728d6..2bc7dcd 独立实现。
+- [x] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。（7464d06/6f69a00：队列加 QUEUED 原子计数空闲快路径，交错 12 轮钉核 A/B 空队过账 p50 148→18ns(8.2×)，满帧 500 回调 GIL 占用 0.852% 帧预算，尾延迟 p50~1.3-2.1ms 由调度支配，报告 docs/review/opt-03-01-03-callback-gil-report.md）**⚠️ 与 main 席同面双交付（主席择一）**：OPT-03 段 main 已并 e10ccbd/85aad7c/353fed4+2d67612/03e87d7（tip c169cd3），本席 lane/bw15-platform 交付为 b3728d6..2bc7dcd 独立实现。
+- [x] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。（ca9cbaa 树零代码：15 场景逐名 --ignored --exact 复跑全绿=引用 5+异常 5+重载 4+原版 math 回归 1，优化期间零行为断言改动，证据 docs/review/opt-03-01-04-consistency-rerun.md）**⚠️ 与 main 席同面双交付（主席择一）**：OPT-03 段 main 已并 e10ccbd/85aad7c/353fed4+2d67612/03e87d7（tip c169cd3），本席 lane/bw15-platform 交付为 b3728d6..2bc7dcd 独立实现。
 
 ### OPT-04-01 EntityDef 启动和编解码
 
 缓存解析结果并评估预生成编解码器，衡量启动和序列化开销，锁定定义摘要和产出字节。
 
-- [ ] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。
-- [ ] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。
-- [ ] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。
-- [ ] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。
+- [x] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。（a041efd/9623715=main 席交付，本席 lane/bw15-platform 真机复测勾账：临时 worktree 挂 origin/main c169cd3，entitydef 全套 247 lib+三新 target baseline 1/codec_gen 2/rerun 1 全绿，三腿=digest 钉 oracle+编解码 20k 轮逐值恒等+暖启动，证据页 docs/review/opt-04-01-01-entitydef-baseline.md）
+- [x] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。（9881c37=main 席交付，本席复测同上全绿；FsResolver parse 缓存冷/热 0.916→0.297ms，digest 恒等，证据页 OPT-04-01-02 节）
+- [x] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。（f428168=main 席交付，本席复测同上全绿；codec_gen 评估 2 测，裁定=不采纳入引擎，TSV codec-gen.tsv 92 行）
+- [x] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。（6ce8e4c=main 席交付，本席复测同上全绿；rerun 1 测=四 digest+双 hex 逐字节==oracle，OPT-04 段全收官）
 
 ### OPT-05-01 录制负载热点和故障基线
 
@@ -7410,19 +7410,19 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 减少 Python/native 转换和跨语言回调开销，衡量 GIL 占用与回调耗时，复跑引用生命周期、异常及热重载。
 
-- [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 b4d6afe/2f093ba/f6a5f7e, lane/bw15-platform：crates/python-host/tests/bridge_baseline.rs 窗测 13 面（标量/字符串/复合对象双向转换+句柄层 INCREF/DECREF+GIL 括号+两种回调形态+post 与 drain），结构断言随行（八面往返精确值/回调返回 6/500 post 按序完成）；TSV docs/review/fixtures/python-baseline/bridge-baseline.tsv，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；python-host 151 lib+1 新测全绿，clippy/fmt 净；基线判读：标量双向 17–34ns 已是下限、回调 111–116ns 贴 CPython 下限、优化收益上限在字符串/复合面（115–3249ns）与 port 侧排队面（160ns 摊派））
-- [x] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。（b3728d6/eac5ee7：math 三面入基线+TYPES/DIMS 换 AtomicPtr 写时复制快照，交错 15 轮钉核 A/B 全指标单调向好，p50 −9%/−9%/−27%，p99 −12%~−30%，证据 docs/review/opt-03-01-02-python-conversion-opt.md）
-- [x] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。（7464d06/6f69a00：队列加 QUEUED 原子计数空闲快路径，交错 12 轮钉核 A/B 空队过账 p50 148→18ns(8.2×)，满帧 500 回调 GIL 占用 0.852% 帧预算，尾延迟 p50~1.3-2.1ms 由调度支配，报告 docs/review/opt-03-01-03-callback-gil-report.md）
-- [x] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。（ca9cbaa 树零代码：15 场景逐名 --ignored --exact 复跑全绿=引用 5+异常 5+重载 4+原版 math 回归 1，优化期间零行为断言改动，证据 docs/review/opt-03-01-04-consistency-rerun.md）
+- [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 b4d6afe/2f093ba/f6a5f7e, lane/bw15-platform：crates/python-host/tests/bridge_baseline.rs 窗测 13 面（标量/字符串/复合对象双向转换+句柄层 INCREF/DECREF+GIL 括号+两种回调形态+post 与 drain），结构断言随行（八面往返精确值/回调返回 6/500 post 按序完成）；TSV docs/review/fixtures/python-baseline/bridge-baseline.tsv，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；python-host 151 lib+1 新测全绿，clippy/fmt 净；基线判读：标量双向 17–34ns 已是下限、回调 111–116ns 贴 CPython 下限、优化收益上限在字符串/复合面（115–3249ns）与 port 侧排队面（160ns 摊派））**⚠️ 与 main 席同面双交付（主席择一）**：OPT-03 段 main 已并 e10ccbd/85aad7c/353fed4+2d67612/03e87d7（tip c169cd3），本席 lane/bw15-platform 交付为 b3728d6..2bc7dcd 独立实现。
+- [x] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。（b3728d6/eac5ee7：math 三面入基线+TYPES/DIMS 换 AtomicPtr 写时复制快照，交错 15 轮钉核 A/B 全指标单调向好，p50 −9%/−9%/−27%，p99 −12%~−30%，证据 docs/review/opt-03-01-02-python-conversion-opt.md）**⚠️ 与 main 席同面双交付（主席择一）**：OPT-03 段 main 已并 e10ccbd/85aad7c/353fed4+2d67612/03e87d7（tip c169cd3），本席 lane/bw15-platform 交付为 b3728d6..2bc7dcd 独立实现。
+- [x] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。（7464d06/6f69a00：队列加 QUEUED 原子计数空闲快路径，交错 12 轮钉核 A/B 空队过账 p50 148→18ns(8.2×)，满帧 500 回调 GIL 占用 0.852% 帧预算，尾延迟 p50~1.3-2.1ms 由调度支配，报告 docs/review/opt-03-01-03-callback-gil-report.md）**⚠️ 与 main 席同面双交付（主席择一）**：OPT-03 段 main 已并 e10ccbd/85aad7c/353fed4+2d67612/03e87d7（tip c169cd3），本席 lane/bw15-platform 交付为 b3728d6..2bc7dcd 独立实现。
+- [x] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。（ca9cbaa 树零代码：15 场景逐名 --ignored --exact 复跑全绿=引用 5+异常 5+重载 4+原版 math 回归 1，优化期间零行为断言改动，证据 docs/review/opt-03-01-04-consistency-rerun.md）**⚠️ 与 main 席同面双交付（主席择一）**：OPT-03 段 main 已并 e10ccbd/85aad7c/353fed4+2d67612/03e87d7（tip c169cd3），本席 lane/bw15-platform 交付为 b3728d6..2bc7dcd 独立实现。
 
 ### OPT-04-01 EntityDef 启动和编解码
 
 缓存解析结果并评估预生成编解码器，衡量启动和序列化开销，锁定定义摘要和产出字节。
 
-- [ ] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。
-- [ ] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。
-- [ ] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。
-- [ ] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。
+- [x] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。（a041efd/9623715=main 席交付，本席 lane/bw15-platform 真机复测勾账：临时 worktree 挂 origin/main c169cd3，entitydef 全套 247 lib+三新 target baseline 1/codec_gen 2/rerun 1 全绿，三腿=digest 钉 oracle+编解码 20k 轮逐值恒等+暖启动，证据页 docs/review/opt-04-01-01-entitydef-baseline.md）
+- [x] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。（9881c37=main 席交付，本席复测同上全绿；FsResolver parse 缓存冷/热 0.916→0.297ms，digest 恒等，证据页 OPT-04-01-02 节）
+- [x] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。（f428168=main 席交付，本席复测同上全绿；codec_gen 评估 2 测，裁定=不采纳入引擎，TSV codec-gen.tsv 92 行）
+- [x] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。（6ce8e4c=main 席交付，本席复测同上全绿；rerun 1 测=四 digest+双 hex 逐字节==oracle，OPT-04 段全收官）
 
 ### OPT-05-01 录制负载热点和故障基线
 
@@ -8963,19 +8963,19 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 减少 Python/native 转换和跨语言回调开销，衡量 GIL 占用与回调耗时，复跑引用生命周期、异常及热重载。
 
-- [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 b4d6afe/2f093ba/f6a5f7e, lane/bw15-platform：crates/python-host/tests/bridge_baseline.rs 窗测 13 面（标量/字符串/复合对象双向转换+句柄层 INCREF/DECREF+GIL 括号+两种回调形态+post 与 drain），结构断言随行（八面往返精确值/回调返回 6/500 post 按序完成）；TSV docs/review/fixtures/python-baseline/bridge-baseline.tsv，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；python-host 151 lib+1 新测全绿，clippy/fmt 净；基线判读：标量双向 17–34ns 已是下限、回调 111–116ns 贴 CPython 下限、优化收益上限在字符串/复合面（115–3249ns）与 port 侧排队面（160ns 摊派））
-- [x] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。（b3728d6/eac5ee7：math 三面入基线+TYPES/DIMS 换 AtomicPtr 写时复制快照，交错 15 轮钉核 A/B 全指标单调向好，p50 −9%/−9%/−27%，p99 −12%~−30%，证据 docs/review/opt-03-01-02-python-conversion-opt.md）
-- [x] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。（7464d06/6f69a00：队列加 QUEUED 原子计数空闲快路径，交错 12 轮钉核 A/B 空队过账 p50 148→18ns(8.2×)，满帧 500 回调 GIL 占用 0.852% 帧预算，尾延迟 p50~1.3-2.1ms 由调度支配，报告 docs/review/opt-03-01-03-callback-gil-report.md）
-- [x] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。（ca9cbaa 树零代码：15 场景逐名 --ignored --exact 复跑全绿=引用 5+异常 5+重载 4+原版 math 回归 1，优化期间零行为断言改动，证据 docs/review/opt-03-01-04-consistency-rerun.md）
+- [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 b4d6afe/2f093ba/f6a5f7e, lane/bw15-platform：crates/python-host/tests/bridge_baseline.rs 窗测 13 面（标量/字符串/复合对象双向转换+句柄层 INCREF/DECREF+GIL 括号+两种回调形态+post 与 drain），结构断言随行（八面往返精确值/回调返回 6/500 post 按序完成）；TSV docs/review/fixtures/python-baseline/bridge-baseline.tsv，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；python-host 151 lib+1 新测全绿，clippy/fmt 净；基线判读：标量双向 17–34ns 已是下限、回调 111–116ns 贴 CPython 下限、优化收益上限在字符串/复合面（115–3249ns）与 port 侧排队面（160ns 摊派））**⚠️ 与 main 席同面双交付（主席择一）**：OPT-03 段 main 已并 e10ccbd/85aad7c/353fed4+2d67612/03e87d7（tip c169cd3），本席 lane/bw15-platform 交付为 b3728d6..2bc7dcd 独立实现。
+- [x] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。（b3728d6/eac5ee7：math 三面入基线+TYPES/DIMS 换 AtomicPtr 写时复制快照，交错 15 轮钉核 A/B 全指标单调向好，p50 −9%/−9%/−27%，p99 −12%~−30%，证据 docs/review/opt-03-01-02-python-conversion-opt.md）**⚠️ 与 main 席同面双交付（主席择一）**：OPT-03 段 main 已并 e10ccbd/85aad7c/353fed4+2d67612/03e87d7（tip c169cd3），本席 lane/bw15-platform 交付为 b3728d6..2bc7dcd 独立实现。
+- [x] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。（7464d06/6f69a00：队列加 QUEUED 原子计数空闲快路径，交错 12 轮钉核 A/B 空队过账 p50 148→18ns(8.2×)，满帧 500 回调 GIL 占用 0.852% 帧预算，尾延迟 p50~1.3-2.1ms 由调度支配，报告 docs/review/opt-03-01-03-callback-gil-report.md）**⚠️ 与 main 席同面双交付（主席择一）**：OPT-03 段 main 已并 e10ccbd/85aad7c/353fed4+2d67612/03e87d7（tip c169cd3），本席 lane/bw15-platform 交付为 b3728d6..2bc7dcd 独立实现。
+- [x] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。（ca9cbaa 树零代码：15 场景逐名 --ignored --exact 复跑全绿=引用 5+异常 5+重载 4+原版 math 回归 1，优化期间零行为断言改动，证据 docs/review/opt-03-01-04-consistency-rerun.md）**⚠️ 与 main 席同面双交付（主席择一）**：OPT-03 段 main 已并 e10ccbd/85aad7c/353fed4+2d67612/03e87d7（tip c169cd3），本席 lane/bw15-platform 交付为 b3728d6..2bc7dcd 独立实现。
 
 ### OPT-04-01 EntityDef 启动和编解码
 
 缓存解析结果并评估预生成编解码器，衡量启动和序列化开销，锁定定义摘要和产出字节。
 
-- [ ] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。
-- [ ] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。
-- [ ] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。
-- [ ] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。
+- [x] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。（a041efd/9623715=main 席交付，本席 lane/bw15-platform 真机复测勾账：临时 worktree 挂 origin/main c169cd3，entitydef 全套 247 lib+三新 target baseline 1/codec_gen 2/rerun 1 全绿，三腿=digest 钉 oracle+编解码 20k 轮逐值恒等+暖启动，证据页 docs/review/opt-04-01-01-entitydef-baseline.md）
+- [x] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。（9881c37=main 席交付，本席复测同上全绿；FsResolver parse 缓存冷/热 0.916→0.297ms，digest 恒等，证据页 OPT-04-01-02 节）
+- [x] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。（f428168=main 席交付，本席复测同上全绿；codec_gen 评估 2 测，裁定=不采纳入引擎，TSV codec-gen.tsv 92 行）
+- [x] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。（6ce8e4c=main 席交付，本席复测同上全绿；rerun 1 测=四 digest+双 hex 逐字节==oracle，OPT-04 段全收官）
 
 ### OPT-05-01 录制负载热点和故障基线
 
@@ -10489,19 +10489,19 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 减少 Python/native 转换和跨语言回调开销，衡量 GIL 占用与回调耗时，复跑引用生命周期、异常及热重载。
 
-- [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 b4d6afe/2f093ba/f6a5f7e, lane/bw15-platform：crates/python-host/tests/bridge_baseline.rs 窗测 13 面（标量/字符串/复合对象双向转换+句柄层 INCREF/DECREF+GIL 括号+两种回调形态+post 与 drain），结构断言随行（八面往返精确值/回调返回 6/500 post 按序完成）；TSV docs/review/fixtures/python-baseline/bridge-baseline.tsv，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；python-host 151 lib+1 新测全绿，clippy/fmt 净；基线判读：标量双向 17–34ns 已是下限、回调 111–116ns 贴 CPython 下限、优化收益上限在字符串/复合面（115–3249ns）与 port 侧排队面（160ns 摊派））
-- [x] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。（b3728d6/eac5ee7：math 三面入基线+TYPES/DIMS 换 AtomicPtr 写时复制快照，交错 15 轮钉核 A/B 全指标单调向好，p50 −9%/−9%/−27%，p99 −12%~−30%，证据 docs/review/opt-03-01-02-python-conversion-opt.md）
-- [x] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。（7464d06/6f69a00：队列加 QUEUED 原子计数空闲快路径，交错 12 轮钉核 A/B 空队过账 p50 148→18ns(8.2×)，满帧 500 回调 GIL 占用 0.852% 帧预算，尾延迟 p50~1.3-2.1ms 由调度支配，报告 docs/review/opt-03-01-03-callback-gil-report.md）
-- [x] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。（ca9cbaa 树零代码：15 场景逐名 --ignored --exact 复跑全绿=引用 5+异常 5+重载 4+原版 math 回归 1，优化期间零行为断言改动，证据 docs/review/opt-03-01-04-consistency-rerun.md）
+- [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 b4d6afe/2f093ba/f6a5f7e, lane/bw15-platform：crates/python-host/tests/bridge_baseline.rs 窗测 13 面（标量/字符串/复合对象双向转换+句柄层 INCREF/DECREF+GIL 括号+两种回调形态+post 与 drain），结构断言随行（八面往返精确值/回调返回 6/500 post 按序完成）；TSV docs/review/fixtures/python-baseline/bridge-baseline.tsv，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；python-host 151 lib+1 新测全绿，clippy/fmt 净；基线判读：标量双向 17–34ns 已是下限、回调 111–116ns 贴 CPython 下限、优化收益上限在字符串/复合面（115–3249ns）与 port 侧排队面（160ns 摊派））**⚠️ 与 main 席同面双交付（主席择一）**：OPT-03 段 main 已并 e10ccbd/85aad7c/353fed4+2d67612/03e87d7（tip c169cd3），本席 lane/bw15-platform 交付为 b3728d6..2bc7dcd 独立实现。
+- [x] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。（b3728d6/eac5ee7：math 三面入基线+TYPES/DIMS 换 AtomicPtr 写时复制快照，交错 15 轮钉核 A/B 全指标单调向好，p50 −9%/−9%/−27%，p99 −12%~−30%，证据 docs/review/opt-03-01-02-python-conversion-opt.md）**⚠️ 与 main 席同面双交付（主席择一）**：OPT-03 段 main 已并 e10ccbd/85aad7c/353fed4+2d67612/03e87d7（tip c169cd3），本席 lane/bw15-platform 交付为 b3728d6..2bc7dcd 独立实现。
+- [x] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。（7464d06/6f69a00：队列加 QUEUED 原子计数空闲快路径，交错 12 轮钉核 A/B 空队过账 p50 148→18ns(8.2×)，满帧 500 回调 GIL 占用 0.852% 帧预算，尾延迟 p50~1.3-2.1ms 由调度支配，报告 docs/review/opt-03-01-03-callback-gil-report.md）**⚠️ 与 main 席同面双交付（主席择一）**：OPT-03 段 main 已并 e10ccbd/85aad7c/353fed4+2d67612/03e87d7（tip c169cd3），本席 lane/bw15-platform 交付为 b3728d6..2bc7dcd 独立实现。
+- [x] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。（ca9cbaa 树零代码：15 场景逐名 --ignored --exact 复跑全绿=引用 5+异常 5+重载 4+原版 math 回归 1，优化期间零行为断言改动，证据 docs/review/opt-03-01-04-consistency-rerun.md）**⚠️ 与 main 席同面双交付（主席择一）**：OPT-03 段 main 已并 e10ccbd/85aad7c/353fed4+2d67612/03e87d7（tip c169cd3），本席 lane/bw15-platform 交付为 b3728d6..2bc7dcd 独立实现。
 
 ### OPT-04-01 EntityDef 启动和编解码
 
 缓存解析结果并评估预生成编解码器，衡量启动和序列化开销，锁定定义摘要和产出字节。
 
-- [ ] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。
-- [ ] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。
-- [ ] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。
-- [ ] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。
+- [x] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。（a041efd/9623715=main 席交付，本席 lane/bw15-platform 真机复测勾账：临时 worktree 挂 origin/main c169cd3，entitydef 全套 247 lib+三新 target baseline 1/codec_gen 2/rerun 1 全绿，三腿=digest 钉 oracle+编解码 20k 轮逐值恒等+暖启动，证据页 docs/review/opt-04-01-01-entitydef-baseline.md）
+- [x] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。（9881c37=main 席交付，本席复测同上全绿；FsResolver parse 缓存冷/热 0.916→0.297ms，digest 恒等，证据页 OPT-04-01-02 节）
+- [x] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。（f428168=main 席交付，本席复测同上全绿；codec_gen 评估 2 测，裁定=不采纳入引擎，TSV codec-gen.tsv 92 行）
+- [x] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。（6ce8e4c=main 席交付，本席复测同上全绿；rerun 1 测=四 digest+双 hex 逐字节==oracle，OPT-04 段全收官）
 
 ### OPT-05-01 录制负载热点和故障基线
 
