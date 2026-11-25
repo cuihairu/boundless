@@ -6664,6 +6664,114 @@ mod tests {
             }
         )));
     }
+    /// Two clients on the same space: the alias pool, the cache map,
+    /// and the bandwidth budget are all per client — one client's view
+    /// and its starved pass reach none of the other's.
+    /// Two clients on the same space: the alias pool, the cache map,
+    /// and the bandwidth budget are all per client — one client's view
+    /// and its starved pass reach none of the other's.
+    #[test]
+    fn the_second_observer_keeps_its_own_cache_and_budget() {
+        let (mut app, mut spaces) = fixture(b'W');
+        make_volatile(&mut app);
+        app.create_real_entity(
+            &mut spaces,
+            SID,
+            &stream_for(3, TYPE, [5.0, 0.0, 5.0], b'W'),
+        );
+        assert_eq!(app.add_witness(SID, 3), Ok(()));
+        app.witnesses
+            .get_mut(&3)
+            .unwrap()
+            .set_witness_capacity(500_000, 10);
+
+        // The first client enters the ghost.
+        observe_once(&mut app);
+        // The second client enters the same ghost from its own pool.
+        app.pump_aoi_events(3);
+        app.process_witness(3);
+        // Each pool spent its tail on its own first sight: client 1
+        // saw the second observer first, client 3 saw the first one.
+        let first = &app.witnesses[&1].wire;
+        assert!(first.iter().any(|m| matches!(
+            m,
+            Wire::EnterAoI {
+                id: 3,
+                id_alias: 254
+            }
+        )));
+        assert!(first.iter().any(|m| matches!(
+            m,
+            Wire::EnterAoI {
+                id: 2,
+                id_alias: 253
+            }
+        )));
+        let second = &app.witnesses[&3].wire;
+        assert!(second.iter().any(|m| matches!(
+            m,
+            Wire::EnterAoI {
+                id: 1,
+                id_alias: 254
+            }
+        )));
+        assert!(second.iter().any(|m| matches!(
+            m,
+            Wire::EnterAoI {
+                id: 2,
+                id_alias: 253
+            }
+        )));
+        assert_eq!(app.witnesses[&1].num_free_aliases, 253);
+        assert_eq!(app.witnesses[&3].num_free_aliases, 253);
+
+        // Client 3 takes the ghost into its own cache too; both
+        // budgets start the next pass clean.
+        app.request_entity_update(3, 2, &[5]);
+        app.process_witness(3);
+        assert!(
+            app.witnesses[&3]
+                .wire
+                .iter()
+                .any(|m| matches!(m, Wire::CreateEntity { id: 2, .. }))
+        );
+        assert_eq!(app.witnesses[&1].bandwidth_deficit, 0);
+        assert_eq!(app.witnesses[&3].bandwidth_deficit, 0);
+
+        // One client's budget runs out; the other keeps its full pass.
+        app.witnesses
+            .get_mut(&3)
+            .unwrap()
+            .set_witness_capacity(1000, 10);
+        add_events(&mut app, 2, 1, 20);
+        app.process_witness(1);
+        assert!(
+            app.witnesses[&1]
+                .wire
+                .iter()
+                .any(|m| matches!(m, Wire::HistoryEventMessage { .. }))
+        );
+        app.process_witness(3);
+        assert!(
+            !app.witnesses[&3]
+                .wire
+                .iter()
+                .any(|m| matches!(m, Wire::HistoryEventMessage { .. }))
+        );
+        // The starvation lands on the starved client alone: its
+        // deficit caps at its own (negative) budget, the other
+        // client's stays settled at zero.
+        assert_eq!(app.witnesses[&1].bandwidth_deficit, 0);
+        let starved = &app.witnesses[&3];
+        assert_eq!(starved.bandwidth_deficit, starved.max_packet_size);
+
+        // Dropping the ghost in one view leaves the other's cache
+        // standing.
+        app.witnesses.get_mut(&3).unwrap().delete_from_aoi(2);
+        assert!(app.witnesses[&3].aoi_map.find(2).is_none());
+        assert!(app.witnesses[&1].aoi_map.find(2).is_some());
+    }
+
     /// The reliability helpers tolerate any frame: only the position
     /// messages carry the flag, the rest stay home silently.
     #[test]
