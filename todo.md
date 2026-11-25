@@ -1560,7 +1560,10 @@
 - [x] **BW-10-07-03 从服务端加载该地图**。**验收** 坐标、地形和 Portal 状态吻合。（地形席 d6d8701/3cfe5e5，origin/lane/bw10-terrain）
   - 落账（2026-11-25 本席核）：地形席交付 `d6d8701`+勾 `3cfe5e5`——gen_mapload.cpp 原版 el7 双 chunk+真 bind() 真值 183 行；端口新增 chunk_bind.rs（邻接边收集/readyToBind 三门/门户扫描/ltpv 投影 findExact/connect）；CONNTO 2 条+EDGELABEL 5 条+NAVLOC 9 条+XPATH 6 组+SETSEARCH 5 组重放。真机复测 `genmap_load.rs` 2/2 绿（同上 worktree）。main 活树尚无该面（无 chunk_bind.rs），待主席并 lane。
 - [ ] **BW-10-07-04 从客户端查询该地图**。**验收** 固定射线及导航显示吻合。（地形席在途：Phase1 `9e9f12f` 已推，`413bcee` 障碍扫掠/grid 遍历参照面已落 lane；本席不接，防双交付）
-- [ ] **BW-10-07-05 执行 Bot 穿越**。**验收** 记录两 Cell 的移动和进入离开事件。
+- [x] **BW-10-07-05 执行 Bot 穿越**。**验收** 记录两 Cell 的移动和进入离开事件。（commit dddfd21，本席 lane 独立落地）
+  - 交付（2026-11-25 本席）：`crates/server-runtime/tests/bot_cross_cell.rs` 2 测 + manifest 边（`Cargo.toml` 去掉 `load` 的占位注释解注释 + `crates/server-runtime/Cargo.toml` 加 `load` dev-dep）。**三面复用已交付**：① 模拟客户端移动=`load::Bot`（`snap_to`+`move_to`+逐 tick `tick(0.2)`，client_app.cpp:441-487 的 `speed*dtime` 步进）；② Cell 区域=`cellappmgr::Rect`（`contains_rect` 判定归属，cell_info.hpp:58）；③ AoI 进离=`range_list::RangeListWorld`（每 Cell 一静态守卫 AoI 500 半径，`add_entity` 初 shuffle 发 enter、跨界 `remove_entity` 的 z-flight 发 leave、新 Cell `add_entity` 发 enter，witness.cpp:3586-3614）。**harness 组合**：Bot 从 x=-300 走到 x=+300 跨 x=0 边界；每 tick 把位置喂给「当前位置所属 Cell」的 range list，跨界那一刻 `remove_entity`（旧 Cell 发 leave）+`add_entity`（新 Cell 发 enter），记录移动与跨点。**断言**：恰一次 A→B 跨界且跨点 x≥0 且 <2（首 tick 落 x≈1.2）；A 事件 `[enter, leave]`、B 事件 `[enter]`；同一轨迹重放两遍事件向量相等（可比性）。
+  - **验收**：`cargo test -p server-runtime --test bot_cross_cell` 2/2 绿；`cargo test -p server-runtime` 1303 lib（1 ignored 既有）+ 各集成套绿；clippy server-runtime/load `--all-targets` 0 自身告警；fmt 干净。llvm-cov：本项只加集成测试、**未改任何 prod 文件**，`range_list.rs`（被驱动面）98.21% 行覆盖保持 ≥98%。
+  - **边界登记**：真 CellApp 进程间移交（`cell.cpp` 的 addCell/offload 实进程）与 `server_runtime::cell` 孤儿模块（`crates/server-runtime/src/cell.rs` 在 main/bw16-18/bw08 三处均未声明，属 BW-08 面）不在本项——本项按验收口径用 `Rect` 区域 + 双 `RangeListWorld` 组成两 Cell 的可比可复现执行；真机双 CellApp 联跑归平台矩阵（07-06）。
 - [ ] **BW-10-07-06 运行平台验收矩阵**。**验收** 每个适用原版目标有结果及证据。
 
 ### BW-11 客户端、渲染与交互
