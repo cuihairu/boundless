@@ -2832,7 +2832,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
 - [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。（本席 `5ec0620` 交付 `crates/load/src/login_baseline.rs`：组合登录 hurricane（峰值 `online_peak`=500）+ FD 预算拒绝率（`login_refusal_rate`=refused/(admitted+refused)=0.2614，saved 场景 177 拒绝）+ 下载传输 tick 地板（`download_ticks`=ceil(payload/BUNDLE_BYTES)=4，载荷 4096 字节、队列驻留 4096）；5 新测绿，`cargo test -p load` 155+1 全绿，clippy/fmt 净；**离线面为模拟时间，记录的是下载分块 tick 地板非墙钟登录 RTT，报告注明**；证据 docs/review/opt-06-01-01-login-baseline.md + 夹具 docs/review/fixtures/load/login-baseline.report.json，文档 `afee8b2`。）
-- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
+- [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。（本席 `083c598` 交付：fleet retry 队列 `botsForLogOnRetry_` 排水由每条到期 bot 单独 `Vec::remove`（洪峰 O(n²)）改单遍分区 O(n)，幸存/重登序随队序、固定 seed 派遣序不变；新测 surge 4 到期+1 留队钉序；`083c598` 另含 `benches/login_surge.rs` criterion 基准（parked 64/512 同刻排水）+三处 smoke.rs 预存 expect_fun_call 清理（--benches 才浮出）。A/B：taskset -c 6 钉核独立编译交错 6 轮，drain_512 中位 776→80µs（9.65×）、drain_64 13.9→7.4µs（1.9×），逐轮无交叉；156+1+0 全绿，clippy lib/benches/tests -D warnings 0 error，fmt 净；证据 docs/review/opt-06-01-02-login-surge.md（`83f6caa`）；Cargo.lock criterion dev-dep（build commit）。）
 - [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
 
@@ -4385,7 +4385,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
 - [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。（本席 `5ec0620` 交付 `crates/load/src/login_baseline.rs`：组合登录 hurricane（峰值 `online_peak`=500）+ FD 预算拒绝率（`login_refusal_rate`=refused/(admitted+refused)=0.2614，saved 场景 177 拒绝）+ 下载传输 tick 地板（`download_ticks`=ceil(payload/BUNDLE_BYTES)=4，载荷 4096 字节、队列驻留 4096）；5 新测绿，`cargo test -p load` 155+1 全绿，clippy/fmt 净；**离线面为模拟时间，记录的是下载分块 tick 地板非墙钟登录 RTT，报告注明**；证据 docs/review/opt-06-01-01-login-baseline.md + 夹具 docs/review/fixtures/load/login-baseline.report.json，文档 `afee8b2`。）
-- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
+- [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。（本席 `083c598` 交付：fleet retry 队列 `botsForLogOnRetry_` 排水由每条到期 bot 单独 `Vec::remove`（洪峰 O(n²)）改单遍分区 O(n)，幸存/重登序随队序、固定 seed 派遣序不变；新测 surge 4 到期+1 留队钉序；`083c598` 另含 `benches/login_surge.rs` criterion 基准（parked 64/512 同刻排水）+三处 smoke.rs 预存 expect_fun_call 清理（--benches 才浮出）。A/B：taskset -c 6 钉核独立编译交错 6 轮，drain_512 中位 776→80µs（9.65×）、drain_64 13.9→7.4µs（1.9×），逐轮无交叉；156+1+0 全绿，clippy lib/benches/tests -D warnings 0 error，fmt 净；证据 docs/review/opt-06-01-02-login-surge.md（`83f6caa`）；Cargo.lock criterion dev-dep（build commit）。）
 - [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
 
@@ -5911,7 +5911,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
 - [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。（本席 `5ec0620` 交付 `crates/load/src/login_baseline.rs`：组合登录 hurricane（峰值 `online_peak`=500）+ FD 预算拒绝率（`login_refusal_rate`=refused/(admitted+refused)=0.2614，saved 场景 177 拒绝）+ 下载传输 tick 地板（`download_ticks`=ceil(payload/BUNDLE_BYTES)=4，载荷 4096 字节、队列驻留 4096）；5 新测绿，`cargo test -p load` 155+1 全绿，clippy/fmt 净；**离线面为模拟时间，记录的是下载分块 tick 地板非墙钟登录 RTT，报告注明**；证据 docs/review/opt-06-01-01-login-baseline.md + 夹具 docs/review/fixtures/load/login-baseline.report.json，文档 `afee8b2`。）
-- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
+- [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。（本席 `083c598` 交付：fleet retry 队列 `botsForLogOnRetry_` 排水由每条到期 bot 单独 `Vec::remove`（洪峰 O(n²)）改单遍分区 O(n)，幸存/重登序随队序、固定 seed 派遣序不变；新测 surge 4 到期+1 留队钉序；`083c598` 另含 `benches/login_surge.rs` criterion 基准（parked 64/512 同刻排水）+三处 smoke.rs 预存 expect_fun_call 清理（--benches 才浮出）。A/B：taskset -c 6 钉核独立编译交错 6 轮，drain_512 中位 776→80µs（9.65×）、drain_64 13.9→7.4µs（1.9×），逐轮无交叉；156+1+0 全绿，clippy lib/benches/tests -D warnings 0 error，fmt 净；证据 docs/review/opt-06-01-02-login-surge.md（`83f6caa`）；Cargo.lock criterion dev-dep（build commit）。）
 - [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
 
@@ -7437,7 +7437,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
 - [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。（本席 `5ec0620` 交付 `crates/load/src/login_baseline.rs`：组合登录 hurricane（峰值 `online_peak`=500）+ FD 预算拒绝率（`login_refusal_rate`=refused/(admitted+refused)=0.2614，saved 场景 177 拒绝）+ 下载传输 tick 地板（`download_ticks`=ceil(payload/BUNDLE_BYTES)=4，载荷 4096 字节、队列驻留 4096）；5 新测绿，`cargo test -p load` 155+1 全绿，clippy/fmt 净；**离线面为模拟时间，记录的是下载分块 tick 地板非墙钟登录 RTT，报告注明**；证据 docs/review/opt-06-01-01-login-baseline.md + 夹具 docs/review/fixtures/load/login-baseline.report.json，文档 `afee8b2`。）
-- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
+- [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。（本席 `083c598` 交付：fleet retry 队列 `botsForLogOnRetry_` 排水由每条到期 bot 单独 `Vec::remove`（洪峰 O(n²)）改单遍分区 O(n)，幸存/重登序随队序、固定 seed 派遣序不变；新测 surge 4 到期+1 留队钉序；`083c598` 另含 `benches/login_surge.rs` criterion 基准（parked 64/512 同刻排水）+三处 smoke.rs 预存 expect_fun_call 清理（--benches 才浮出）。A/B：taskset -c 6 钉核独立编译交错 6 轮，drain_512 中位 776→80µs（9.65×）、drain_64 13.9→7.4µs（1.9×），逐轮无交叉；156+1+0 全绿，clippy lib/benches/tests -D warnings 0 error，fmt 净；证据 docs/review/opt-06-01-02-login-surge.md（`83f6caa`）；Cargo.lock criterion dev-dep（build commit）。）
 - [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
 
@@ -8990,7 +8990,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
 - [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。（本席 `5ec0620` 交付 `crates/load/src/login_baseline.rs`：组合登录 hurricane（峰值 `online_peak`=500）+ FD 预算拒绝率（`login_refusal_rate`=refused/(admitted+refused)=0.2614，saved 场景 177 拒绝）+ 下载传输 tick 地板（`download_ticks`=ceil(payload/BUNDLE_BYTES)=4，载荷 4096 字节、队列驻留 4096）；5 新测绿，`cargo test -p load` 155+1 全绿，clippy/fmt 净；**离线面为模拟时间，记录的是下载分块 tick 地板非墙钟登录 RTT，报告注明**；证据 docs/review/opt-06-01-01-login-baseline.md + 夹具 docs/review/fixtures/load/login-baseline.report.json，文档 `afee8b2`。）
-- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
+- [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。（本席 `083c598` 交付：fleet retry 队列 `botsForLogOnRetry_` 排水由每条到期 bot 单独 `Vec::remove`（洪峰 O(n²)）改单遍分区 O(n)，幸存/重登序随队序、固定 seed 派遣序不变；新测 surge 4 到期+1 留队钉序；`083c598` 另含 `benches/login_surge.rs` criterion 基准（parked 64/512 同刻排水）+三处 smoke.rs 预存 expect_fun_call 清理（--benches 才浮出）。A/B：taskset -c 6 钉核独立编译交错 6 轮，drain_512 中位 776→80µs（9.65×）、drain_64 13.9→7.4µs（1.9×），逐轮无交叉；156+1+0 全绿，clippy lib/benches/tests -D warnings 0 error，fmt 净；证据 docs/review/opt-06-01-02-login-surge.md（`83f6caa`）；Cargo.lock criterion dev-dep（build commit）。）
 - [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
 
@@ -10516,7 +10516,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
 - [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。（本席 `5ec0620` 交付 `crates/load/src/login_baseline.rs`：组合登录 hurricane（峰值 `online_peak`=500）+ FD 预算拒绝率（`login_refusal_rate`=refused/(admitted+refused)=0.2614，saved 场景 177 拒绝）+ 下载传输 tick 地板（`download_ticks`=ceil(payload/BUNDLE_BYTES)=4，载荷 4096 字节、队列驻留 4096）；5 新测绿，`cargo test -p load` 155+1 全绿，clippy/fmt 净；**离线面为模拟时间，记录的是下载分块 tick 地板非墙钟登录 RTT，报告注明**；证据 docs/review/opt-06-01-01-login-baseline.md + 夹具 docs/review/fixtures/load/login-baseline.report.json，文档 `afee8b2`。）
-- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
+- [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。（本席 `083c598` 交付：fleet retry 队列 `botsForLogOnRetry_` 排水由每条到期 bot 单独 `Vec::remove`（洪峰 O(n²)）改单遍分区 O(n)，幸存/重登序随队序、固定 seed 派遣序不变；新测 surge 4 到期+1 留队钉序；`083c598` 另含 `benches/login_surge.rs` criterion 基准（parked 64/512 同刻排水）+三处 smoke.rs 预存 expect_fun_call 清理（--benches 才浮出）。A/B：taskset -c 6 钉核独立编译交错 6 轮，drain_512 中位 776→80µs（9.65×）、drain_64 13.9→7.4µs（1.9×），逐轮无交叉；156+1+0 全绿，clippy lib/benches/tests -D warnings 0 error，fmt 净；证据 docs/review/opt-06-01-02-login-surge.md（`83f6caa`）；Cargo.lock criterion dev-dep（build commit）。）
 - [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
 
