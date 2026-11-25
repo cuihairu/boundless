@@ -1512,6 +1512,10 @@ impl CellApp {
         if let Some(sample) = self.load_sample.take() {
             self.update_load(sample);
         }
+        // `cells_.tickRecordings()` (cellapp.cpp:1432): the game-tick
+        // tail — the volatile blocks flush, the tick data hands off,
+        // the stopped collectors leave.
+        self.tick_recordings();
     }
 
     /// `TimerController::handleTimeout`: `start_ += interval_`, then the

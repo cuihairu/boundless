@@ -1851,6 +1851,15 @@ pub struct CellApp {
     /// The frame samples `update_load` reads at the tick tail. `None`
     /// means no profiled frame was measured — the throttle holds.
     pub load_sample: Option<crate::cellapp_throttle::LoadSample>,
+    /// `Cell::pReplayData()`: the per-space collector that shapes this
+    /// tick's replay blocks; empty until `start_recording` mounts one.
+    pub replay_collectors: BTreeMap<SpaceId, crate::cellapp_replay::ReplayCollector>,
+    /// The `onRecordingTickData` / `onRecordingStarted` / `onRecordingStopped`
+    /// script events, in delivery order: `(space id, game time, name,
+    /// block bytes)`.
+    pub recording_events: Vec<(SpaceId, u32, String, Vec<u8>)>,
+    /// The recording WARNING faces, in delivery order.
+    pub recording_warnings: Vec<String>,
     /// `CellAppConfig::witnessUpdateMaxPriorityDelta()` (default 5.0).
     pub witness_max_priority_delta: f32,
     /// The fixed per-send bundle growth while the update writer is
@@ -2044,6 +2053,9 @@ impl Default for CellApp {
             total_added_load: 0.0,
             tick_warnings: Vec::new(),
             load_sample: None,
+            replay_collectors: BTreeMap::new(),
+            recording_events: Vec::new(),
+            recording_warnings: Vec::new(),
             witness_max_priority_delta: 5.0,
             witness_spam_size: 200,
             all_spaces_data_change_seq: 0,
