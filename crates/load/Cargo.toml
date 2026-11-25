@@ -22,3 +22,11 @@ resources = { workspace = true }
 # same way `MainApp::initWatchers` lands them on the root watcher.
 watcher = { workspace = true }
 
+[dev-dependencies]
+# OPT-06-01-02: the login-surge bench compares the retry-queue drain shapes.
+criterion = "0.8"
+
+[[bench]]
+name = "login_surge"
+harness = false
+
