@@ -71,3 +71,7 @@ harness = false
 [[bench]]
 name = "download_assembly"
 harness = false
+
+[[bench]]
+name = "backup_archive"
+harness = false
