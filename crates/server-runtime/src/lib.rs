@@ -55,6 +55,7 @@ pub mod login_challenge;
 pub mod login_entity;
 pub mod login_gate;
 pub mod login_request;
+pub mod login_rerun;
 pub mod login_tuning;
 pub mod loginapp;
 pub mod machined;
