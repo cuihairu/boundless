@@ -3,15 +3,16 @@
 > **BW-10-05-04 实现原版 NavGen 图形工作流**。**验收** 同图可选择目标、生成和保存。
 
 **分片状态**：本片交付工作流的**保存臂**——记录流写入器
-`IWaypointView::asBinary` 与 `saveOut` 的旧记录合并算术（todo 不勾，
-05-04 仍开）。分片二（见下）已交付 `WaypointGenerator` BSP 多边形化
-主体（generate / generatePoints / generatePolygons /
-generateAdjacencies / joinPolygons / streamline /
-calculateSetMembership）。余片：门户两臂
-（determineEdgesAdjacentToOtherChunks /
-extendThroughUnboundPortals）、`readTGA` 读入侧与
-`tools/common/navmesh_processor.cpp` 的 per-girth 工作流环。
-BW-10-05-03 Recast 移植范围仍挂起待用户拍板。
+`IWaypointView::asBinary` 与 `saveOut` 的旧记录合并算术。分片二（见
+下）已交付 `WaypointGenerator` BSP 多边形化主体（generate /
+generatePoints / generatePolygons / generateAdjacencies / joinPolygons
+/ streamline / calculateSetMembership）。分片三（见下）交付
+`tools/common/navmesh_processor.cpp` 的 per-girth 工作流环与
+`editor_chunk_navmesh_cache_base` 保存面——至此本席 05-04 面齐
+（可选择 girth 目标 → 逐 girth 生成 → 合并保存）。**双交付警示**：
+门户两臂与 `readTGA` 读入侧已由 lane/bw02-mercury e9e9cf5 交付
+（嫁接地形席 c3b005a），bw16-18 席亦交付 workflow.rs GirthWorkflow
+环——合并时主席择一。BW-10-05-03 Recast 移植范围仍挂起待用户拍板。
 
 ## 产物对照（验收面）
 
@@ -275,3 +276,124 @@ g++ -std=c++14 -O2 -o /tmp/genstub/gen_generate \
 （stderr 走原版 INFO_MSG；stdout 才是 log。`cmp` 验证
 `/tmp/genstub/waypoint_generator/` 三对源文件与参照逐字节一致。
 产物二进制不入库。）
+
+---
+
+# 分片三：NavmeshProcessor per-girth 工作流环 + navmesh cache 保存面
+
+编辑器侧导航工作流的最后一环：`tools/common/navmesh_processor.cpp`
+的 `processInBackground`（**逐 girth 循环**——每个 girth 独立重灌
+chunk、重生成多边形、`asBinary(identity, girth)` 追加进同一 blob），
+加上 `tools/common/editor_chunk_navmesh_cache_base.cpp` 的缓存状态机
+（load → dirty → recalc → calcDone → saveChunk/saveCData——**保存**
+腿的落盘面）。移植面在 `crates/waypoint-gen/src/navmesh_processor.rs`
+与 `navmesh_cache.rs`，全部架在既有
+`FloodPhysics`/`FloodChunk`/`GenChunk`/`WaypointFlood`/`WaypointGenerator`/`as_binary`
+缝上。
+
+## 产物对照（验收面）
+
+编辑器 harness 面依赖 editor chunk 框架（ChunkSpace/BgTaskManager/
+物理查询全链），不在影子桩可达范围；本片证据取**组合正确性**：
+
+- **环 = 单 girth 串接**：同场景跑 girth 序 `[0.5, 0.8]` 的环，断言
+  逐字节等于各自单 girth 独立跑 `as_binary` 的串接
+  （`the_record_bytes_equal_the_standalone_single_girth_run`）——
+  即环没有引入任何额外状态；单 girth 的字节正确性已由分片一/二
+  对原版 LOG-IDENTICAL 对照钉死。
+- **记录走查算术** = 参照 `parseOldParts`（waypoint_view.cpp:197-218
+  同式）：`16 + numWaypoints*12 + numEdges*12`（numEdges = 顶点总数，
+  即 data 段长——非逐边 4 字节）。
+- **girth 语义**：defaults（maxSlope 45 / maxClimb = height/3）、
+  显式覆盖、`depth==0` 合法但 `radius = min(width,depth)*0.5` 塌为 0、
+  非法宽高/负深走 CRITICAL_MSG 断言（`girth.cpp:13-28`）。
+- **cache 状态机**：load 缺失即 dirty、干净块无 blob 亦 dirty
+  （`:64-67`）；dirty bool 按二进制单字节读（`len == sizeof(bool)`）；
+  calcDone 身份检查（`currentProcessor_ == processor`）、成功存储并
+  清 dirty + 入 unsaved 列表、失败保 dirty 丢结果；saveCData 写
+  `navmeshDirty` bool（与 navgen 的 outputDirtyFlag 匹配）+ 非空
+  blob、NONE 全不写；saveChunk 产
+  `<id>.cdata/worldNavmesh` resource 串。
+
+## TDD 痕迹
+
+环面先写 6 测对桩实现确认 **RED**（5 失败：拼接/字节等价/两处
+abort/girth 校验），后换真实现转 **GREEN**；cache 面实现与测试同批
+落地（状态机纯函数，参照行为单映射）。
+
+## 测试与门禁
+
+- `cargo test -p waypoint-gen`：**85 通过 / 0 失败**（69 旧 + 16 新：
+  环 6——双 girth 串接、字节等价独立单跑、girth 序间 abort 停环、
+  首 girth 前 abort 产出空、flash-flood 臂跳过 entity 点、girth
+  defaults/校验；cache 10——load 三态、NONE 永不 dirty、recalc→
+  calcDone 成败两臂、陈旧 processor 忽略、Recast 路由、saveCData
+  三态、saveChunk resource 串）。
+- 覆盖（llvm-cov 0.9.1，`--lcov` DA-max (SF,line) 合并，
+  `cargo llvm-cov clean` 先行）：`navmesh_processor.rs` **98.34%**
+  （414/421；7 行 DA:0：156 fill 臂逐种子 abort 中断返回、166
+  nshrink 循环体——无测传 nshrink>0、226 环内 flood 失败返回、
+  328/330/342 测试夹具未走臂）；`navmesh_cache.rs` **99.25%**
+  （132/133；85 = 枚举不可表示的 `None` 臂，注释已注明参照
+  ERROR_MSG 臂语义）。
+- `cargo test --workspace`：**4567 通过 / 0 失败**（118 测试二进制）；
+  `cargo fmt -p waypoint-gen -- --check` 绿；
+  `cargo clippy -p waypoint-gen --all-targets -- -D warnings` 绿。
+
+## 参照源码
+
+| 参照 | 位置 |
+|---|---|
+| `processInBackground` per-girth 环（abort 领检、flood、16 层拷贝、generate、asBinary 追加） | navmesh_processor.cpp:47-102（54-58 领检、63 边 determination 物理、77-92、94-97） |
+| 每 girth 新建 `PhysicsHandler(space, girth)` | chunk_flooder.cpp:283（flood 内）、navmesh_processor.cpp:63（边 determination） |
+| `floodChunk` 入口（reset reso 0.5 硬编码 ±2reso、种子序中心最后、flashFlood 臂、entity 点仅真灌臂、逐种子 abort、postfilter/shrink） | chunk_flooder.cpp:274-409（98-111、226-237、294、302-307、319-322） |
+| flashFlood 门（chunk 空间列持有/地形高度+洞图） | chunk_flooder.cpp:417-480 |
+| `Girth` 解析与校验（defaults 45 / height/3、`depth<0` 与 `width/height<=0` 才 CRITICAL） | girth.cpp:13-28 |
+| cache load（dirty bool 单字节、干净无 blob 即 dirty） | editor_chunk_navmesh_cache_base.cpp:44-90（64-67） |
+| saveChunk（`id.cdata/worldNavmesh` resource 串） | editor_chunk_navmesh_cache_base.cpp:93-106 |
+| saveCData（删两节、`navmeshDirty` bool 对齐 navgen outputDirtyFlag、非空才写 blob、NONE 不写） | editor_chunk_navmesh_cache_base.cpp:109-134 |
+| `dirty()`（NONE → false） | editor_chunk_navmesh_cache_base.cpp:266-277 |
+| `recalc`（清 blob + dirty + 按 generator 建 processor） | editor_chunk_navmesh_cache_base.cpp:279-330 |
+| `calcDone`（身份检查、成功存储清 dirty 入 unsaved、失败保 dirty） | editor_chunk_navmesh_cache_base.cpp:341-364 |
+| `extendThroughUnboundPortals` 注册 no-op | waypoint_generator.cpp:2370-2607 |
+
+## 移植面
+
+| 参照 | Rust |
+|---|---|
+| `NavmeshProcessor::processInBackground` | `navmesh_processor::process_in_background` |
+| `Chunk::floodChunk` 调用体 | `navmesh_processor::flood_chunk` |
+| flashFlood 门 | 调用方传入 `Option<f32>`（Some=flash 臂跳 entity 点与逐种子 abort；None=真灌臂） |
+| 每 girth 新建 `PhysicsHandler` | `GirthPhysicsSource::physics_for(&Girth) -> &mut dyn FloodPhysics` |
+| `Girth`/`GirthSettings` 解析 | `Girth`/`GirthSection` + `from_section`（defaults + CRITICAL 断言） |
+| `EditorChunkNavmeshCacheBase` 状态机 | `navmesh_cache::NavmeshCache`（`load`/`dirty`/`recalc`/`calc_done`/`save_chunk`/`save_cdata`） |
+| 生成器三态 `NAVMESH_GENERATOR_*` | `NavmeshGenerator{None,Navgen,Recast}` |
+| `NavmeshProcessor`/`RecastProcessor` 指针身份 | `Processor{Navmesh,Recast}` 变体比较（同一时刻仅一个在途） |
+| `extendThroughUnboundPortals` | 注册 no-op（同 navgen 面口径） |
+
+## 登记边界
+
+- **flashFlood 门收窄为 `Option<f32>`**：参照门内是 chunk 空间列持有
+  + 地形高度 + 洞图查询（chunk_flooder.cpp:417-480），属 chunk 物理
+  域；移植面将其建模为调用方预算好的门结果（Some=门过高 flash 直灌
+  顶高）。真 chunk 列域已在 chunk 席面注册，不在此重复。
+- **逐种子 abort 只在真灌臂**（chunk_flooder.cpp:319-322 在 fill 腿），
+  flash 臂不查——abort 计数语义按臂分叉，测试注释已钉。
+- **`writeTGAs=false`/`progress=NULL`**：参照环调用即此常量，fill 的
+  −1 进度臂与 TGA 写出不在移植面（与 05-02 口径一致）。
+- **`GirthPhysicsSource` 具名 trait 的原因**：`FnMut` 闭包不能把借用
+  返回进捕获盒（E0521 生命周期），参照「每 girth 新建 handler」语义
+  以 trait 表达。
+- **`radius()` 随 `depth==0` 塌 0**：`min(width,depth)*0.5`（girth.cpp
+  原式），`depth==0` 合法但半径归零——非移植 bug，参照行为。
+- **记录走查 `numEdges` = data 段顶点总数**：首版测试把 numEdges 当
+  4 字节边条目步进导致越界误报，已按参照 parseOldParts 修正。
+- **`calcDone` 身份检查**：参照比指针；移植比 `Processor` 变体
+  （同一时刻仅一个处理器在途，语义等价）。
+- **双交付警示（主席合并择一）**：门户两臂与 readTGA 读入侧 =
+  lane/bw02-mercury e9e9cf5（无 per-girth 环）；per-girth 环完整面 =
+  bw16-18 席 workflow.rs GirthWorkflow（portal 带符号半空间/双推回退
+  缺口可达）与本席 navmesh_processor.rs——同面多交付，合并时择一。
+- **BW-10-05-03 Recast 移植**：仍挂起待用户拍板；`Processor::Recast`
+  路由已留位（recalc 按空间设置建对应 processor，参照 `:292-312`），
+  Recast 处理器本体不在本片。
