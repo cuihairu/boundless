@@ -2841,7 +2841,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
 - [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。（本席 `7b56146`+`13b3257` 交付：新 bench `backup_archive` 四面——backup_write（带宽面 Throughput::Bytes）/backup_restore（接管恢复）/archive_tick（归档队列整周期排干）/archive_restore（重启读回），零行为改动；新钉测 backup wire size：标准五属性实体备份=精确 181 wire 字节+回读重建同一实体=结构性带宽地板跨机可复现。基线读数（2026-11-26 本机热机，不入带）：backup_write 0.78-0.88µs/实体、backup_restore 4.2-4.9µs/实体（恢复比写贵 ~5×，O(n) 全量重建）、archive_tick512 整周期（period=8）906µs≈64 实体/tick 切片（切片算术既有钉测）、archive_restore512 1.90ms≈3.7µs/实体≈269K/s；1702 lib 全绿、clippy lib/benches -D warnings 0 error、fmt 净；证据 docs/review/opt-07-01-01-backup-archive-baseline.md（`4da6b50`）。坑：`Addr=(u32,u16)` 别名在 baseappmgr/dbappmgr/cellappmgr 各一份，不在 cell_data（那是 BaseAddr）。）
-- [ ] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。
+- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。（本席 `6769e80`+`1cc46f2` 交付三处行为保持优化：①恢复单遍化——restore 原 peek 流+第二份字节拷贝重读头体改 `restore_from_stream` 单流一遍（`read_backup_data` 拆 header+body 复用，公共行为不变，`peek_type_name`/`type_name_of` 删）；②`encode` 尾段全载荷 `to_vec` 复制改新 `BinaryStream::into_bytes` 移动（`with_capacity` 同补）；③`restore_base` 的 `clone().into_iter().collect()` 双重 HashMap 重建改直接 clone。A/B：taskset -c 6 交错 6 轮同负载——archive_restore 0.535（6/6 胮）/backup_restore_512 0.825（6/6）/archive_tick 队列面 0.781（6/6）；未改写面 backup_write64 反 1.235 轮间交叉=本机噪声尺度 ±20% 对照，恢复面收益远超噪声；1702 lib 全绿（字节等价既有测全不动）+foundation 流测全绿、clippy 0 error、fmt 净；证据 docs/review/opt-07-01-02-backup-archive-opt.md（`ec37ee3`）。坑：criterion 直接跑二进制不带 `--bench`=测试模式不测量；CRITERION_HOME 须运行时按腿隔离（烤进 build 期 target 路径，直接跑两腿互写报告，路径不加 criterion 层）。）
 - [ ] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。
 - [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。
 
@@ -4394,7 +4394,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
 - [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。（本席 `7b56146`+`13b3257` 交付：新 bench `backup_archive` 四面——backup_write（带宽面 Throughput::Bytes）/backup_restore（接管恢复）/archive_tick（归档队列整周期排干）/archive_restore（重启读回），零行为改动；新钉测 backup wire size：标准五属性实体备份=精确 181 wire 字节+回读重建同一实体=结构性带宽地板跨机可复现。基线读数（2026-11-26 本机热机，不入带）：backup_write 0.78-0.88µs/实体、backup_restore 4.2-4.9µs/实体（恢复比写贵 ~5×，O(n) 全量重建）、archive_tick512 整周期（period=8）906µs≈64 实体/tick 切片（切片算术既有钉测）、archive_restore512 1.90ms≈3.7µs/实体≈269K/s；1702 lib 全绿、clippy lib/benches -D warnings 0 error、fmt 净；证据 docs/review/opt-07-01-01-backup-archive-baseline.md（`4da6b50`）。坑：`Addr=(u32,u16)` 别名在 baseappmgr/dbappmgr/cellappmgr 各一份，不在 cell_data（那是 BaseAddr）。）
-- [ ] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。
+- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。（本席 `6769e80`+`1cc46f2` 交付三处行为保持优化：①恢复单遍化——restore 原 peek 流+第二份字节拷贝重读头体改 `restore_from_stream` 单流一遍（`read_backup_data` 拆 header+body 复用，公共行为不变，`peek_type_name`/`type_name_of` 删）；②`encode` 尾段全载荷 `to_vec` 复制改新 `BinaryStream::into_bytes` 移动（`with_capacity` 同补）；③`restore_base` 的 `clone().into_iter().collect()` 双重 HashMap 重建改直接 clone。A/B：taskset -c 6 交错 6 轮同负载——archive_restore 0.535（6/6 胮）/backup_restore_512 0.825（6/6）/archive_tick 队列面 0.781（6/6）；未改写面 backup_write64 反 1.235 轮间交叉=本机噪声尺度 ±20% 对照，恢复面收益远超噪声；1702 lib 全绿（字节等价既有测全不动）+foundation 流测全绿、clippy 0 error、fmt 净；证据 docs/review/opt-07-01-02-backup-archive-opt.md（`ec37ee3`）。坑：criterion 直接跑二进制不带 `--bench`=测试模式不测量；CRITERION_HOME 须运行时按腿隔离（烤进 build 期 target 路径，直接跑两腿互写报告，路径不加 criterion 层）。）
 - [ ] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。
 - [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。
 
@@ -5920,7 +5920,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
 - [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。（本席 `7b56146`+`13b3257` 交付：新 bench `backup_archive` 四面——backup_write（带宽面 Throughput::Bytes）/backup_restore（接管恢复）/archive_tick（归档队列整周期排干）/archive_restore（重启读回），零行为改动；新钉测 backup wire size：标准五属性实体备份=精确 181 wire 字节+回读重建同一实体=结构性带宽地板跨机可复现。基线读数（2026-11-26 本机热机，不入带）：backup_write 0.78-0.88µs/实体、backup_restore 4.2-4.9µs/实体（恢复比写贵 ~5×，O(n) 全量重建）、archive_tick512 整周期（period=8）906µs≈64 实体/tick 切片（切片算术既有钉测）、archive_restore512 1.90ms≈3.7µs/实体≈269K/s；1702 lib 全绿、clippy lib/benches -D warnings 0 error、fmt 净；证据 docs/review/opt-07-01-01-backup-archive-baseline.md（`4da6b50`）。坑：`Addr=(u32,u16)` 别名在 baseappmgr/dbappmgr/cellappmgr 各一份，不在 cell_data（那是 BaseAddr）。）
-- [ ] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。
+- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。（本席 `6769e80`+`1cc46f2` 交付三处行为保持优化：①恢复单遍化——restore 原 peek 流+第二份字节拷贝重读头体改 `restore_from_stream` 单流一遍（`read_backup_data` 拆 header+body 复用，公共行为不变，`peek_type_name`/`type_name_of` 删）；②`encode` 尾段全载荷 `to_vec` 复制改新 `BinaryStream::into_bytes` 移动（`with_capacity` 同补）；③`restore_base` 的 `clone().into_iter().collect()` 双重 HashMap 重建改直接 clone。A/B：taskset -c 6 交错 6 轮同负载——archive_restore 0.535（6/6 胮）/backup_restore_512 0.825（6/6）/archive_tick 队列面 0.781（6/6）；未改写面 backup_write64 反 1.235 轮间交叉=本机噪声尺度 ±20% 对照，恢复面收益远超噪声；1702 lib 全绿（字节等价既有测全不动）+foundation 流测全绿、clippy 0 error、fmt 净；证据 docs/review/opt-07-01-02-backup-archive-opt.md（`ec37ee3`）。坑：criterion 直接跑二进制不带 `--bench`=测试模式不测量；CRITERION_HOME 须运行时按腿隔离（烤进 build 期 target 路径，直接跑两腿互写报告，路径不加 criterion 层）。）
 - [ ] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。
 - [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。
 
@@ -7446,7 +7446,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
 - [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。（本席 `7b56146`+`13b3257` 交付：新 bench `backup_archive` 四面——backup_write（带宽面 Throughput::Bytes）/backup_restore（接管恢复）/archive_tick（归档队列整周期排干）/archive_restore（重启读回），零行为改动；新钉测 backup wire size：标准五属性实体备份=精确 181 wire 字节+回读重建同一实体=结构性带宽地板跨机可复现。基线读数（2026-11-26 本机热机，不入带）：backup_write 0.78-0.88µs/实体、backup_restore 4.2-4.9µs/实体（恢复比写贵 ~5×，O(n) 全量重建）、archive_tick512 整周期（period=8）906µs≈64 实体/tick 切片（切片算术既有钉测）、archive_restore512 1.90ms≈3.7µs/实体≈269K/s；1702 lib 全绿、clippy lib/benches -D warnings 0 error、fmt 净；证据 docs/review/opt-07-01-01-backup-archive-baseline.md（`4da6b50`）。坑：`Addr=(u32,u16)` 别名在 baseappmgr/dbappmgr/cellappmgr 各一份，不在 cell_data（那是 BaseAddr）。）
-- [ ] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。
+- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。（本席 `6769e80`+`1cc46f2` 交付三处行为保持优化：①恢复单遍化——restore 原 peek 流+第二份字节拷贝重读头体改 `restore_from_stream` 单流一遍（`read_backup_data` 拆 header+body 复用，公共行为不变，`peek_type_name`/`type_name_of` 删）；②`encode` 尾段全载荷 `to_vec` 复制改新 `BinaryStream::into_bytes` 移动（`with_capacity` 同补）；③`restore_base` 的 `clone().into_iter().collect()` 双重 HashMap 重建改直接 clone。A/B：taskset -c 6 交错 6 轮同负载——archive_restore 0.535（6/6 胮）/backup_restore_512 0.825（6/6）/archive_tick 队列面 0.781（6/6）；未改写面 backup_write64 反 1.235 轮间交叉=本机噪声尺度 ±20% 对照，恢复面收益远超噪声；1702 lib 全绿（字节等价既有测全不动）+foundation 流测全绿、clippy 0 error、fmt 净；证据 docs/review/opt-07-01-02-backup-archive-opt.md（`ec37ee3`）。坑：criterion 直接跑二进制不带 `--bench`=测试模式不测量；CRITERION_HOME 须运行时按腿隔离（烤进 build 期 target 路径，直接跑两腿互写报告，路径不加 criterion 层）。）
 - [ ] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。
 - [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。
 
@@ -8999,7 +8999,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
 - [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。（本席 `7b56146`+`13b3257` 交付：新 bench `backup_archive` 四面——backup_write（带宽面 Throughput::Bytes）/backup_restore（接管恢复）/archive_tick（归档队列整周期排干）/archive_restore（重启读回），零行为改动；新钉测 backup wire size：标准五属性实体备份=精确 181 wire 字节+回读重建同一实体=结构性带宽地板跨机可复现。基线读数（2026-11-26 本机热机，不入带）：backup_write 0.78-0.88µs/实体、backup_restore 4.2-4.9µs/实体（恢复比写贵 ~5×，O(n) 全量重建）、archive_tick512 整周期（period=8）906µs≈64 实体/tick 切片（切片算术既有钉测）、archive_restore512 1.90ms≈3.7µs/实体≈269K/s；1702 lib 全绿、clippy lib/benches -D warnings 0 error、fmt 净；证据 docs/review/opt-07-01-01-backup-archive-baseline.md（`4da6b50`）。坑：`Addr=(u32,u16)` 别名在 baseappmgr/dbappmgr/cellappmgr 各一份，不在 cell_data（那是 BaseAddr）。）
-- [ ] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。
+- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。（本席 `6769e80`+`1cc46f2` 交付三处行为保持优化：①恢复单遍化——restore 原 peek 流+第二份字节拷贝重读头体改 `restore_from_stream` 单流一遍（`read_backup_data` 拆 header+body 复用，公共行为不变，`peek_type_name`/`type_name_of` 删）；②`encode` 尾段全载荷 `to_vec` 复制改新 `BinaryStream::into_bytes` 移动（`with_capacity` 同补）；③`restore_base` 的 `clone().into_iter().collect()` 双重 HashMap 重建改直接 clone。A/B：taskset -c 6 交错 6 轮同负载——archive_restore 0.535（6/6 胮）/backup_restore_512 0.825（6/6）/archive_tick 队列面 0.781（6/6）；未改写面 backup_write64 反 1.235 轮间交叉=本机噪声尺度 ±20% 对照，恢复面收益远超噪声；1702 lib 全绿（字节等价既有测全不动）+foundation 流测全绿、clippy 0 error、fmt 净；证据 docs/review/opt-07-01-02-backup-archive-opt.md（`ec37ee3`）。坑：criterion 直接跑二进制不带 `--bench`=测试模式不测量；CRITERION_HOME 须运行时按腿隔离（烤进 build 期 target 路径，直接跑两腿互写报告，路径不加 criterion 层）。）
 - [ ] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。
 - [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。
 
@@ -10525,7 +10525,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
 - [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。（本席 `7b56146`+`13b3257` 交付：新 bench `backup_archive` 四面——backup_write（带宽面 Throughput::Bytes）/backup_restore（接管恢复）/archive_tick（归档队列整周期排干）/archive_restore（重启读回），零行为改动；新钉测 backup wire size：标准五属性实体备份=精确 181 wire 字节+回读重建同一实体=结构性带宽地板跨机可复现。基线读数（2026-11-26 本机热机，不入带）：backup_write 0.78-0.88µs/实体、backup_restore 4.2-4.9µs/实体（恢复比写贵 ~5×，O(n) 全量重建）、archive_tick512 整周期（period=8）906µs≈64 实体/tick 切片（切片算术既有钉测）、archive_restore512 1.90ms≈3.7µs/实体≈269K/s；1702 lib 全绿、clippy lib/benches -D warnings 0 error、fmt 净；证据 docs/review/opt-07-01-01-backup-archive-baseline.md（`4da6b50`）。坑：`Addr=(u32,u16)` 别名在 baseappmgr/dbappmgr/cellappmgr 各一份，不在 cell_data（那是 BaseAddr）。）
-- [ ] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。
+- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。（本席 `6769e80`+`1cc46f2` 交付三处行为保持优化：①恢复单遍化——restore 原 peek 流+第二份字节拷贝重读头体改 `restore_from_stream` 单流一遍（`read_backup_data` 拆 header+body 复用，公共行为不变，`peek_type_name`/`type_name_of` 删）；②`encode` 尾段全载荷 `to_vec` 复制改新 `BinaryStream::into_bytes` 移动（`with_capacity` 同补）；③`restore_base` 的 `clone().into_iter().collect()` 双重 HashMap 重建改直接 clone。A/B：taskset -c 6 交错 6 轮同负载——archive_restore 0.535（6/6 胮）/backup_restore_512 0.825（6/6）/archive_tick 队列面 0.781（6/6）；未改写面 backup_write64 反 1.235 轮间交叉=本机噪声尺度 ±20% 对照，恢复面收益远超噪声；1702 lib 全绿（字节等价既有测全不动）+foundation 流测全绿、clippy 0 error、fmt 净；证据 docs/review/opt-07-01-02-backup-archive-opt.md（`ec37ee3`）。坑：criterion 直接跑二进制不带 `--bench`=测试模式不测量；CRITERION_HOME 须运行时按腿隔离（烤进 build 期 target 路径，直接跑两腿互写报告，路径不加 criterion 层）。）
 - [ ] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。
 - [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。
 
