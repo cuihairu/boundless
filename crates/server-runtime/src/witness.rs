@@ -3569,4 +3569,119 @@ mod tests {
         assert!((priority - 1.0).abs() < 1e-9, "{priority}");
         world.take();
     }
+
+    /// A dense grid of 64 volatile entities packed at spacing 5 around the
+    /// witness: the broadcast volume the three dense-AOI faces charge the
+    /// client bundle is structural. The enter cycle is two 8-byte messages
+    /// per entity, a steady tick is one 16-byte update per moved entity
+    /// (1-byte alias + 3-byte PackedXZ + 12-byte yaw/pitch/roll), and one
+    /// migration wave is three 8-byte messages per entity. Pinning these
+    /// keeps any future scheduling change honest about its bandwidth cost.
+    #[test]
+    fn the_dense_area_broadcast_volume_is_pinned() {
+        const COUNT: EntityId = 66; // ids 2..=65 on an 8x8 grid
+        let mut self_entity = EntitySnapshot::new(1, 1, (17.5, 0.0, 17.5));
+        self_entity.volatile = VolatileInfo::NONE;
+        let mut witness = Witness::new(1, self_entity);
+        witness.set_witness_capacity(2_000_000, 10);
+        for id in 2..COUNT {
+            let col = (id - 2) % 8;
+            let row = (id - 2) / 8;
+            witness.upsert_entity(EntitySnapshot::new(
+                id,
+                2,
+                (
+                    17.5 + (col as f32 - 3.5) * 5.0,
+                    0.0,
+                    17.5 + (row as f32 - 3.5) * 5.0,
+                ),
+            ));
+        }
+
+        // The enter cycle: every entity costs exactly one EnterAoI and one
+        // CreateEntity, 16 wire bytes, and the closest entity gets alias 254.
+        for id in 2..COUNT {
+            witness.add_to_aoi(id, false);
+        }
+        witness.flush_state_changes();
+        for id in 2..COUNT {
+            witness.request_entity_update(id, &[]);
+        }
+        witness.flush_state_changes();
+        let entered = witness.take_bundle();
+        assert_eq!(entered.len(), 128);
+        assert_eq!(witness.bundle_size(), 0); // taken above
+        let entered_bytes: usize = entered.iter().map(|m| m.wire_size()).sum();
+        assert_eq!(entered_bytes, 1024);
+        assert_eq!(
+            entered[0],
+            ClientMessage::EnterAoI {
+                id: 2,
+                id_alias: 254
+            }
+        );
+        assert!(entered.iter().all(|m| m.wire_size() == 8));
+
+        // A steady tick with every entity moved: one 16-byte EntityUpdate
+        // per entity, relative XZ against the reference plus full direction.
+        for id in 2..COUNT {
+            let mut entity = witness.entity(id).cloned().unwrap();
+            entity.volatile_update_number += 1;
+            entity.position.0 += 0.25;
+            witness.upsert_entity(entity);
+        }
+        witness.update();
+        let ticked = witness.take_bundle();
+        assert_eq!(ticked.len(), 64);
+        let tick_bytes: usize = ticked.iter().map(|m| m.wire_size()).sum();
+        assert_eq!(tick_bytes, 1024);
+        assert!(ticked.iter().all(|m| matches!(
+            m,
+            ClientMessage::EntityUpdate {
+                id: _,
+                id_alias: Some(_),
+                pos: PosProjection::Relative {
+                    on_ground: true,
+                    ..
+                },
+                dir: DirProjection::YawPitchRoll { .. },
+                events,
+                bytes: 16,
+            } if events.is_empty()
+        )));
+        assert!(witness.warnings().is_empty());
+
+        // One migration wave (every entity leaves and re-enters): the leave
+        // and the re-observation cost three 8-byte messages per entity, and
+        // the alias pool hands the same alias back.
+        for id in 2..COUNT {
+            witness.remove_from_aoi(id, false);
+        }
+        witness.flush_state_changes();
+        for id in 2..COUNT {
+            witness.add_to_aoi(id, false);
+        }
+        witness.flush_state_changes();
+        for id in 2..COUNT {
+            witness.request_entity_update(id, &[]);
+        }
+        witness.flush_state_changes();
+        let migrated = witness.take_bundle();
+        assert_eq!(migrated.len(), 192);
+        let migrated_bytes: usize = migrated.iter().map(|m| m.wire_size()).sum();
+        assert_eq!(migrated_bytes, 1536);
+        // The alias pool round-trips the wave: every entity still holds a
+        // distinct alias, none ran out, and the pool keeps exactly the
+        // 191 aliases nobody holds.
+        let held: Vec<u8> = (2..COUNT)
+            .map(|id| witness.cache_id_alias(id).unwrap())
+            .collect();
+        let mut distinct = held.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(distinct.len(), 64);
+        assert!(!distinct.contains(&NO_ID_ALIAS));
+        assert_eq!(witness.free_aliases.len(), 191);
+        assert!(witness.warnings().is_empty());
+    }
 }
