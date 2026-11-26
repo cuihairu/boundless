@@ -1813,9 +1813,13 @@
 验证原生服务端全角色、客户端、编辑器及产物。处理进程停止、DLL/CPython 查找、路径与驱动，并核对原版 Windows 客户端和编辑器样本。
 
 - [ ] **BW-15-03-01 跑 Windows 服务端全角色**。**验收** 能处理控制事件并关服。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-03-02 验证 DLL 和 CPython 发现**。**验收** 已安装布局中模块可导入。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-03-03 跑 Windows 客户端与编辑器**。**验收** 固定样本与原版对照。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-03-04 跑 Windows 工具和发布包**。**验收** 路径编码和启动烟测通过。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-04 macOS
 
@@ -1824,9 +1828,13 @@
 - [ ] **BW-15-04-01 跑 macOS 服务端全角色**。**验收** 能启动、停止并回收。
   - 证据（部分，未勾）：macOS 编译前置已通（afe9973）——`server_runtime::signals` 可移植到 `aarch64-apple-darwin`：等待原语按平台分派（Linux `sigwaitinfo`，macOS `sigwait`——libc crate 只给 BSD 族 `sigwait`，二者同是 POSIX 等待且都可被 `EINTR` 打断，`wait_one` 统一为负错误码）；`signal_number_to_string` 的实时信号臂（`SIGRTMIN`/`SIGRTMAX`，glibc 专属）门控到 Linux，macOS 无实时信号范围；`SIGMAX` 按平台取（Linux `SIGSYS`=31，macOS `SIGUSR2`=31，二者皆最高标准信号，`AtomicU32` 掩码一致）；`SIGNAL_NAMES` 按平台分表（参考表是 Linux 编号；macOS 编号不同：`SIGEMT`=7/`SIGBUS`=10/`SIGSYS`=12/`SIGCHLD`=20/`SIGIO`=23/`SIGINFO`=29/`SIGUSR1`=30/`SIGUSR2`=31，无 `SIGSTKFLT`/`SIGPWR`；服务端用的退出信号 `SIGTERM`/`SIGINT`/`SIGQUIT` 两端同号）。实测 `cargo check -p boundless-server --target aarch64-apple-darwin` 绿（仅剩 resources 预存警告）。**剩余**：macOS 上真机运行（`cargo build`+启动/停止/回收，需 macOS runner）；`--all-targets` 测试编译亦已绿（af0182b）——两处内联 `sigtimedwait`（server_app.rs:980/1211，BSD 无此符号）收进 `consume_pending_signal`（Linux `sigtimedwait` 零超时轮询、非 Linux `sigwait`；信号既已确认 pending 则立即返回），实测 `cargo check -p server-runtime --target aarch64-apple-darwin --all-targets` 无错；mercury 尚有 darwin 缺口（`lib.rs` 对 `event_dispatcher`/`packet_receiver` 的门控被 `interface_table.rs:18`/`request_manager.rs:27`/`network_utils.rs:36` 无条件 import；`endpoint.rs:403` 直用 linux-only `socket::IP_RECVERR`）——服务端最小入口不依赖 mercury 故不拦当前构建，待 Mercury 接入服务端（BW-02）时需先补。
 - [ ] **BW-15-04-02 验证 CPython 与应用资源布局**。**验收** 从应用包可加载。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-04-03 跑 macOS 客户端和编辑器**。**验收** 设备状态和固定地图测试通过。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-04-04 跑 macOS 工具和发布包**。**验收** 干净安装后可执行。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-04-05 验证与 Linux 和 Windows 互通**。**验收** 跨端登录及实体同步通过。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-05 三端 CI 和混合部署
 
@@ -1835,10 +1843,14 @@
 - [ ] **BW-15-05-01 配置三端原生 runner**。**验收** 每端独立构建和启动。
   - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；Windows 端构建被 `resources` 预存 unix-only 代码挡（`std::os::unix`/`Metadata::uid`，E0433/E0599，属 BW-15-03）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
 - [ ] **BW-15-05-02 在三端执行协议、资源与 Python 测试**。**验收** 各端分别留存结果。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [x] **BW-15-05-03 配置 MySQL、XML 与 SQLite 测试矩阵**。**验收** 每种模式产生独立结果。已交付（`3a2beab` 方言用例 + 本机 `ci/store.sh` 四模式实跑）：store-mysql 3/3（common/id_vocabulary + `mysql/auto_increment_contract` AUTO_INCREMENT 契约【NULL 派 1,2；显式 1000 进位→下个 NULL=1001；显式 5 不回退→1002，即 db-postgres bump_identity 的方言依据】+ `mysql/utf8_character_width_contract` VARCHAR(3) 按字符计宽【utf8mb4 单个 4 字节字符可入列，CHAR_LENGTH=1 而 LENGTH=5，对应 charset 面契约】）；store-sqlite 3/3（+ `sqlite/flip_flop_and_checksum_tables` SecondaryDatabase 面 tbl_flip/tbl_flop/tbl_checksum 逐列形状+存在探针 `SELECT COUNT(*) FROM t WHERE 0`+flip 持旧写/flop 持新写+db id 两侧成对；`sqlite/i64_ids_and_blob_round_trip` i64 全域 id（MIN/-1/MAX）+空 blob≠NULL+X'DEADBEEF' hex 往返）；store-postgres 1/1、store-xml 1/1。各模式独立隔离库（mariadbd 私有 socket/initdb 临时簇/sqlite3 私有文件/xml id-domain 检查）各落独立 TSV `$CI_OUT/store/<backend>.tsv`，database_dropped=yes。坑：同 backend 各 case 共用一库→断言表名必须 per-case（bw_assert 撞名 FAIL 一次后改名）；裸 `HAVING COUNT(*)` 是 MariaDB-only，SQLite 报 HAVING on a non-aggregate query→标量子查询替代。
 - [ ] **BW-15-05-04 配置 PostgreSQL 真实后端矩阵**。**验收** 各端完成登录、写档和重启读档。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-05-05 验证三端客户端连接不同平台服务端**。**验收** 记录每种支持组合。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-05-06 验证混部替换单角色**。**验收** 记录版本和关服顺序。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-06 平台图形和宿主依赖
 
@@ -1849,7 +1861,9 @@
 - [x] **BW-15-06-02 维护 DCC 宿主矩阵**。**验收** 逐插件记录可用宿主。（commit ff504c9）
   - 证据：`docs/review/bw15-06-02-dcc-host-matrix.md`——三插件两宿主：visualexporter/animationexporter → Autodesk 3ds Max（`MFXExport : SceneExport`（mfxexp.hpp:154），`.dle`，Max 库级导出 `LibDescription@1..LibVersion@4`（visualexporter.def/animationexporter.def，expmain.cpp:124-155），Max **2009–2013** 逐版本目标 max2009_exporter…max2013_exporter）；mayavisualexporter → Autodesk Maya（`MLL_EXPORT initializePlugin/uninitializePlugin`（visualmain.cpp:38/131），`.mll`，随分发 visualfileexporterscript.mel，Maya **2009–2014** 逐版本目标）。启用条件=`BW_CMAKE_TARGET=exporters`（`BWConfiguration_exporters.cmake` `EXPORTER_PROJECTS`：默认 Max/Maya 2010-13 + Max 2010-12，win32 追加 2009 组，win64 追加 maya2014，非 vc9 追加 max2013；`BW_EXPORTER`+`_SECURE_SCL=1`）；输出 `game/tools/exporter/3dsmax<ver>{,x64}/`、`maya<ver>{,x64}/`。缺口：`third_party/` 无 `3dsmax/`、`maya/` SDK 目录（外部依赖），插件二进制无法从本树构建——宿主实测（BW-15-06-03/04）需外部 DCC SDK 与宿主安装。
 - [ ] **BW-15-06-03 验收三端客户端与编辑流程**。**验收** 同一地图有可比证据。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-06-04 验证外部导出的跨端读取**。**验收** 各适用消费者可打开。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 ### BW-16 目录分层、依赖方向与模块归属
 
@@ -3402,9 +3416,13 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 验证原生服务端全角色、客户端、编辑器及产物。处理进程停止、DLL/CPython 查找、路径与驱动，并核对原版 Windows 客户端和编辑器样本。
 
 - [ ] **BW-15-03-01 跑 Windows 服务端全角色**。**验收** 能处理控制事件并关服。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-03-02 验证 DLL 和 CPython 发现**。**验收** 已安装布局中模块可导入。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-03-03 跑 Windows 客户端与编辑器**。**验收** 固定样本与原版对照。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-03-04 跑 Windows 工具和发布包**。**验收** 路径编码和启动烟测通过。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-04 macOS
 
@@ -3413,9 +3431,13 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **BW-15-04-01 跑 macOS 服务端全角色**。**验收** 能启动、停止并回收。
   - 证据（部分，未勾）：macOS 编译前置已通（afe9973）——`server_runtime::signals` 可移植到 `aarch64-apple-darwin`：等待原语按平台分派（Linux `sigwaitinfo`，macOS `sigwait`——libc crate 只给 BSD 族 `sigwait`，二者同是 POSIX 等待且都可被 `EINTR` 打断，`wait_one` 统一为负错误码）；`signal_number_to_string` 的实时信号臂（`SIGRTMIN`/`SIGRTMAX`，glibc 专属）门控到 Linux，macOS 无实时信号范围；`SIGMAX` 按平台取（Linux `SIGSYS`=31，macOS `SIGUSR2`=31，二者皆最高标准信号，`AtomicU32` 掩码一致）；`SIGNAL_NAMES` 按平台分表（参考表是 Linux 编号；macOS 编号不同：`SIGEMT`=7/`SIGBUS`=10/`SIGSYS`=12/`SIGCHLD`=20/`SIGIO`=23/`SIGINFO`=29/`SIGUSR1`=30/`SIGUSR2`=31，无 `SIGSTKFLT`/`SIGPWR`；服务端用的退出信号 `SIGTERM`/`SIGINT`/`SIGQUIT` 两端同号）。实测 `cargo check -p boundless-server --target aarch64-apple-darwin` 绿（仅剩 resources 预存警告）。**剩余**：macOS 上真机运行（`cargo build`+启动/停止/回收，需 macOS runner）；`--all-targets` 测试编译亦已绿（af0182b）——两处内联 `sigtimedwait`（server_app.rs:980/1211，BSD 无此符号）收进 `consume_pending_signal`（Linux `sigtimedwait` 零超时轮询、非 Linux `sigwait`；信号既已确认 pending 则立即返回），实测 `cargo check -p server-runtime --target aarch64-apple-darwin --all-targets` 无错；mercury 尚有 darwin 缺口（`lib.rs` 对 `event_dispatcher`/`packet_receiver` 的门控被 `interface_table.rs:18`/`request_manager.rs:27`/`network_utils.rs:36` 无条件 import；`endpoint.rs:403` 直用 linux-only `socket::IP_RECVERR`）——服务端最小入口不依赖 mercury 故不拦当前构建，待 Mercury 接入服务端（BW-02）时需先补。
 - [ ] **BW-15-04-02 验证 CPython 与应用资源布局**。**验收** 从应用包可加载。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-04-03 跑 macOS 客户端和编辑器**。**验收** 设备状态和固定地图测试通过。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-04-04 跑 macOS 工具和发布包**。**验收** 干净安装后可执行。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-04-05 验证与 Linux 和 Windows 互通**。**验收** 跨端登录及实体同步通过。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-05 三端 CI 和混合部署
 
@@ -3424,10 +3446,14 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **BW-15-05-01 配置三端原生 runner**。**验收** 每端独立构建和启动。
   - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；Windows 端构建被 `resources` 预存 unix-only 代码挡（`std::os::unix`/`Metadata::uid`，E0433/E0599，属 BW-15-03）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
 - [ ] **BW-15-05-02 在三端执行协议、资源与 Python 测试**。**验收** 各端分别留存结果。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [x] **BW-15-05-03 配置 MySQL、XML 与 SQLite 测试矩阵**。**验收** 每种模式产生独立结果。已交付（`3a2beab` 方言用例 + 本机 `ci/store.sh` 四模式实跑）：store-mysql 3/3（common/id_vocabulary + `mysql/auto_increment_contract` AUTO_INCREMENT 契约【NULL 派 1,2；显式 1000 进位→下个 NULL=1001；显式 5 不回退→1002，即 db-postgres bump_identity 的方言依据】+ `mysql/utf8_character_width_contract` VARCHAR(3) 按字符计宽【utf8mb4 单个 4 字节字符可入列，CHAR_LENGTH=1 而 LENGTH=5，对应 charset 面契约】）；store-sqlite 3/3（+ `sqlite/flip_flop_and_checksum_tables` SecondaryDatabase 面 tbl_flip/tbl_flop/tbl_checksum 逐列形状+存在探针 `SELECT COUNT(*) FROM t WHERE 0`+flip 持旧写/flop 持新写+db id 两侧成对；`sqlite/i64_ids_and_blob_round_trip` i64 全域 id（MIN/-1/MAX）+空 blob≠NULL+X'DEADBEEF' hex 往返）；store-postgres 1/1、store-xml 1/1。各模式独立隔离库（mariadbd 私有 socket/initdb 临时簇/sqlite3 私有文件/xml id-domain 检查）各落独立 TSV `$CI_OUT/store/<backend>.tsv`，database_dropped=yes。坑：同 backend 各 case 共用一库→断言表名必须 per-case（bw_assert 撞名 FAIL 一次后改名）；裸 `HAVING COUNT(*)` 是 MariaDB-only，SQLite 报 HAVING on a non-aggregate query→标量子查询替代。
 - [ ] **BW-15-05-04 配置 PostgreSQL 真实后端矩阵**。**验收** 各端完成登录、写档和重启读档。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-05-05 验证三端客户端连接不同平台服务端**。**验收** 记录每种支持组合。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-05-06 验证混部替换单角色**。**验收** 记录版本和关服顺序。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-06 平台图形和宿主依赖
 
@@ -3438,7 +3464,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-15-06-02 维护 DCC 宿主矩阵**。**验收** 逐插件记录可用宿主。（commit ff504c9）
   - 证据：`docs/review/bw15-06-02-dcc-host-matrix.md`——三插件两宿主：visualexporter/animationexporter → Autodesk 3ds Max（`MFXExport : SceneExport`（mfxexp.hpp:154），`.dle`，Max 库级导出 `LibDescription@1..LibVersion@4`（visualexporter.def/animationexporter.def，expmain.cpp:124-155），Max **2009–2013** 逐版本目标 max2009_exporter…max2013_exporter）；mayavisualexporter → Autodesk Maya（`MLL_EXPORT initializePlugin/uninitializePlugin`（visualmain.cpp:38/131），`.mll`，随分发 visualfileexporterscript.mel，Maya **2009–2014** 逐版本目标）。启用条件=`BW_CMAKE_TARGET=exporters`（`BWConfiguration_exporters.cmake` `EXPORTER_PROJECTS`：默认 Max/Maya 2010-13 + Max 2010-12，win32 追加 2009 组，win64 追加 maya2014，非 vc9 追加 max2013；`BW_EXPORTER`+`_SECURE_SCL=1`）；输出 `game/tools/exporter/3dsmax<ver>{,x64}/`、`maya<ver>{,x64}/`。缺口：`third_party/` 无 `3dsmax/`、`maya/` SDK 目录（外部依赖），插件二进制无法从本树构建——宿主实测（BW-15-06-03/04）需外部 DCC SDK 与宿主安装。
 - [ ] **BW-15-06-03 验收三端客户端与编辑流程**。**验收** 同一地图有可比证据。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-06-04 验证外部导出的跨端读取**。**验收** 各适用消费者可打开。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 ### BW-16 目录分层、依赖方向与模块归属
 
@@ -4952,9 +4980,13 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 验证原生服务端全角色、客户端、编辑器及产物。处理进程停止、DLL/CPython 查找、路径与驱动，并核对原版 Windows 客户端和编辑器样本。
 
 - [ ] **BW-15-03-01 跑 Windows 服务端全角色**。**验收** 能处理控制事件并关服。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-03-02 验证 DLL 和 CPython 发现**。**验收** 已安装布局中模块可导入。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-03-03 跑 Windows 客户端与编辑器**。**验收** 固定样本与原版对照。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-03-04 跑 Windows 工具和发布包**。**验收** 路径编码和启动烟测通过。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-04 macOS
 
@@ -4963,9 +4995,13 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **BW-15-04-01 跑 macOS 服务端全角色**。**验收** 能启动、停止并回收。
   - 证据（部分，未勾）：macOS 编译前置已通（afe9973）——`server_runtime::signals` 可移植到 `aarch64-apple-darwin`：等待原语按平台分派（Linux `sigwaitinfo`，macOS `sigwait`——libc crate 只给 BSD 族 `sigwait`，二者同是 POSIX 等待且都可被 `EINTR` 打断，`wait_one` 统一为负错误码）；`signal_number_to_string` 的实时信号臂（`SIGRTMIN`/`SIGRTMAX`，glibc 专属）门控到 Linux，macOS 无实时信号范围；`SIGMAX` 按平台取（Linux `SIGSYS`=31，macOS `SIGUSR2`=31，二者皆最高标准信号，`AtomicU32` 掩码一致）；`SIGNAL_NAMES` 按平台分表（参考表是 Linux 编号；macOS 编号不同：`SIGEMT`=7/`SIGBUS`=10/`SIGSYS`=12/`SIGCHLD`=20/`SIGIO`=23/`SIGINFO`=29/`SIGUSR1`=30/`SIGUSR2`=31，无 `SIGSTKFLT`/`SIGPWR`；服务端用的退出信号 `SIGTERM`/`SIGINT`/`SIGQUIT` 两端同号）。实测 `cargo check -p boundless-server --target aarch64-apple-darwin` 绿（仅剩 resources 预存警告）。**剩余**：macOS 上真机运行（`cargo build`+启动/停止/回收，需 macOS runner）；`--all-targets` 测试编译亦已绿（af0182b）——两处内联 `sigtimedwait`（server_app.rs:980/1211，BSD 无此符号）收进 `consume_pending_signal`（Linux `sigtimedwait` 零超时轮询、非 Linux `sigwait`；信号既已确认 pending 则立即返回），实测 `cargo check -p server-runtime --target aarch64-apple-darwin --all-targets` 无错；mercury 尚有 darwin 缺口（`lib.rs` 对 `event_dispatcher`/`packet_receiver` 的门控被 `interface_table.rs:18`/`request_manager.rs:27`/`network_utils.rs:36` 无条件 import；`endpoint.rs:403` 直用 linux-only `socket::IP_RECVERR`）——服务端最小入口不依赖 mercury 故不拦当前构建，待 Mercury 接入服务端（BW-02）时需先补。
 - [ ] **BW-15-04-02 验证 CPython 与应用资源布局**。**验收** 从应用包可加载。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-04-03 跑 macOS 客户端和编辑器**。**验收** 设备状态和固定地图测试通过。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-04-04 跑 macOS 工具和发布包**。**验收** 干净安装后可执行。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-04-05 验证与 Linux 和 Windows 互通**。**验收** 跨端登录及实体同步通过。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-05 三端 CI 和混合部署
 
@@ -4974,10 +5010,14 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **BW-15-05-01 配置三端原生 runner**。**验收** 每端独立构建和启动。
   - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；Windows 端构建被 `resources` 预存 unix-only 代码挡（`std::os::unix`/`Metadata::uid`，E0433/E0599，属 BW-15-03）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
 - [ ] **BW-15-05-02 在三端执行协议、资源与 Python 测试**。**验收** 各端分别留存结果。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [x] **BW-15-05-03 配置 MySQL、XML 与 SQLite 测试矩阵**。**验收** 每种模式产生独立结果。已交付（`3a2beab` 方言用例 + 本机 `ci/store.sh` 四模式实跑）：store-mysql 3/3（common/id_vocabulary + `mysql/auto_increment_contract` AUTO_INCREMENT 契约【NULL 派 1,2；显式 1000 进位→下个 NULL=1001；显式 5 不回退→1002，即 db-postgres bump_identity 的方言依据】+ `mysql/utf8_character_width_contract` VARCHAR(3) 按字符计宽【utf8mb4 单个 4 字节字符可入列，CHAR_LENGTH=1 而 LENGTH=5，对应 charset 面契约】）；store-sqlite 3/3（+ `sqlite/flip_flop_and_checksum_tables` SecondaryDatabase 面 tbl_flip/tbl_flop/tbl_checksum 逐列形状+存在探针 `SELECT COUNT(*) FROM t WHERE 0`+flip 持旧写/flop 持新写+db id 两侧成对；`sqlite/i64_ids_and_blob_round_trip` i64 全域 id（MIN/-1/MAX）+空 blob≠NULL+X'DEADBEEF' hex 往返）；store-postgres 1/1、store-xml 1/1。各模式独立隔离库（mariadbd 私有 socket/initdb 临时簇/sqlite3 私有文件/xml id-domain 检查）各落独立 TSV `$CI_OUT/store/<backend>.tsv`，database_dropped=yes。坑：同 backend 各 case 共用一库→断言表名必须 per-case（bw_assert 撞名 FAIL 一次后改名）；裸 `HAVING COUNT(*)` 是 MariaDB-only，SQLite 报 HAVING on a non-aggregate query→标量子查询替代。
 - [ ] **BW-15-05-04 配置 PostgreSQL 真实后端矩阵**。**验收** 各端完成登录、写档和重启读档。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-05-05 验证三端客户端连接不同平台服务端**。**验收** 记录每种支持组合。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-05-06 验证混部替换单角色**。**验收** 记录版本和关服顺序。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-06 平台图形和宿主依赖
 
@@ -4988,7 +5028,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-15-06-02 维护 DCC 宿主矩阵**。**验收** 逐插件记录可用宿主。（commit ff504c9）
   - 证据：`docs/review/bw15-06-02-dcc-host-matrix.md`——三插件两宿主：visualexporter/animationexporter → Autodesk 3ds Max（`MFXExport : SceneExport`（mfxexp.hpp:154），`.dle`，Max 库级导出 `LibDescription@1..LibVersion@4`（visualexporter.def/animationexporter.def，expmain.cpp:124-155），Max **2009–2013** 逐版本目标 max2009_exporter…max2013_exporter）；mayavisualexporter → Autodesk Maya（`MLL_EXPORT initializePlugin/uninitializePlugin`（visualmain.cpp:38/131），`.mll`，随分发 visualfileexporterscript.mel，Maya **2009–2014** 逐版本目标）。启用条件=`BW_CMAKE_TARGET=exporters`（`BWConfiguration_exporters.cmake` `EXPORTER_PROJECTS`：默认 Max/Maya 2010-13 + Max 2010-12，win32 追加 2009 组，win64 追加 maya2014，非 vc9 追加 max2013；`BW_EXPORTER`+`_SECURE_SCL=1`）；输出 `game/tools/exporter/3dsmax<ver>{,x64}/`、`maya<ver>{,x64}/`。缺口：`third_party/` 无 `3dsmax/`、`maya/` SDK 目录（外部依赖），插件二进制无法从本树构建——宿主实测（BW-15-06-03/04）需外部 DCC SDK 与宿主安装。
 - [ ] **BW-15-06-03 验收三端客户端与编辑流程**。**验收** 同一地图有可比证据。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-06-04 验证外部导出的跨端读取**。**验收** 各适用消费者可打开。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 ### BW-16 目录分层、依赖方向与模块归属
 
@@ -6502,9 +6544,13 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 验证原生服务端全角色、客户端、编辑器及产物。处理进程停止、DLL/CPython 查找、路径与驱动，并核对原版 Windows 客户端和编辑器样本。
 
 - [ ] **BW-15-03-01 跑 Windows 服务端全角色**。**验收** 能处理控制事件并关服。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-03-02 验证 DLL 和 CPython 发现**。**验收** 已安装布局中模块可导入。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-03-03 跑 Windows 客户端与编辑器**。**验收** 固定样本与原版对照。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-03-04 跑 Windows 工具和发布包**。**验收** 路径编码和启动烟测通过。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-04 macOS
 
@@ -6513,9 +6559,13 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **BW-15-04-01 跑 macOS 服务端全角色**。**验收** 能启动、停止并回收。
   - 证据（部分，未勾）：macOS 编译前置已通（afe9973）——`server_runtime::signals` 可移植到 `aarch64-apple-darwin`：等待原语按平台分派（Linux `sigwaitinfo`，macOS `sigwait`——libc crate 只给 BSD 族 `sigwait`，二者同是 POSIX 等待且都可被 `EINTR` 打断，`wait_one` 统一为负错误码）；`signal_number_to_string` 的实时信号臂（`SIGRTMIN`/`SIGRTMAX`，glibc 专属）门控到 Linux，macOS 无实时信号范围；`SIGMAX` 按平台取（Linux `SIGSYS`=31，macOS `SIGUSR2`=31，二者皆最高标准信号，`AtomicU32` 掩码一致）；`SIGNAL_NAMES` 按平台分表（参考表是 Linux 编号；macOS 编号不同：`SIGEMT`=7/`SIGBUS`=10/`SIGSYS`=12/`SIGCHLD`=20/`SIGIO`=23/`SIGINFO`=29/`SIGUSR1`=30/`SIGUSR2`=31，无 `SIGSTKFLT`/`SIGPWR`；服务端用的退出信号 `SIGTERM`/`SIGINT`/`SIGQUIT` 两端同号）。实测 `cargo check -p boundless-server --target aarch64-apple-darwin` 绿（仅剩 resources 预存警告）。**剩余**：macOS 上真机运行（`cargo build`+启动/停止/回收，需 macOS runner）；`--all-targets` 测试编译亦已绿（af0182b）——两处内联 `sigtimedwait`（server_app.rs:980/1211，BSD 无此符号）收进 `consume_pending_signal`（Linux `sigtimedwait` 零超时轮询、非 Linux `sigwait`；信号既已确认 pending 则立即返回），实测 `cargo check -p server-runtime --target aarch64-apple-darwin --all-targets` 无错；mercury 尚有 darwin 缺口（`lib.rs` 对 `event_dispatcher`/`packet_receiver` 的门控被 `interface_table.rs:18`/`request_manager.rs:27`/`network_utils.rs:36` 无条件 import；`endpoint.rs:403` 直用 linux-only `socket::IP_RECVERR`）——服务端最小入口不依赖 mercury 故不拦当前构建，待 Mercury 接入服务端（BW-02）时需先补。
 - [ ] **BW-15-04-02 验证 CPython 与应用资源布局**。**验收** 从应用包可加载。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-04-03 跑 macOS 客户端和编辑器**。**验收** 设备状态和固定地图测试通过。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-04-04 跑 macOS 工具和发布包**。**验收** 干净安装后可执行。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-04-05 验证与 Linux 和 Windows 互通**。**验收** 跨端登录及实体同步通过。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-05 三端 CI 和混合部署
 
@@ -6524,10 +6574,14 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **BW-15-05-01 配置三端原生 runner**。**验收** 每端独立构建和启动。
   - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；Windows 端构建被 `resources` 预存 unix-only 代码挡（`std::os::unix`/`Metadata::uid`，E0433/E0599，属 BW-15-03）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
 - [ ] **BW-15-05-02 在三端执行协议、资源与 Python 测试**。**验收** 各端分别留存结果。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [x] **BW-15-05-03 配置 MySQL、XML 与 SQLite 测试矩阵**。**验收** 每种模式产生独立结果。已交付（`3a2beab` 方言用例 + 本机 `ci/store.sh` 四模式实跑）：store-mysql 3/3（common/id_vocabulary + `mysql/auto_increment_contract` AUTO_INCREMENT 契约【NULL 派 1,2；显式 1000 进位→下个 NULL=1001；显式 5 不回退→1002，即 db-postgres bump_identity 的方言依据】+ `mysql/utf8_character_width_contract` VARCHAR(3) 按字符计宽【utf8mb4 单个 4 字节字符可入列，CHAR_LENGTH=1 而 LENGTH=5，对应 charset 面契约】）；store-sqlite 3/3（+ `sqlite/flip_flop_and_checksum_tables` SecondaryDatabase 面 tbl_flip/tbl_flop/tbl_checksum 逐列形状+存在探针 `SELECT COUNT(*) FROM t WHERE 0`+flip 持旧写/flop 持新写+db id 两侧成对；`sqlite/i64_ids_and_blob_round_trip` i64 全域 id（MIN/-1/MAX）+空 blob≠NULL+X'DEADBEEF' hex 往返）；store-postgres 1/1、store-xml 1/1。各模式独立隔离库（mariadbd 私有 socket/initdb 临时簇/sqlite3 私有文件/xml id-domain 检查）各落独立 TSV `$CI_OUT/store/<backend>.tsv`，database_dropped=yes。坑：同 backend 各 case 共用一库→断言表名必须 per-case（bw_assert 撞名 FAIL 一次后改名）；裸 `HAVING COUNT(*)` 是 MariaDB-only，SQLite 报 HAVING on a non-aggregate query→标量子查询替代。
 - [ ] **BW-15-05-04 配置 PostgreSQL 真实后端矩阵**。**验收** 各端完成登录、写档和重启读档。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-05-05 验证三端客户端连接不同平台服务端**。**验收** 记录每种支持组合。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-05-06 验证混部替换单角色**。**验收** 记录版本和关服顺序。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-06 平台图形和宿主依赖
 
@@ -6538,7 +6592,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-15-06-02 维护 DCC 宿主矩阵**。**验收** 逐插件记录可用宿主。（commit ff504c9）
   - 证据：`docs/review/bw15-06-02-dcc-host-matrix.md`——三插件两宿主：visualexporter/animationexporter → Autodesk 3ds Max（`MFXExport : SceneExport`（mfxexp.hpp:154），`.dle`，Max 库级导出 `LibDescription@1..LibVersion@4`（visualexporter.def/animationexporter.def，expmain.cpp:124-155），Max **2009–2013** 逐版本目标 max2009_exporter…max2013_exporter）；mayavisualexporter → Autodesk Maya（`MLL_EXPORT initializePlugin/uninitializePlugin`（visualmain.cpp:38/131），`.mll`，随分发 visualfileexporterscript.mel，Maya **2009–2014** 逐版本目标）。启用条件=`BW_CMAKE_TARGET=exporters`（`BWConfiguration_exporters.cmake` `EXPORTER_PROJECTS`：默认 Max/Maya 2010-13 + Max 2010-12，win32 追加 2009 组，win64 追加 maya2014，非 vc9 追加 max2013；`BW_EXPORTER`+`_SECURE_SCL=1`）；输出 `game/tools/exporter/3dsmax<ver>{,x64}/`、`maya<ver>{,x64}/`。缺口：`third_party/` 无 `3dsmax/`、`maya/` SDK 目录（外部依赖），插件二进制无法从本树构建——宿主实测（BW-15-06-03/04）需外部 DCC SDK 与宿主安装。
 - [ ] **BW-15-06-03 验收三端客户端与编辑流程**。**验收** 同一地图有可比证据。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-06-04 验证外部导出的跨端读取**。**验收** 各适用消费者可打开。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 ### BW-16 目录分层、依赖方向与模块归属
 
@@ -8091,9 +8147,13 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 验证原生服务端全角色、客户端、编辑器及产物。处理进程停止、DLL/CPython 查找、路径与驱动，并核对原版 Windows 客户端和编辑器样本。
 
 - [ ] **BW-15-03-01 跑 Windows 服务端全角色**。**验收** 能处理控制事件并关服。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-03-02 验证 DLL 和 CPython 发现**。**验收** 已安装布局中模块可导入。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-03-03 跑 Windows 客户端与编辑器**。**验收** 固定样本与原版对照。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-03-04 跑 Windows 工具和发布包**。**验收** 路径编码和启动烟测通过。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-04 macOS
 
@@ -8102,9 +8162,13 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **BW-15-04-01 跑 macOS 服务端全角色**。**验收** 能启动、停止并回收。
   - 证据（部分，未勾）：macOS 编译前置已通（afe9973）——`server_runtime::signals` 可移植到 `aarch64-apple-darwin`：等待原语按平台分派（Linux `sigwaitinfo`，macOS `sigwait`——libc crate 只给 BSD 族 `sigwait`，二者同是 POSIX 等待且都可被 `EINTR` 打断，`wait_one` 统一为负错误码）；`signal_number_to_string` 的实时信号臂（`SIGRTMIN`/`SIGRTMAX`，glibc 专属）门控到 Linux，macOS 无实时信号范围；`SIGMAX` 按平台取（Linux `SIGSYS`=31，macOS `SIGUSR2`=31，二者皆最高标准信号，`AtomicU32` 掩码一致）；`SIGNAL_NAMES` 按平台分表（参考表是 Linux 编号；macOS 编号不同：`SIGEMT`=7/`SIGBUS`=10/`SIGSYS`=12/`SIGCHLD`=20/`SIGIO`=23/`SIGINFO`=29/`SIGUSR1`=30/`SIGUSR2`=31，无 `SIGSTKFLT`/`SIGPWR`；服务端用的退出信号 `SIGTERM`/`SIGINT`/`SIGQUIT` 两端同号）。实测 `cargo check -p boundless-server --target aarch64-apple-darwin` 绿（仅剩 resources 预存警告）。**剩余**：macOS 上真机运行（`cargo build`+启动/停止/回收，需 macOS runner）；`--all-targets` 测试编译亦已绿（af0182b）——两处内联 `sigtimedwait`（server_app.rs:980/1211，BSD 无此符号）收进 `consume_pending_signal`（Linux `sigtimedwait` 零超时轮询、非 Linux `sigwait`；信号既已确认 pending 则立即返回），实测 `cargo check -p server-runtime --target aarch64-apple-darwin --all-targets` 无错；mercury 尚有 darwin 缺口（`lib.rs` 对 `event_dispatcher`/`packet_receiver` 的门控被 `interface_table.rs:18`/`request_manager.rs:27`/`network_utils.rs:36` 无条件 import；`endpoint.rs:403` 直用 linux-only `socket::IP_RECVERR`）——服务端最小入口不依赖 mercury 故不拦当前构建，待 Mercury 接入服务端（BW-02）时需先补。
 - [ ] **BW-15-04-02 验证 CPython 与应用资源布局**。**验收** 从应用包可加载。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-04-03 跑 macOS 客户端和编辑器**。**验收** 设备状态和固定地图测试通过。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-04-04 跑 macOS 工具和发布包**。**验收** 干净安装后可执行。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-04-05 验证与 Linux 和 Windows 互通**。**验收** 跨端登录及实体同步通过。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-05 三端 CI 和混合部署
 
@@ -8113,10 +8177,14 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **BW-15-05-01 配置三端原生 runner**。**验收** 每端独立构建和启动。
   - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；Windows 端构建被 `resources` 预存 unix-only 代码挡（`std::os::unix`/`Metadata::uid`，E0433/E0599，属 BW-15-03）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
 - [ ] **BW-15-05-02 在三端执行协议、资源与 Python 测试**。**验收** 各端分别留存结果。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [x] **BW-15-05-03 配置 MySQL、XML 与 SQLite 测试矩阵**。**验收** 每种模式产生独立结果。已交付（`3a2beab` 方言用例 + 本机 `ci/store.sh` 四模式实跑）：store-mysql 3/3（common/id_vocabulary + `mysql/auto_increment_contract` AUTO_INCREMENT 契约【NULL 派 1,2；显式 1000 进位→下个 NULL=1001；显式 5 不回退→1002，即 db-postgres bump_identity 的方言依据】+ `mysql/utf8_character_width_contract` VARCHAR(3) 按字符计宽【utf8mb4 单个 4 字节字符可入列，CHAR_LENGTH=1 而 LENGTH=5，对应 charset 面契约】）；store-sqlite 3/3（+ `sqlite/flip_flop_and_checksum_tables` SecondaryDatabase 面 tbl_flip/tbl_flop/tbl_checksum 逐列形状+存在探针 `SELECT COUNT(*) FROM t WHERE 0`+flip 持旧写/flop 持新写+db id 两侧成对；`sqlite/i64_ids_and_blob_round_trip` i64 全域 id（MIN/-1/MAX）+空 blob≠NULL+X'DEADBEEF' hex 往返）；store-postgres 1/1、store-xml 1/1。各模式独立隔离库（mariadbd 私有 socket/initdb 临时簇/sqlite3 私有文件/xml id-domain 检查）各落独立 TSV `$CI_OUT/store/<backend>.tsv`，database_dropped=yes。坑：同 backend 各 case 共用一库→断言表名必须 per-case（bw_assert 撞名 FAIL 一次后改名）；裸 `HAVING COUNT(*)` 是 MariaDB-only，SQLite 报 HAVING on a non-aggregate query→标量子查询替代。
 - [ ] **BW-15-05-04 配置 PostgreSQL 真实后端矩阵**。**验收** 各端完成登录、写档和重启读档。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-05-05 验证三端客户端连接不同平台服务端**。**验收** 记录每种支持组合。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-05-06 验证混部替换单角色**。**验收** 记录版本和关服顺序。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-06 平台图形和宿主依赖
 
@@ -8127,7 +8195,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-15-06-02 维护 DCC 宿主矩阵**。**验收** 逐插件记录可用宿主。（commit ff504c9）
   - 证据：`docs/review/bw15-06-02-dcc-host-matrix.md`——三插件两宿主：visualexporter/animationexporter → Autodesk 3ds Max（`MFXExport : SceneExport`（mfxexp.hpp:154），`.dle`，Max 库级导出 `LibDescription@1..LibVersion@4`（visualexporter.def/animationexporter.def，expmain.cpp:124-155），Max **2009–2013** 逐版本目标 max2009_exporter…max2013_exporter）；mayavisualexporter → Autodesk Maya（`MLL_EXPORT initializePlugin/uninitializePlugin`（visualmain.cpp:38/131），`.mll`，随分发 visualfileexporterscript.mel，Maya **2009–2014** 逐版本目标）。启用条件=`BW_CMAKE_TARGET=exporters`（`BWConfiguration_exporters.cmake` `EXPORTER_PROJECTS`：默认 Max/Maya 2010-13 + Max 2010-12，win32 追加 2009 组，win64 追加 maya2014，非 vc9 追加 max2013；`BW_EXPORTER`+`_SECURE_SCL=1`）；输出 `game/tools/exporter/3dsmax<ver>{,x64}/`、`maya<ver>{,x64}/`。缺口：`third_party/` 无 `3dsmax/`、`maya/` SDK 目录（外部依赖），插件二进制无法从本树构建——宿主实测（BW-15-06-03/04）需外部 DCC SDK 与宿主安装。
 - [ ] **BW-15-06-03 验收三端客户端与编辑流程**。**验收** 同一地图有可比证据。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-06-04 验证外部导出的跨端读取**。**验收** 各适用消费者可打开。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 ### BW-16 目录分层、依赖方向与模块归属
 
@@ -9641,9 +9711,13 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 验证原生服务端全角色、客户端、编辑器及产物。处理进程停止、DLL/CPython 查找、路径与驱动，并核对原版 Windows 客户端和编辑器样本。
 
 - [ ] **BW-15-03-01 跑 Windows 服务端全角色**。**验收** 能处理控制事件并关服。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-03-02 验证 DLL 和 CPython 发现**。**验收** 已安装布局中模块可导入。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-03-03 跑 Windows 客户端与编辑器**。**验收** 固定样本与原版对照。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-03-04 跑 Windows 工具和发布包**。**验收** 路径编码和启动烟测通过。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-04 macOS
 
@@ -9652,9 +9726,13 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **BW-15-04-01 跑 macOS 服务端全角色**。**验收** 能启动、停止并回收。
   - 证据（部分，未勾）：macOS 编译前置已通（afe9973）——`server_runtime::signals` 可移植到 `aarch64-apple-darwin`：等待原语按平台分派（Linux `sigwaitinfo`，macOS `sigwait`——libc crate 只给 BSD 族 `sigwait`，二者同是 POSIX 等待且都可被 `EINTR` 打断，`wait_one` 统一为负错误码）；`signal_number_to_string` 的实时信号臂（`SIGRTMIN`/`SIGRTMAX`，glibc 专属）门控到 Linux，macOS 无实时信号范围；`SIGMAX` 按平台取（Linux `SIGSYS`=31，macOS `SIGUSR2`=31，二者皆最高标准信号，`AtomicU32` 掩码一致）；`SIGNAL_NAMES` 按平台分表（参考表是 Linux 编号；macOS 编号不同：`SIGEMT`=7/`SIGBUS`=10/`SIGSYS`=12/`SIGCHLD`=20/`SIGIO`=23/`SIGINFO`=29/`SIGUSR1`=30/`SIGUSR2`=31，无 `SIGSTKFLT`/`SIGPWR`；服务端用的退出信号 `SIGTERM`/`SIGINT`/`SIGQUIT` 两端同号）。实测 `cargo check -p boundless-server --target aarch64-apple-darwin` 绿（仅剩 resources 预存警告）。**剩余**：macOS 上真机运行（`cargo build`+启动/停止/回收，需 macOS runner）；`--all-targets` 测试编译亦已绿（af0182b）——两处内联 `sigtimedwait`（server_app.rs:980/1211，BSD 无此符号）收进 `consume_pending_signal`（Linux `sigtimedwait` 零超时轮询、非 Linux `sigwait`；信号既已确认 pending 则立即返回），实测 `cargo check -p server-runtime --target aarch64-apple-darwin --all-targets` 无错；mercury 尚有 darwin 缺口（`lib.rs` 对 `event_dispatcher`/`packet_receiver` 的门控被 `interface_table.rs:18`/`request_manager.rs:27`/`network_utils.rs:36` 无条件 import；`endpoint.rs:403` 直用 linux-only `socket::IP_RECVERR`）——服务端最小入口不依赖 mercury 故不拦当前构建，待 Mercury 接入服务端（BW-02）时需先补。
 - [ ] **BW-15-04-02 验证 CPython 与应用资源布局**。**验收** 从应用包可加载。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-04-03 跑 macOS 客户端和编辑器**。**验收** 设备状态和固定地图测试通过。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-04-04 跑 macOS 工具和发布包**。**验收** 干净安装后可执行。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-04-05 验证与 Linux 和 Windows 互通**。**验收** 跨端登录及实体同步通过。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-05 三端 CI 和混合部署
 
@@ -9663,10 +9741,14 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **BW-15-05-01 配置三端原生 runner**。**验收** 每端独立构建和启动。
   - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；Windows 端构建被 `resources` 预存 unix-only 代码挡（`std::os::unix`/`Metadata::uid`，E0433/E0599，属 BW-15-03）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
 - [ ] **BW-15-05-02 在三端执行协议、资源与 Python 测试**。**验收** 各端分别留存结果。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [x] **BW-15-05-03 配置 MySQL、XML 与 SQLite 测试矩阵**。**验收** 每种模式产生独立结果。已交付（`3a2beab` 方言用例 + 本机 `ci/store.sh` 四模式实跑）：store-mysql 3/3（common/id_vocabulary + `mysql/auto_increment_contract` AUTO_INCREMENT 契约【NULL 派 1,2；显式 1000 进位→下个 NULL=1001；显式 5 不回退→1002，即 db-postgres bump_identity 的方言依据】+ `mysql/utf8_character_width_contract` VARCHAR(3) 按字符计宽【utf8mb4 单个 4 字节字符可入列，CHAR_LENGTH=1 而 LENGTH=5，对应 charset 面契约】）；store-sqlite 3/3（+ `sqlite/flip_flop_and_checksum_tables` SecondaryDatabase 面 tbl_flip/tbl_flop/tbl_checksum 逐列形状+存在探针 `SELECT COUNT(*) FROM t WHERE 0`+flip 持旧写/flop 持新写+db id 两侧成对；`sqlite/i64_ids_and_blob_round_trip` i64 全域 id（MIN/-1/MAX）+空 blob≠NULL+X'DEADBEEF' hex 往返）；store-postgres 1/1、store-xml 1/1。各模式独立隔离库（mariadbd 私有 socket/initdb 临时簇/sqlite3 私有文件/xml id-domain 检查）各落独立 TSV `$CI_OUT/store/<backend>.tsv`，database_dropped=yes。坑：同 backend 各 case 共用一库→断言表名必须 per-case（bw_assert 撞名 FAIL 一次后改名）；裸 `HAVING COUNT(*)` 是 MariaDB-only，SQLite 报 HAVING on a non-aggregate query→标量子查询替代。
 - [ ] **BW-15-05-04 配置 PostgreSQL 真实后端矩阵**。**验收** 各端完成登录、写档和重启读档。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-05-05 验证三端客户端连接不同平台服务端**。**验收** 记录每种支持组合。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-05-06 验证混部替换单角色**。**验收** 记录版本和关服顺序。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-06 平台图形和宿主依赖
 
@@ -9677,7 +9759,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-15-06-02 维护 DCC 宿主矩阵**。**验收** 逐插件记录可用宿主。（commit ff504c9）
   - 证据：`docs/review/bw15-06-02-dcc-host-matrix.md`——三插件两宿主：visualexporter/animationexporter → Autodesk 3ds Max（`MFXExport : SceneExport`（mfxexp.hpp:154），`.dle`，Max 库级导出 `LibDescription@1..LibVersion@4`（visualexporter.def/animationexporter.def，expmain.cpp:124-155），Max **2009–2013** 逐版本目标 max2009_exporter…max2013_exporter）；mayavisualexporter → Autodesk Maya（`MLL_EXPORT initializePlugin/uninitializePlugin`（visualmain.cpp:38/131），`.mll`，随分发 visualfileexporterscript.mel，Maya **2009–2014** 逐版本目标）。启用条件=`BW_CMAKE_TARGET=exporters`（`BWConfiguration_exporters.cmake` `EXPORTER_PROJECTS`：默认 Max/Maya 2010-13 + Max 2010-12，win32 追加 2009 组，win64 追加 maya2014，非 vc9 追加 max2013；`BW_EXPORTER`+`_SECURE_SCL=1`）；输出 `game/tools/exporter/3dsmax<ver>{,x64}/`、`maya<ver>{,x64}/`。缺口：`third_party/` 无 `3dsmax/`、`maya/` SDK 目录（外部依赖），插件二进制无法从本树构建——宿主实测（BW-15-06-03/04）需外部 DCC SDK 与宿主安装。
 - [ ] **BW-15-06-03 验收三端客户端与编辑流程**。**验收** 同一地图有可比证据。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-06-04 验证外部导出的跨端读取**。**验收** 各适用消费者可打开。
+- 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 ### BW-16 目录分层、依赖方向与模块归属
 
