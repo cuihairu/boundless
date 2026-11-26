@@ -53,6 +53,20 @@ impl SoftwareDevice {
         }
     }
 
+    /// Present one frame drawn by an arbitrary scene — the same
+    /// frame-count/checksum bookkeeping as [`Self::present`], with the
+    /// draw delegated to the caller (the fixed-map display face,
+    /// `map_view`, presents this way).
+    pub fn present_with(&mut self, draw: impl FnOnce(&mut Framebuffer)) -> FrameResult {
+        draw(&mut self.framebuffer);
+        self.frames += 1;
+        self.last_checksum = self.framebuffer.checksum();
+        FrameResult {
+            frame_index: self.frames,
+            checksum: self.last_checksum,
+        }
+    }
+
     /// Frames presented by this device object.
     pub fn frame_count(&self) -> u64 {
         self.frames

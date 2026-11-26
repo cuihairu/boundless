@@ -1,0 +1,17 @@
+[package]
+name = "boundless-client"
+description = "BW-15-02-03 Linux client leg: display the fixed map headless"
+edition.workspace = true
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The client application crate carries the fixed-map display face
+# (map_view), the software device and the screenshot writer.
+client = { workspace = true }
+
+[[bin]]
+name = "boundless-client"
+path = "src/main.rs"
