@@ -399,6 +399,47 @@ pub enum ControllerKind {
         /// `vehicleID_`.
         vehicle_id: u32,
     },
+    /// `ProximityController` (`proximity_controller.cpp`): the script
+    /// trap — an x/z trigger pair around the owner that turns
+    /// range-list crossings into `onEnterTrap`/`onLeaveTrap`. A plain
+    /// controller type: an entity may carry several traps at once.
+    /// `onloaded` is the restore state `readRealFromStream` carried
+    /// (the ids that were in range when the entity offloaded); the
+    /// start reconciles against it.
+    Proximity {
+        /// `range_`.
+        range: f32,
+        /// `pOnloadedSet_`: the ids that were inside at offload time.
+        onloaded: Vec<u32>,
+    },
+    /// `VisionController` (`vision_controller.cpp`): the seer's own
+    /// trigger plus the periodic `updateVisibleEntities` pass that
+    /// turns in-range entities into `onStartSeeing`/`onStopSeeing`
+    /// after the occlusion ladder. `onloaded_visible` is the restore
+    /// state `pOnloadedVisible_` carried.
+    Vision {
+        /// `visionAngle_`: the half-angle in radians (the field of
+        /// view is double it).
+        vision_angle: f32,
+        /// `visionRange_`.
+        vision_range: f32,
+        /// `seeingHeight_`.
+        seeing_height: f32,
+        /// `updatePeriod_`.
+        update_period: u32,
+        /// `tickSinceLast_`.
+        ticks_since_last: u32,
+        /// `pOnloadedVisible_`: the ids that were visible at offload
+        /// time, restored before the first update runs.
+        onloaded_visible: Vec<u32>,
+    },
+    /// `VisibilityController` (`visibility_controller.cpp`): the
+    /// ghost-domain marker that makes the owner seeable and carries
+    /// the model height others sight against.
+    Visibility {
+        /// `visibleHeight_` (the factory default is 2.f).
+        visible_height: f32,
+    },
 }
 
 /// The category string every movement-family controller registers under
@@ -565,7 +606,7 @@ impl Controller {
     /// ported kind is real.
     pub fn domain(&self) -> u8 {
         match self.kind {
-            ControllerKind::Passenger { .. } => DOMAIN_GHOST,
+            ControllerKind::Passenger { .. } | ControllerKind::Visibility { .. } => DOMAIN_GHOST,
             _ => DOMAIN_REAL,
         }
     }
@@ -1056,6 +1097,10 @@ impl CellApp {
             }
         };
 
+        // `RealEntity`'s ctor takes the creation tick
+        // (`creationTime_( CellApp::instance().time() )`).
+        entity_rc.borrow_mut().creation_time = self.time;
+
         // `Entity::callbacksPermitted( false )` around the whole build.
         self.callbacks_permitted(false);
 
@@ -1130,6 +1175,13 @@ impl CellApp {
         entity_rc.borrow_mut().has_witness = witness == b'W';
         // Anything other than 'W'/'-' is the ERROR "Illegal Witness
         // indicator"; the build carries on without a witness either way.
+        if entity_rc.borrow().has_witness {
+            // `Witness::Witness` + its `AoITrigger`: the AoI observes
+            // from the first tick the entity is real. Its initial
+            // crossings queue up until the witness's next pump.
+            self.add_witness(space_id, id)
+                .expect("the witness entity is on the space's range list");
+        }
 
         if is_restore {
             // The offload tail the creation head precedes: the
@@ -1298,6 +1350,15 @@ impl CellApp {
             ControllerKind::Passenger { vehicle_id } => {
                 self.passenger_start(entity_rc, id, vehicle_id)
             }
+            ControllerKind::Proximity { range, onloaded } => {
+                self.start_proximity_controller(entity_rc, id, is_initial_start, range, onloaded)
+            }
+            ControllerKind::Vision { .. } => {
+                self.start_vision_controller(entity_rc, id, is_initial_start)
+            }
+            ControllerKind::Visibility { visible_height } => {
+                self.visibility_start(entity_rc, id, visible_height)
+            }
             _ => self.start_movement_controller(entity_rc, id, kind),
         }
     }
@@ -1378,8 +1439,23 @@ impl CellApp {
         // The ghost-domain half of `stop`: the passenger marker runs its
         // stop face while the controller is still in reach (the
         // reference's `PassengerController::stopGhost`).
-        if let Some(ControllerKind::Passenger { vehicle_id }) = kind {
-            self.passenger_stop(&entity_rc, id, vehicle_id);
+        if let Some(ControllerKind::Passenger { vehicle_id }) = &kind {
+            self.passenger_stop(&entity_rc, id, *vehicle_id);
+        }
+        // The sensor controllers' stop faces (`stopReal`'s trigger
+        // teardown, `stopGhost`'s visibility clear) run here too, the
+        // controller still in reach.
+        match &kind {
+            Some(ControllerKind::Proximity { .. }) => {
+                self.stop_proximity_controller(&entity_rc, id);
+            }
+            Some(ControllerKind::Vision { .. }) => {
+                self.stop_vision_controller(&entity_rc, id);
+            }
+            Some(ControllerKind::Visibility { .. }) => {
+                self.visibility_stop(&entity_rc, id);
+            }
+            _ => {}
         }
         // The updatable half of `stopReal`: a movement controller leaves
         // the per-tick registry with its container entry.
@@ -1405,6 +1481,14 @@ impl CellApp {
     pub fn advance_tick(&mut self) {
         self.time += 1;
         self.run_movement_pass();
+        // The sensor sinks' pump: the traps' and the seers' crossings
+        // the pass shuffled dispatch here (the reference fires them
+        // synchronously inside the shuffles).
+        self.dispatch_sensor_events();
+        // The witnesses' stealth noises pump here too —
+        // `Witness::newPosition`'s synchronous `makeNoise`
+        // (`witness.cpp:2398`).
+        self.dispatch_witness_noises();
         self.time_queue.process(self.time);
         let events = std::mem::take(&mut *self.router_events.borrow_mut());
         for event in events {
@@ -1417,6 +1501,21 @@ impl CellApp {
                 RouterEvent::Release { entity, id } => self.handle_release_event(entity, id),
             }
         }
+        // `CellApp::handleTrimHistoriesTimeSlice` → `EntityPopulation::
+        // expireRealChannels` (cellapp.cpp:1502): the previous
+        // generation's cached real channels roll off once per tick.
+        self.expire_real_channels();
+        // `CellApp::updateLoad` (cellapp.cpp:1405): the load face the
+        // CellAppMgr reads back — the throttle state machine, the
+        // smoothed loads and the tick warnings ride this pump. A frame
+        // without profiler samples holds the throttle.
+        if let Some(sample) = self.load_sample.take() {
+            self.update_load(sample);
+        }
+        // `cells_.tickRecordings()` (cellapp.cpp:1432): the game-tick
+        // tail — the volatile blocks flush, the tick data hands off,
+        // the stopped collectors leave.
+        self.tick_recordings();
     }
 
     /// `TimerController::handleTimeout`: `start_ += interval_`, then the
@@ -1508,6 +1607,10 @@ impl CellApp {
         // reference defers the ghost-domain controllers to the ghost
         // half; this port's destroyed entry has no ghost half, so the
         // teardown runs every face now.
+        // The witness dies (`~RealEntity`): the trigger leaves the
+        // range list without contracting — the offload face owns the
+        // leaves.
+        self.remove_witness(entity);
         entity_rc.borrow_mut().has_witness = false;
         let ids: Vec<ControllerId> = entity_rc
             .borrow()
@@ -1539,6 +1642,16 @@ impl CellApp {
         // (the base's entities let the base take care of it).
         if !has_base {
             self.returned_entity_ids.push(entity);
+        }
+
+        // `Entity::destroy` (entity.cpp:2952/2962): a real's destroy
+        // forgets the cached channel; a ghost's destroy remembers where
+        // it thought the real was, so a later message for the id still
+        // finds its way during the switch.
+        if entity_rc.borrow().is_real {
+            self.forget_real_channel(entity);
+        } else if let Some(real_addr) = entity_rc.borrow().real_addr {
+            self.remember_real_channel(entity, real_addr);
         }
     }
 }
@@ -2677,9 +2790,13 @@ mod tests {
                 space_id: SID,
                 app_addr: 10,
                 node: CellInfoNode::first(),
+                rect: (0.0, 0.0, 0.0, 0.0),
+                is_delete_pending: false,
             },
             space_gone_count: 0,
             reuse_count: 0,
+            should_offload: true,
+            is_removed: false,
         }));
         {
             let space = spaces.get_mut(&SID).expect("fixture space");

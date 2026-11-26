@@ -78,6 +78,12 @@ const CONTROLLER_TYPE_NAVIGATION: u32 = 7;
 const CONTROLLER_TYPE_EXCLUSIVE: u32 = 8;
 /// `PassengerController` (`passenger_controller.cpp`'s type).
 const CONTROLLER_TYPE_PASSENGER: u32 = 9;
+/// `ProximityController` (`proximity_controller.cpp`'s type).
+const CONTROLLER_TYPE_PROXIMITY: u32 = 10;
+/// `VisionController` (`vision_controller.cpp`'s type).
+const CONTROLLER_TYPE_VISION: u32 = 11;
+/// `VisibilityController` (`visibility_controller.cpp`'s type).
+const CONTROLLER_TYPE_VISIBILITY: u32 = 12;
 
 /// `NavLoc` (`lib/waypoint/navloc.hpp`) at the resolution this cluster
 /// needs: which waypoint set (the port's stand-in for the
@@ -314,7 +320,7 @@ enum NavigationStatus {
 }
 
 /// The port's stable type code of a kind (`Controller::type()`).
-fn controller_type_code(kind: &ControllerKind) -> u32 {
+pub(crate) fn controller_type_code(kind: &ControllerKind) -> u32 {
     match kind {
         ControllerKind::Timer { .. } => CONTROLLER_TYPE_TIMER,
         ControllerKind::Exclusive { .. } => CONTROLLER_TYPE_EXCLUSIVE,
@@ -325,13 +331,16 @@ fn controller_type_code(kind: &ControllerKind) -> u32 {
         ControllerKind::NavigateStep { .. } => CONTROLLER_TYPE_NAVIGATE_STEP,
         ControllerKind::Navigation { .. } => CONTROLLER_TYPE_NAVIGATION,
         ControllerKind::Passenger { .. } => CONTROLLER_TYPE_PASSENGER,
+        ControllerKind::Proximity { .. } => CONTROLLER_TYPE_PROXIMITY,
+        ControllerKind::Vision { .. } => CONTROLLER_TYPE_VISION,
+        ControllerKind::Visibility { .. } => CONTROLLER_TYPE_VISIBILITY,
     }
 }
 
 /// One kind's `writeRealToStream` payload, in the reference's field
 /// order. `entity_velocity` feeds the acceleration family's
 /// `currVelocity_` (this port keeps that state on the entity).
-fn write_controller_payload(
+pub(crate) fn write_controller_payload(
     stream: &mut BinaryStream,
     kind: &ControllerKind,
     entity_velocity: [f32; 3],
@@ -426,12 +435,54 @@ fn write_controller_payload(
         // `PassengerController::writeRealToStream` — a zero-byte payload
         // (`CONTROLLER_DECLARE_GHOST_ONLY` carries no fields).
         ControllerKind::Passenger { .. } => {}
+        // `ProximityController::writeRealToStream`
+        // (`proximity_controller.cpp:298`): the range, then the ids in
+        // the trap — the caller hands the live membership over in the
+        // `onloaded` slot (the field doubles as the restore set on a
+        // read).
+        ControllerKind::Proximity { range, onloaded } => {
+            stream.write_f32(*range);
+            stream.write_u32(onloaded.len() as u32);
+            for id in onloaded {
+                stream.write_u32(*id);
+            }
+        }
+        // `VisionController::writeRealToStream`
+        // (`vision_controller.cpp:148`): the four scalars, then the
+        // visible ids (`seeingHeight_` is not streamed — the restore
+        // rebuilds it from the controller's default).
+        ControllerKind::Vision {
+            vision_angle,
+            vision_range,
+            ticks_since_last,
+            update_period,
+            onloaded_visible,
+            ..
+        } => {
+            stream
+                .write_f32(*vision_angle)
+                .write_f32(*vision_range)
+                .write_u32(*ticks_since_last)
+                .write_u32(*update_period);
+            stream.write_u32(onloaded_visible.len() as u32);
+            for id in onloaded_visible {
+                stream.write_u32(*id);
+            }
+        }
+        // `VisibilityController::writeGhostToStream`
+        // (`visibility_controller.cpp:56`): the height alone.
+        ControllerKind::Visibility { visible_height } => {
+            stream.write_f32(*visible_height);
+        }
     }
 }
 
 /// One kind's `readRealFromStream` payload. `None` is a malformed stream
 /// face (an unknown type code or an out-of-range facing).
-fn read_controller_payload(stream: &mut BinaryStream, type_code: u32) -> Option<ControllerKind> {
+pub(crate) fn read_controller_payload(
+    stream: &mut BinaryStream,
+    type_code: u32,
+) -> Option<ControllerKind> {
     let kind = match type_code {
         CONTROLLER_TYPE_TIMER => ControllerKind::Timer {
             start: stream.read_u32().ok()?,
@@ -534,6 +585,51 @@ fn read_controller_payload(stream: &mut BinaryStream, type_code: u32) -> Option<
                 dst_loc: None,
             }
         }
+        // The ghost-domain face (`readGhostsFromStream`): the zero-byte
+        // passenger payload leaves the vehicle link detached — it
+        // re-forms when the ghost's controller starts.
+        CONTROLLER_TYPE_PASSENGER => ControllerKind::Passenger { vehicle_id: 0 },
+        // `ProximityController::readRealFromStream`
+        // (`proximity_controller.cpp:333`): the range, then the trapped
+        // ids — the restore's `pOnloadedSet_`, allocated only for a
+        // nonzero count.
+        CONTROLLER_TYPE_PROXIMITY => {
+            let range = stream.read_f32().ok()?;
+            let count = stream.read_u32().ok()?;
+            let mut onloaded = Vec::new();
+            for _ in 0..count {
+                onloaded.push(stream.read_u32().ok()?);
+            }
+            ControllerKind::Proximity { range, onloaded }
+        }
+        // `VisionController::readRealFromStream`
+        // (`vision_controller.cpp:171`): the four scalars, then the
+        // visible ids — `pOnloadedVisible_`. `seeingHeight_` is not on
+        // the stream and reads the constructor default.
+        CONTROLLER_TYPE_VISION => {
+            let vision_angle = stream.read_f32().ok()?;
+            let vision_range = stream.read_f32().ok()?;
+            let ticks_since_last = stream.read_u32().ok()?;
+            let update_period = stream.read_u32().ok()?;
+            let count = stream.read_u32().ok()?;
+            let mut onloaded_visible = Vec::new();
+            for _ in 0..count {
+                onloaded_visible.push(stream.read_u32().ok()?);
+            }
+            ControllerKind::Vision {
+                vision_angle,
+                vision_range,
+                seeing_height: 0.0,
+                update_period,
+                ticks_since_last,
+                onloaded_visible,
+            }
+        }
+        // The ghost-domain face: the visibility controller's height
+        // (`readGhostFromStream`).
+        CONTROLLER_TYPE_VISIBILITY => ControllerKind::Visibility {
+            visible_height: stream.read_f32().ok()?,
+        },
         _ => return None,
     };
     Some(kind)
@@ -1208,7 +1304,36 @@ impl CellApp {
             stream.write_u32(*cid as u32);
             stream.write_u32(controller_type_code(&controller.kind));
             stream.write_i32(controller.user_arg);
-            write_controller_payload(&mut stream, &controller.kind, velocity);
+            // The sensor kinds stream their LIVE sets: the trap's
+            // membership folds out of its sink, the seer's visible ids
+            // read off the last pass (`writeRealToStream` walks the
+            // trigger bounds / the visible set).
+            let payload_kind = match &controller.kind {
+                ControllerKind::Proximity { range, .. } => ControllerKind::Proximity {
+                    range: *range,
+                    onloaded: self.trap_live_members(*cid),
+                },
+                ControllerKind::Vision {
+                    vision_angle,
+                    vision_range,
+                    ticks_since_last,
+                    update_period,
+                    ..
+                } => ControllerKind::Vision {
+                    vision_angle: *vision_angle,
+                    vision_range: *vision_range,
+                    seeing_height: 0.0,
+                    update_period: *update_period,
+                    ticks_since_last: *ticks_since_last,
+                    onloaded_visible: self
+                        .visible_entities
+                        .get(&entity)
+                        .map(|seen| seen.iter().copied().collect())
+                        .unwrap_or_default(),
+                },
+                other => other.clone(),
+            };
+            write_controller_payload(&mut stream, &payload_kind, velocity);
         }
         Some(stream.as_bytes().to_vec())
     }
