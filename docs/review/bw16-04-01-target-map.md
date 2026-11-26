@@ -17,7 +17,7 @@
 |---|---|---|---|
 | `cstdmf` | `crates/foundation` | 内联 `#[test]`（`crates/foundation/src/*`） | 基础工具/日志/时间 |
 | `math` | `crates/foundation` | 同上 | `Matrix`/`Vector*` 等（BW-01） |
-| `network` | `crates/mercury` | 内联（`crates/mercury/src/*`，377 测） | 流编解码 5/5（BW-01-02）；`platform::{interface,socket}` 面在禁区分块 |
+| `network` | `crates/mercury` | 内联（`crates/mercury/src/*`，384 测） | 流编解码 5/5（BW-01-02）；`platform::{interface,socket}` 面在禁区分块 |
 | `entitydef` | `crates/entitydef` | `crates/entitydef/tests/*`（3 文件）+ 内联（257 测） | BW-04 全勾 |
 | `entitydef_script` | `crates/entitydef` + `crates/python-host/src/script_types.rs` | 同上 + python-host 内联 | **部分**：defs 解析/存储面；`BigWorld.Entity/Base/Proxy` 脚本类型已落地（`422d275`，BW-16-03-02：`Py_tp_base` 继承 + `tp_new` 拒绝语义）；entity-script 导入面待 |
 | `pyscript` | `crates/python-host` | 内联（154 测，含 62 场景 out-of-process） | BW-03-01 全勾 |
