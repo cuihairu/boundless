@@ -2961,10 +2961,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [ ] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。
-- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。
-- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。
-- [ ] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。
+- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（opt26-db 席 `4c75e00`，lane/opt-26-db，main=`6973092`：crates/db-postgres/tests/event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账，钉定样本报表（四级窗口+五查询形计数）为 01-04 复算基线；TSV docs/review/fixtures/event-query/event-query.tsv 39 行，证据页 docs/review/opt-26-01-01-event-query-baseline.md；本席 main 复测 6 绿，TSV 复捕墙钟行随负载漂（结构计数行恒等）只记录不设带）
+- [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。（opt26-db 席 `40b58e0`，lane/opt-26-db，main=`027c6c0`：crates/db-postgres/tests/import_batch_candidates.rs 3 测=同 512 行语料五种事务形（每 1/16/64/256 行一提交+整库一事务）各报墙/吞吐/计数分配器峰值且逐形回读恒等；TSV docs/review/fixtures/import-batch/import-batch.tsv 30 行，证据页 docs/review/opt-26-01-02-import-batch.md；本席 main 复测 3 绿（批 64+ 后吞吐平坦 620-640 rows/s，批 1 最慢=每行一提交））
+- [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。（opt26-db 席 `bf335b5`，lane/opt-26-db，main=`5df3486`：crates/db-postgres/tests/query_aggregation_candidates.rs 3 测=一全扫建 name→id（512）+level→ids（200 键）两聚合图，同 128 名抽样网格前后对照——基线 name 查询 ~14× 键控 get，聚合后网格解析走图不走扫；TSV docs/review/fixtures/query-aggr/query-aggr.tsv 21 行，证据页 docs/review/opt-26-01-03-query-aggregation.md；本席 main 复测 3 绿（加速比两跑 8350×/4746×=负载敏感记录行，128 网格断言恒等））
+- [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。（opt26-db 席 `b34554a`，lane/opt-26-db，main=`1590095`：crates/db-postgres/tests/sample_report_rerun.rs 3 测=同固定事件流重放后从**存储语料**复算样本报表，对照盘上 docs/review/fixtures/event-query/event-query.tsv 基线（四级窗口+五查询形计数逐项等），再在每项优化（64 行批导入/两聚合图）后各复算一次仍等；证据页 docs/review/opt-26-01-04-sample-report-rerun.md；本席 main 复测 3 绿）
 
 ## 5. 实施顺序与里程碑
 
@@ -4541,10 +4541,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [ ] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。
-- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。
-- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。
-- [ ] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。
+- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（opt26-db 席 `4c75e00`，lane/opt-26-db，main=`6973092`：crates/db-postgres/tests/event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账，钉定样本报表（四级窗口+五查询形计数）为 01-04 复算基线；TSV docs/review/fixtures/event-query/event-query.tsv 39 行，证据页 docs/review/opt-26-01-01-event-query-baseline.md；本席 main 复测 6 绿，TSV 复捕墙钟行随负载漂（结构计数行恒等）只记录不设带）
+- [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。（opt26-db 席 `40b58e0`，lane/opt-26-db，main=`027c6c0`：crates/db-postgres/tests/import_batch_candidates.rs 3 测=同 512 行语料五种事务形（每 1/16/64/256 行一提交+整库一事务）各报墙/吞吐/计数分配器峰值且逐形回读恒等；TSV docs/review/fixtures/import-batch/import-batch.tsv 30 行，证据页 docs/review/opt-26-01-02-import-batch.md；本席 main 复测 3 绿（批 64+ 后吞吐平坦 620-640 rows/s，批 1 最慢=每行一提交））
+- [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。（opt26-db 席 `bf335b5`，lane/opt-26-db，main=`5df3486`：crates/db-postgres/tests/query_aggregation_candidates.rs 3 测=一全扫建 name→id（512）+level→ids（200 键）两聚合图，同 128 名抽样网格前后对照——基线 name 查询 ~14× 键控 get，聚合后网格解析走图不走扫；TSV docs/review/fixtures/query-aggr/query-aggr.tsv 21 行，证据页 docs/review/opt-26-01-03-query-aggregation.md；本席 main 复测 3 绿（加速比两跑 8350×/4746×=负载敏感记录行，128 网格断言恒等））
+- [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。（opt26-db 席 `b34554a`，lane/opt-26-db，main=`1590095`：crates/db-postgres/tests/sample_report_rerun.rs 3 测=同固定事件流重放后从**存储语料**复算样本报表，对照盘上 docs/review/fixtures/event-query/event-query.tsv 基线（四级窗口+五查询形计数逐项等），再在每项优化（64 行批导入/两聚合图）后各复算一次仍等；证据页 docs/review/opt-26-01-04-sample-report-rerun.md；本席 main 复测 3 绿）
 
 ## 5. 实施顺序与里程碑
 
@@ -6082,10 +6082,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [ ] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。
-- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。
-- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。
-- [ ] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。
+- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（opt26-db 席 `4c75e00`，lane/opt-26-db，main=`6973092`：crates/db-postgres/tests/event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账，钉定样本报表（四级窗口+五查询形计数）为 01-04 复算基线；TSV docs/review/fixtures/event-query/event-query.tsv 39 行，证据页 docs/review/opt-26-01-01-event-query-baseline.md；本席 main 复测 6 绿，TSV 复捕墙钟行随负载漂（结构计数行恒等）只记录不设带）
+- [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。（opt26-db 席 `40b58e0`，lane/opt-26-db，main=`027c6c0`：crates/db-postgres/tests/import_batch_candidates.rs 3 测=同 512 行语料五种事务形（每 1/16/64/256 行一提交+整库一事务）各报墙/吞吐/计数分配器峰值且逐形回读恒等；TSV docs/review/fixtures/import-batch/import-batch.tsv 30 行，证据页 docs/review/opt-26-01-02-import-batch.md；本席 main 复测 3 绿（批 64+ 后吞吐平坦 620-640 rows/s，批 1 最慢=每行一提交））
+- [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。（opt26-db 席 `bf335b5`，lane/opt-26-db，main=`5df3486`：crates/db-postgres/tests/query_aggregation_candidates.rs 3 测=一全扫建 name→id（512）+level→ids（200 键）两聚合图，同 128 名抽样网格前后对照——基线 name 查询 ~14× 键控 get，聚合后网格解析走图不走扫；TSV docs/review/fixtures/query-aggr/query-aggr.tsv 21 行，证据页 docs/review/opt-26-01-03-query-aggregation.md；本席 main 复测 3 绿（加速比两跑 8350×/4746×=负载敏感记录行，128 网格断言恒等））
+- [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。（opt26-db 席 `b34554a`，lane/opt-26-db，main=`1590095`：crates/db-postgres/tests/sample_report_rerun.rs 3 测=同固定事件流重放后从**存储语料**复算样本报表，对照盘上 docs/review/fixtures/event-query/event-query.tsv 基线（四级窗口+五查询形计数逐项等），再在每项优化（64 行批导入/两聚合图）后各复算一次仍等；证据页 docs/review/opt-26-01-04-sample-report-rerun.md；本席 main 复测 3 绿）
 
 ## 5. 实施顺序与里程碑
 
@@ -7623,10 +7623,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [ ] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。
-- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。
-- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。
-- [ ] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。
+- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（opt26-db 席 `4c75e00`，lane/opt-26-db，main=`6973092`：crates/db-postgres/tests/event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账，钉定样本报表（四级窗口+五查询形计数）为 01-04 复算基线；TSV docs/review/fixtures/event-query/event-query.tsv 39 行，证据页 docs/review/opt-26-01-01-event-query-baseline.md；本席 main 复测 6 绿，TSV 复捕墙钟行随负载漂（结构计数行恒等）只记录不设带）
+- [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。（opt26-db 席 `40b58e0`，lane/opt-26-db，main=`027c6c0`：crates/db-postgres/tests/import_batch_candidates.rs 3 测=同 512 行语料五种事务形（每 1/16/64/256 行一提交+整库一事务）各报墙/吞吐/计数分配器峰值且逐形回读恒等；TSV docs/review/fixtures/import-batch/import-batch.tsv 30 行，证据页 docs/review/opt-26-01-02-import-batch.md；本席 main 复测 3 绿（批 64+ 后吞吐平坦 620-640 rows/s，批 1 最慢=每行一提交））
+- [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。（opt26-db 席 `bf335b5`，lane/opt-26-db，main=`5df3486`：crates/db-postgres/tests/query_aggregation_candidates.rs 3 测=一全扫建 name→id（512）+level→ids（200 键）两聚合图，同 128 名抽样网格前后对照——基线 name 查询 ~14× 键控 get，聚合后网格解析走图不走扫；TSV docs/review/fixtures/query-aggr/query-aggr.tsv 21 行，证据页 docs/review/opt-26-01-03-query-aggregation.md；本席 main 复测 3 绿（加速比两跑 8350×/4746×=负载敏感记录行，128 网格断言恒等））
+- [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。（opt26-db 席 `b34554a`，lane/opt-26-db，main=`1590095`：crates/db-postgres/tests/sample_report_rerun.rs 3 测=同固定事件流重放后从**存储语料**复算样本报表，对照盘上 docs/review/fixtures/event-query/event-query.tsv 基线（四级窗口+五查询形计数逐项等），再在每项优化（64 行批导入/两聚合图）后各复算一次仍等；证据页 docs/review/opt-26-01-04-sample-report-rerun.md；本席 main 复测 3 绿）
 
 ## 5. 实施顺序与里程碑
 
@@ -9203,10 +9203,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [ ] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。
-- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。
-- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。
-- [ ] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。
+- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（opt26-db 席 `4c75e00`，lane/opt-26-db，main=`6973092`：crates/db-postgres/tests/event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账，钉定样本报表（四级窗口+五查询形计数）为 01-04 复算基线；TSV docs/review/fixtures/event-query/event-query.tsv 39 行，证据页 docs/review/opt-26-01-01-event-query-baseline.md；本席 main 复测 6 绿，TSV 复捕墙钟行随负载漂（结构计数行恒等）只记录不设带）
+- [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。（opt26-db 席 `40b58e0`，lane/opt-26-db，main=`027c6c0`：crates/db-postgres/tests/import_batch_candidates.rs 3 测=同 512 行语料五种事务形（每 1/16/64/256 行一提交+整库一事务）各报墙/吞吐/计数分配器峰值且逐形回读恒等；TSV docs/review/fixtures/import-batch/import-batch.tsv 30 行，证据页 docs/review/opt-26-01-02-import-batch.md；本席 main 复测 3 绿（批 64+ 后吞吐平坦 620-640 rows/s，批 1 最慢=每行一提交））
+- [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。（opt26-db 席 `bf335b5`，lane/opt-26-db，main=`5df3486`：crates/db-postgres/tests/query_aggregation_candidates.rs 3 测=一全扫建 name→id（512）+level→ids（200 键）两聚合图，同 128 名抽样网格前后对照——基线 name 查询 ~14× 键控 get，聚合后网格解析走图不走扫；TSV docs/review/fixtures/query-aggr/query-aggr.tsv 21 行，证据页 docs/review/opt-26-01-03-query-aggregation.md；本席 main 复测 3 绿（加速比两跑 8350×/4746×=负载敏感记录行，128 网格断言恒等））
+- [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。（opt26-db 席 `b34554a`，lane/opt-26-db，main=`1590095`：crates/db-postgres/tests/sample_report_rerun.rs 3 测=同固定事件流重放后从**存储语料**复算样本报表，对照盘上 docs/review/fixtures/event-query/event-query.tsv 基线（四级窗口+五查询形计数逐项等），再在每项优化（64 行批导入/两聚合图）后各复算一次仍等；证据页 docs/review/opt-26-01-04-sample-report-rerun.md；本席 main 复测 3 绿）
 
 ## 5. 实施顺序与里程碑
 
@@ -10744,10 +10744,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [ ] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。
-- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。
-- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。
-- [ ] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。
+- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（opt26-db 席 `4c75e00`，lane/opt-26-db，main=`6973092`：crates/db-postgres/tests/event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账，钉定样本报表（四级窗口+五查询形计数）为 01-04 复算基线；TSV docs/review/fixtures/event-query/event-query.tsv 39 行，证据页 docs/review/opt-26-01-01-event-query-baseline.md；本席 main 复测 6 绿，TSV 复捕墙钟行随负载漂（结构计数行恒等）只记录不设带）
+- [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。（opt26-db 席 `40b58e0`，lane/opt-26-db，main=`027c6c0`：crates/db-postgres/tests/import_batch_candidates.rs 3 测=同 512 行语料五种事务形（每 1/16/64/256 行一提交+整库一事务）各报墙/吞吐/计数分配器峰值且逐形回读恒等；TSV docs/review/fixtures/import-batch/import-batch.tsv 30 行，证据页 docs/review/opt-26-01-02-import-batch.md；本席 main 复测 3 绿（批 64+ 后吞吐平坦 620-640 rows/s，批 1 最慢=每行一提交））
+- [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。（opt26-db 席 `bf335b5`，lane/opt-26-db，main=`5df3486`：crates/db-postgres/tests/query_aggregation_candidates.rs 3 测=一全扫建 name→id（512）+level→ids（200 键）两聚合图，同 128 名抽样网格前后对照——基线 name 查询 ~14× 键控 get，聚合后网格解析走图不走扫；TSV docs/review/fixtures/query-aggr/query-aggr.tsv 21 行，证据页 docs/review/opt-26-01-03-query-aggregation.md；本席 main 复测 3 绿（加速比两跑 8350×/4746×=负载敏感记录行，128 网格断言恒等））
+- [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。（opt26-db 席 `b34554a`，lane/opt-26-db，main=`1590095`：crates/db-postgres/tests/sample_report_rerun.rs 3 测=同固定事件流重放后从**存储语料**复算样本报表，对照盘上 docs/review/fixtures/event-query/event-query.tsv 基线（四级窗口+五查询形计数逐项等），再在每项优化（64 行批导入/两聚合图）后各复算一次仍等；证据页 docs/review/opt-26-01-04-sample-report-rerun.md；本席 main 复测 3 绿）
 
 ## 5. 实施顺序与里程碑
 
