@@ -43,28 +43,6 @@ pub struct FsResolver {
     root: PathBuf,
 }
 
-// `DataSectionCache` (`resmgr/data_section_cache.hpp`): the reference
-// resource manager keeps parsed sections for the process lifetime, keyed
-// by path, so a repeated open re-parses nothing (`find`/`add`; `clear`
-// is its invalidation face). The port keys the cache by the joined
-// full path and bounds it by entry count instead of bytes — on overflow
-// it clears rather than tracking an LRU chain, which the definition
-// trees (a few dozen small files) never exercise.
-thread_local! {
-    static SECTION_CACHE: std::cell::RefCell<HashMap<PathBuf, DataSection>> =
-        std::cell::RefCell::new(HashMap::new());
-}
-
-/// The cache bound in entries; the reference bounds by bytes
-/// (`DataSectionCache::setSize`).
-const SECTION_CACHE_LIMIT: usize = 1024;
-
-/// `DataSectionCache::clear`: drop every cached parse — the face a
-/// definition reload uses after its files change on disk.
-pub fn clear_section_cache() {
-    SECTION_CACHE.with(|cache| cache.borrow_mut().clear());
-}
-
 impl FsResolver {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
@@ -77,21 +55,8 @@ impl FsResolver {
 
 impl DefResolver for FsResolver {
     fn open_section(&self, path: &str) -> Option<DataSection> {
-        let full = self.full_path(path);
-        let cached = SECTION_CACHE.with(|cache| cache.borrow().get(&full).cloned());
-        if let Some(section) = cached {
-            return Some(section);
-        }
-        let raw = std::fs::read(&full).ok()?;
-        let section = resources::datasection::parse("", &raw).ok()?;
-        SECTION_CACHE.with(|cache| {
-            let mut cache = cache.borrow_mut();
-            if cache.len() >= SECTION_CACHE_LIMIT {
-                cache.clear();
-            }
-            cache.insert(full, section.clone());
-        });
-        Some(section)
+        let raw = std::fs::read(self.full_path(path)).ok()?;
+        resources::datasection::parse("", &raw).ok()
     }
 
     fn python_script_exists(&self, path: &str) -> bool {

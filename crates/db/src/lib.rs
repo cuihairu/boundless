@@ -24,7 +24,6 @@ pub mod buffered_entity_tasks;
 pub mod charset;
 pub mod config;
 pub mod custom_billing;
-pub mod default_entity;
 pub mod error;
 pub mod lock_recovery;
 pub mod log_on;
@@ -54,7 +53,6 @@ pub use charset::{
     utf8_truncate_to_chars,
 };
 pub use config::{DatabaseConfig, PostgresConnection, StorageBackend};
-pub use default_entity::{DefaultEntity, create_new_entity};
 pub use error::DbError;
 pub use lookup::{
     EntityDefIndex, LookUpEntitiesCriteria, LookUpEntitiesFilter, LookupDefs,

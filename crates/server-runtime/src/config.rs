@@ -342,9 +342,8 @@ impl BwConfig {
 }
 
 /// The `pw_name` half of `getpwuid`: the `/etc/passwd` account name for
-/// `uid`; `None` when no entry matches. Crate-shared with the login
-/// interface's probe reply (`getpwuid`, loginapp.cpp:1173).
-pub(crate) fn passwd_name(uid: u32) -> Option<String> {
+/// `uid`; `None` when no entry matches.
+fn passwd_name(uid: u32) -> Option<String> {
     let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
     for line in passwd.lines() {
         let fields: Vec<&str> = line.split(':').collect();

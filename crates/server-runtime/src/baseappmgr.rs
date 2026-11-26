@@ -18,9 +18,7 @@ use std::collections::BTreeMap;
 
 use crate::entity_creator::EntityMailBoxRef;
 use crate::services_map::ServicesMap;
-use crate::shared_data::{
-    SharedDataMessage, SharedDataOutcome, SharedDataSync, read_shared_section,
-};
+use crate::shared_data::{SharedDataMessage, SharedDataOutcome, read_shared_section};
 use foundation::stream::{BinaryStream, StreamError};
 
 /// `BaseAppMgrInterface::CreateEntityError::CREATE_ENTITY_ERROR_NO_BASEAPPS`.
@@ -590,30 +588,7 @@ impl BaseAppScheduler {
                 },
             ));
         }
-        for (key, value) in &self.shared_global_data {
-            out.push((
-                addr_for_cells,
-                ToBaseApp::SetSharedData {
-                    data_type: SHARED_DATA_TYPE_GLOBAL,
-                    key: key.clone(),
-                    value: value.clone(),
-                    original_src: (0, 0),
-                },
-            ));
-        }
         out
-    }
-
-    /// The batched join-sync of the authoritative maps (base-app data
-    /// first, then global data): the optimization form of the per-entry
-    /// fill, one message instead of one per entry.
-    pub fn join_sync(&self) -> SharedDataSync {
-        SharedDataSync::from_maps(
-            SHARED_DATA_TYPE_BASE_APP,
-            &self.shared_base_app_data,
-            SHARED_DATA_TYPE_GLOBAL,
-            &self.shared_global_data,
-        )
     }
 
     /// `BaseAppMgr::del` / `onBaseAppDeath`: remove a ready app.
@@ -1164,34 +1139,6 @@ mod tests {
     // BW-05-03-01 登记与移除 BaseApp
     // ------------------------------------------------------------------
 
-    /// The synchronize fill streams base-app data ahead of global data
-    /// (`baseappmgr.cpp:1414-1430`), one `setSharedData` message per
-    /// entry, exactly the batched join-sync's expansion.
-    #[test]
-    fn the_synchronize_fill_carries_both_maps() {
-        let mut scheduler = ready_scheduler();
-        scheduler.set_shared_data(SHARED_DATA_TYPE_BASE_APP, "b", "1", (0, 0));
-        scheduler.set_shared_data(SHARED_DATA_TYPE_GLOBAL, "g", "2", (0, 0));
-
-        let addr = cell_addr(0);
-        assert!(matches!(
-            scheduler.register(addr, client_addr(0), false, 10),
-            RegisterOutcome::Registered(_)
-        ));
-        let fill = scheduler.finished_init(addr);
-        let shared: Vec<_> = fill
-            .into_iter()
-            .filter_map(|(_, m)| match m {
-                ToBaseApp::SetSharedData { data_type, key, .. } => Some((data_type, key)),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(shared.len(), 2);
-        assert_eq!(shared[0], (SHARED_DATA_TYPE_BASE_APP, "b".to_string()));
-        assert_eq!(shared[1], (SHARED_DATA_TYPE_GLOBAL, "g".to_string()));
-        assert_eq!(shared.len(), scheduler.join_sync().entries.len());
-    }
-
     /// Registration parks the app in the pending set; `finishedInit` moves
     /// it to the ready set.
     #[test]
@@ -1528,70 +1475,6 @@ mod tests {
                 }
             );
         }
-    }
-
-    /// The message-volume ledger (OPT-07-01-03): one mutation sends exactly
-    /// one message to every subscriber app of the scope, and the only route
-    /// carrying manager relay messages is global-from-BaseApp (forward +
-    /// relay = 2). The volume is fixed by the routing shape — independent of
-    /// the entry's key or value — so there is nothing to shave without
-    /// dropping a subscriber.
-    #[test]
-    fn the_shared_data_message_volume_is_one_per_subscriber() {
-        let mut bam = ready_scheduler();
-        let base_apps = add_base_apps(&mut bam, 3);
-        let _ = base_apps;
-
-        // BASE_APP data: N_base messages, no cross-manager hop.
-        let out = bam.set_shared_data(SHARED_DATA_TYPE_BASE_APP, "k", "v", (5, 1));
-        assert_eq!(out.base_apps.len(), 3);
-        assert_eq!(out.cell_app_mgr, None);
-
-        // CELL_APP data from a BaseApp: one forward; the CellAppMgr tells the
-        // CellApps and does not relay (BaseApps cannot see cell data).
-        let out = bam.set_shared_data(SHARED_DATA_TYPE_CELL_APP, "c", "x", (5, 1));
-        assert_eq!(out.base_apps.len(), 0);
-        assert!(out.cell_app_mgr.is_some());
-
-        let mut cam = crate::cellappmgr::CellAppMgr::new();
-        cam.base_app_addr = Some((0x7f00_0001, 100));
-        cam.db_app_alpha = Some((0x7f00_0001, 200));
-        cam.allow_new_cell_apps = true;
-        for i in 0..2u16 {
-            let rec = crate::cellappmgr::CellAppRecord::new((2, 3000 + i), (i + 1) as u32, 0, 10);
-            cam.apps.add(rec);
-        }
-
-        let out = cam.set_shared_data(SHARED_DATA_TYPE_CELL_APP, "c", "x", (5, 1));
-        assert_eq!(out.cell_apps.len(), 2);
-        assert_eq!(out.base_app_mgr, None);
-
-        // GLOBAL_FROM_BASE_APP, the full route: 1 forward, then the CellAppMgr
-        // broadcasts to both CellApps and relays once, then the BaseAppMgr
-        // broadcasts to all three — 2 + 3 + 2 = 7 messages for 5 subscriber
-        // apps, the two extras being the manager relay pair.
-        let out = bam.set_shared_data(SHARED_DATA_TYPE_GLOBAL_FROM_BASE_APP, "g", "1", (5, 1));
-        assert_eq!(out.base_apps.len(), 0);
-        assert!(out.cell_app_mgr.is_some());
-
-        let out = cam.set_shared_data(SHARED_DATA_TYPE_GLOBAL, "g", "1", (5, 1));
-        assert_eq!(out.cell_apps.len(), 2);
-        assert!(out.base_app_mgr.is_some());
-
-        let out = bam.set_shared_data(SHARED_DATA_TYPE_GLOBAL, "g", "1", (0, 0));
-        assert_eq!(out.base_apps.len(), 3);
-        assert_eq!(out.cell_app_mgr, None);
-
-        // A plain GLOBAL set is authoritative at the CellAppMgr: it tells the
-        // CellApps and relays once for the BaseAppMgr to mirror — so the
-        // GLOBAL volume is N_cell + 1 relay + N_base, and the
-        // global-from-BaseApp route adds only the initial forward.
-        let out = bam.set_shared_data(SHARED_DATA_TYPE_GLOBAL, "g2", "2", (0, 0));
-        assert_eq!(out.base_apps.len(), 3);
-        assert_eq!(out.cell_app_mgr, None);
-        let out = cam.set_shared_data(SHARED_DATA_TYPE_GLOBAL, "g2", "2", (0, 0));
-        assert_eq!(out.cell_apps.len(), 2);
-        assert!(out.base_app_mgr.is_some());
     }
 
     /// The manager keeps its authoritative copy so a late BaseApp is

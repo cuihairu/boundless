@@ -7,9 +7,9 @@
 05-04 仍开）。分片二（见下）已交付 `WaypointGenerator` BSP 多边形化
 主体（generate / generatePoints / generatePolygons /
 generateAdjacencies / joinPolygons / streamline /
-calculateSetMembership）。分片三（见文末）已交付 `readTGA` 读入侧与
-`extendThroughUnboundPortals`，并同面嫁接
-`determineEdgesAdjacentToOtherChunks`。余片：
+calculateSetMembership）。余片：门户两臂
+（determineEdgesAdjacentToOtherChunks /
+extendThroughUnboundPortals）、`readTGA` 读入侧与
 `tools/common/navmesh_processor.cpp` 的 per-girth 工作流环。
 BW-10-05-03 Recast 移植范围仍挂起待用户拍板。
 
@@ -275,69 +275,3 @@ g++ -std=c++14 -O2 -o /tmp/genstub/gen_generate \
 （stderr 走原版 INFO_MSG；stdout 才是 log。`cmp` 验证
 `/tmp/genstub/waypoint_generator/` 三对源文件与参照逐字节一致。
 产物二进制不入库。）
-
-## 分片三：readTGA 读入侧 + extendThroughUnboundPortals（e9e9cf5）
-
-> 本片交付**余片**里的两臂：`readTGA` 读入侧与
-> `extendThroughUnboundPortals` 门户延伸；todo 不勾（05-04 仍开），
-> 余片收缩为 per-girth 工作流环。行号依据
-> `lib/waypoint_generator/waypoint_generator.cpp`。
-
-### readTGA（waypoint_generator.cpp:252-332）
-
-重载 `WaypointFlood::writeTGA` 转储的调色板 TGA（
-`WaypointTGAHeader`，lib/waypoint/waypoint_tga.hpp）：18 字节打包头 +
-16 字节扩展（`Vector3 gridMin` + `float gridResolution`，LE），
-校验链 `extraLength==16 / colourMapType==1 / imageType==1 /
-colourMapStart==0 / colourMapLength==256 / colourMapDepth==24 / x==0 /
-y==0 / bpp==8 / imageDescriptor==0`（cpp:272-281）；`fseek 768` 跳过
-调色板后按层读 16 个 adj 层（u32 LE）与 16 个 hgt 层（f32 LE），
-整层在才算数（截断 = `Read error.` 臂）；`init` 宽高 =
-`hdr.width/(16*4)`；`identifier` = 路径末段（无分隔符 = 全名）。
-
-验收：`portals.rs` 用 05-02 slope 场景真跑
-`fill → write_tga → read_tga` 回读，grid 尺寸/分辨率/gridMin 与
-`WaypointFlood` 全量比对，逐层逐格 adj/hgt 相等；头校验各拒绝臂
-（extraLength/imageType/colourMapDepth/x/y/colourMapLength/截断头/
-截断 adj 层/截断 hgt 层/缺文件）逐一驱动。
-
-### extendThroughUnboundPortals（waypoint_generator.cpp:2370-2619）
-
-七步逐行移植：① 收集未绑 extern 门户（无则早退）；② 对每多边形收
-extendPoints（跳过 `adjToAnotherChunk`/`adjNavPoly != 0`/奇数角；
-两端平面距 < 0.45；extendDir = 边方向在网格坐标逆时针转 90° 归一）；
-③ 补「非下一边起点」的额外端点；④a `extraExtendPoints.size() != 1`
-拒收（逐字 `eprintln`）；④b 从端点回步构造有序（逆序）顶点表——
-**参照内层 `continue` 不破内层循环**（只 `found = true` 后继续扫，
-等价语义照抄），不连续则 `non consecutive edges through portal.`
-拒收；⑤ 构造裙边多边形（锚点 + 段 + `adjToAnotherChunk` 副本位 +
-竖边，锚点 `adjNavPoly = p+1`、原段首顶点改指新多边形号
-`polygons.size()+newPolys.size()+1`）；⑥ 参照同位 TODO（无操作）；
-⑦ 追加。多段独立门户穿越在同一多边形上 = ④a 拒收（测覆）。
-
-### 同面嫁接（地形席 c3b005a）
-
-本片连同 `GenChunk` trait、`toVector3`（:2345-2363，带
-`maxHeight + 0.01` 带顶兜底）与
-`determineEdgesAdjacentToOtherChunks`（:2628-2726）、navgen_map 重放
-及其夹具自地形席 BW-10-07-02 交付（c3b005a）同面嫁接进本 lane——
-扩展臂以 `GenChunkPortals`（未绑 extern 门户 → `&[PlaneEq]`）为缝，
-合并时与地形席**择一**即可，内容一致。
-
-### 登记分歧
-
-- **越界网格坐标顶点**：参照 `toVector3` 的
-  `hgtGrids_[g][(int)v.x + gridX_ * (int)v.y]` 对越出网格的顶点是
-  UB 读；移植的 usize 索引会 panic，测试顶点限界内（四周角测改用
-  紧 bbox 使格坐标留在 [0,8)）。
-- **parity 警告循环死码**：`determineEdges` 的 parity 告警分支为
-  不可达（地形席 07-02 已档），照抄形状不照抄行为。
-- **per-girth 工作流环未移植**：`tools/common/navmesh_processor.cpp`
-  按 girths.xml 逐 girth 驱动 flood+generate 的后台任务环，属工具
-  侧编排面，仍是 05-04 唯一余片（GUI 入口 Windows-only 见 05-01）。
-
-### 覆盖与门禁
-
-generator.rs 98.68%（余未覆盖行 = 已档收尾括号伪迹 + 越界 UB 登记
-臂）、portals.rs 98.16%；waypoint-gen 84/84、waypoint 22/22、
-fmt/clippy -D warnings 绿。

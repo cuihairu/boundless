@@ -91,7 +91,7 @@ fn gather_chunks_enumerates_every_cell_plus_inside_chunks() {
     assert!(chunks.contains("00000000o"));
     assert!(chunks.contains("00010001o"));
     // The cell at grid (17, 0) trips the 4-bit prefix level.
-    assert!(chunks.contains("001xx000xx/sep/00110000o"));
+    assert!(chunks.contains("001x000x/sep/00110000o"));
     // The inside chunk is discovered by the directory scan.
     assert!(chunks.contains("00000000i"));
 
@@ -121,9 +121,9 @@ fn chunk_files_load_into_the_same_objects() {
 
     // The prefixed far cell resolves to grid (17, 0) with its own objects.
     let far = load_chunk_file(
-        &root.join("001xx000xx/sep/00110000o.chunk"),
+        &root.join("001x000x/sep/00110000o.chunk"),
         &mapping,
-        "001xx000xx/sep/00110000o",
+        "001x000x/sep/00110000o",
     );
     assert_eq!((far.x, far.z), (17, 0));
     assert_eq!(far.items.len(), 2);
@@ -216,24 +216,24 @@ fn outside_chunk_boundaries_match_the_reference_grid() {
 
     // Grid (17, 0): the far edge and the min-z edge; the prefixed cells name
     // their neighbours with the hashed subdirectory prefix.
-    let far = chunk::create_boundaries("001xx000xx/sep/00110000o", &mapping);
+    let far = chunk::create_boundaries("001x000x/sep/00110000o", &mapping);
     let far_targets: Vec<PortalTarget> =
         far.iter().map(|b| sole_portal(b).target.clone()).collect();
     assert_eq!(
         far_targets,
         vec![
             // Grid 16 also trips the 4-bit prefix level (16 >= 16).
-            PortalTarget::Chunk("001xx000xx/sep/00100000o".into()),
+            PortalTarget::Chunk("001x000x/sep/00100000o".into()),
             PortalTarget::Extern,
             PortalTarget::Earth,
             PortalTarget::Heaven,
             PortalTarget::Extern,
-            PortalTarget::Chunk("001xx000xx/sep/00110001o".into()),
+            PortalTarget::Chunk("001x000x/sep/00110001o".into()),
         ]
     );
 
     // Grid (17, 1): the max-z edge is extern on the front face.
-    let corner = chunk::create_boundaries("001xx001xx/sep/00110001o", &mapping);
+    let corner = chunk::create_boundaries("001x001x/sep/00110001o", &mapping);
     let corner_targets: Vec<PortalTarget> = corner
         .iter()
         .map(|b| sole_portal(b).target.clone())
@@ -242,11 +242,11 @@ fn outside_chunk_boundaries_match_the_reference_grid() {
         corner_targets,
         vec![
             // right -> grid (16, 1), back -> grid (17, 0).
-            PortalTarget::Chunk("001xx000xx/sep/00100001o".into()),
+            PortalTarget::Chunk("001x000x/sep/00100001o".into()),
             PortalTarget::Extern,
             PortalTarget::Earth,
             PortalTarget::Heaven,
-            PortalTarget::Chunk("001xx000xx/sep/00110000o".into()),
+            PortalTarget::Chunk("001x000x/sep/00110000o".into()),
             PortalTarget::Extern,
         ]
     );
@@ -564,413 +564,4 @@ fn inside_chunk_binds_to_a_bound_outside_chunk() {
     );
     let order = ["00000000o", "00000000i"].map(String::from).to_vec();
     assert_eq!(space.bind_order(), &order[..]);
-}
-
-/// BW-10-01-05: the spatial index. Chunks focussed into the focus grid answer
-/// point queries through the column of their cell — the inside shell displaces
-/// the outside chunk inside its hull, the outside chunk answers in the rest of
-/// its cell, and a cell no chunk holds (and a point past the mapping bounds)
-/// answers nothing. The blank region is the reference's empty-column contract:
-/// `column()` returns NULL out of span and a column with no hulls answers its
-/// outside chunk or nothing.
-///
-/// The fixture stream loads its five chunks the BW-10-01-03 way; the loaded
-/// and bound chunks land in the index through the same `bind` path the
-/// reference's `noticeChunk` feeds.
-#[test]
-fn the_focus_index_answers_point_queries_across_chunks_and_void() {
-    let mapping = load_mapping();
-    let mut space = ChunkSpace::new(0, vec![mapping]);
-
-    // Stream the four loadable cells in scan order, then the inside shell.
-    let camera = Vector3::new(50.0, 0.0, 50.0);
-    let candidates = space.scan(&camera, 200.0);
-    let bound = space.load_and_bind(&candidates, &resource_resolver);
-    assert_eq!(bound.len(), 4, "the four file-backed cells bind");
-    assert!(space.load_chunk("00000000i", &resource_resolver));
-    assert!(space.bind("00000000i"));
-    // The just-bound chunks wait in the blurred queue until the pump runs.
-    assert_eq!(space.blurred(), &["00000000i".to_string()]);
-    space.focus();
-    assert!(space.blurred().is_empty());
-
-    // The index holds the four outside chunks by their centre cell plus the
-    // inside shell's hull in the columns its box corners touch.
-    let grid = space.focus_grid();
-    assert_eq!(
-        grid.get(0, 0).and_then(|c| c.outside_chunk()),
-        Some("00000000o")
-    );
-    assert_eq!(
-        grid.get(1, 0).and_then(|c| c.outside_chunk()),
-        Some("00010000o")
-    );
-    assert_eq!(
-        grid.get(0, 1).and_then(|c| c.outside_chunk()),
-        Some("00000001o")
-    );
-    assert_eq!(
-        grid.get(1, 1).and_then(|c| c.outside_chunk()),
-        Some("00010001o")
-    );
-    // The shell (world box 140..160 x 240..260) lives in grid row 2, past
-    // the mapping's bounds: its corner columns fall out of the focus span
-    // and its hull lands nowhere. That is the reference contract too —
-    // `Chunk::focus` filters the NULL columns out of its column set — so the
-    // in-span hull check needs a shell that sits inside the mapping. A shell
-    // at the origin cell works.
-    let mut shell = Chunk::new("00010000i", &load_mapping(), &Matrix::identity());
-    shell.bounding_box = foundation::math::BoundBox::new(
-        foundation::math::Vector3::new(20.0, -5.0, 20.0),
-        foundation::math::Vector3::new(40.0, 5.0, 40.0),
-    );
-    shell.is_loaded = true;
-    space.add_chunk(shell);
-    space.focus();
-    assert!(space.focus_grid().get(0, 0).unwrap().has_inside_chunks());
-
-    // Cross-chunk queries: every answer is the chunk whose world box — or,
-    // for the shell, whose hull — holds the point.
-    let answers = [
-        (Vector3::new(50.0, 0.0, 50.0), "00000000o"),
-        (Vector3::new(150.0, 0.0, 50.0), "00010000o"),
-        (Vector3::new(50.0, 0.0, 150.0), "00000001o"),
-        (Vector3::new(150.0, 0.0, 150.0), "00010001o"),
-    ];
-    for (point, want) in answers {
-        let found = space
-            .find_chunk_from_point(&point)
-            .map(|c| c.identifier.clone());
-        assert_eq!(found.as_deref(), Some(want), "at {point:?}");
-        let exact = space
-            .find_chunk_from_point_exact(&point)
-            .map(|c| c.identifier.clone());
-        assert_eq!(exact.as_deref(), Some(want), "exact at {point:?}");
-    }
-
-    // Inside the in-bounds shell the hull displaces the outside chunk of
-    // cell (0,0).
-    let inside = space
-        .find_chunk_from_point(&Vector3::new(30.0, 0.0, 30.0))
-        .map(|c| c.identifier.clone());
-    assert_eq!(inside.as_deref(), Some("00010000i"));
-    // Just outside the shell, same grid cell: back to the outside chunk.
-    let outside = space
-        .find_chunk_from_point(&Vector3::new(80.0, 0.0, 30.0))
-        .map(|c| c.identifier.clone());
-    assert_eq!(outside.as_deref(), Some("00000000o"));
-    // The outside-chunk face skips the hull walk entirely.
-    let plain = space
-        .find_outside_chunk_from_point(&Vector3::new(30.0, 0.0, 30.0))
-        .map(|c| c.identifier.clone());
-    assert_eq!(plain.as_deref(), Some("00000000o"));
-
-    // The void: a cell in the focus grid that no loaded chunk owns —
-    // 00020000o exists in the map (scan created it) but never loaded, so its
-    // column never took a chunk.
-    assert_eq!(
-        space.find_chunk_from_point(&Vector3::new(250.0, 0.0, 50.0)),
-        None
-    );
-    // The exact face adds nothing for a void cell.
-    assert_eq!(
-        space.find_chunk_from_point_exact(&Vector3::new(250.0, 0.0, 50.0)),
-        None
-    );
-    // And a point past the mapping bounds is out of the focus grid span
-    // entirely: no column, no answer.
-    assert_eq!(
-        space.find_chunk_from_point(&Vector3::new(-50.0, 0.0, 50.0)),
-        None
-    );
-    assert_eq!(
-        space.find_chunk_from_point(&Vector3::new(25000.0, 0.0, 50.0)),
-        None
-    );
-
-    // `column()` creates on request and reports the same column the queries
-    // walked; `column_at` reads without creating.
-    let created = space.column(&Vector3::new(250.0, 0.0, 50.0), true);
-    assert_eq!(
-        created.and_then(|c| c.outside_chunk()),
-        None,
-        "the void column is empty"
-    );
-    assert!(
-        space
-            .column(&Vector3::new(-50.0, 0.0, 50.0), true)
-            .is_none()
-    );
-}
-
-/// BW-10-01-05: unloading takes the chunk's hull out of the index. The
-/// reference ignores the chunk (`ChunkSpace::ignoreChunk`) before disposing
-/// of it, deleting the nine columns around its centre so nothing ever finds
-/// it in the focus grid again, and the deleted columns' other holdings are
-/// smudged into the blurred queue for the next focus.
-#[test]
-fn unloading_removes_the_hull_and_blurs_the_neighbours() {
-    let mapping = load_mapping();
-    let mut space = ChunkSpace::new(0, vec![mapping]);
-    let camera = Vector3::new(50.0, 0.0, 50.0);
-    let candidates = space.scan(&camera, 200.0);
-    space.load_and_bind(&candidates, &resource_resolver);
-    space.focus();
-    assert!(
-        space
-            .find_chunk_from_point(&Vector3::new(50.0, 0.0, 50.0))
-            .is_some()
-    );
-
-    // An unbound chunk is refused (`ignoreChunk` errors out and returns).
-    space.chunk_mut("00010000o").unwrap().is_bound = false;
-    assert!(!space.ignore_chunk("00010000o"));
-    space.chunk_mut("00010000o").unwrap().is_bound = true;
-
-    // Ignoring the camera's chunk deletes the nine columns around (0,0):
-    // the neighbours it held are smudged into the blurred queue.
-    assert!(space.ignore_chunk("00000000o"));
-    assert!(space.chunk("00000000o").is_none(), "the chunk left the map");
-    assert!(
-        space
-            .find_chunk_from_point(&Vector3::new(50.0, 0.0, 50.0))
-            .is_none(),
-        "the query answers nothing where the chunk stood"
-    );
-    // The deleted columns' surviving holdings wait for the pump: every cell
-    // the chunk's hull overlapped answers nothing.
-    assert!(space.focus_grid().get(0, 0).is_none());
-    // The blurred queue carries the neighbours the deleted columns held
-    // (deduped: a chunk smudges once per queue entry, not per column).
-    assert!(
-        space.blurred().contains(&"00000001o".to_string()),
-        "blurred: {:?}",
-        space.blurred()
-    );
-    let blurred_before = space.blurred().len();
-    space.focus();
-    // The refocus re-adds the still-standing neighbours to the rebuilt
-    // columns; the queries answer again where they still stand.
-    let right = space
-        .find_chunk_from_point(&Vector3::new(150.0, 0.0, 50.0))
-        .map(|c| c.identifier.clone());
-    assert_eq!(right.as_deref(), Some("00010000o"));
-    let _ = blurred_before;
-}
-
-/// BW-10-01-05: a query against a space whose mappings never covered the
-/// point is the blank-space contract — no mapping, no focus span, no answer,
-/// and the focus grid stays empty so nothing allocates.
-#[test]
-fn an_empty_space_answers_nothing_and_resizes_with_its_mappings() {
-    let mut space = ChunkSpace::new(7, Vec::new());
-    assert_eq!(space.focus_grid().span(), (0, 0, 0, 0));
-    assert!(space.blurred().is_empty());
-    assert_eq!(
-        space.find_chunk_from_point(&Vector3::new(0.0, 0.0, 0.0)),
-        None
-    );
-    assert!(space.column(&Vector3::new(0.0, 0.0, 0.0), true).is_none());
-
-    // Recalculating over the fixture mapping sizes the window to the
-    // mapping's bounds (the reference runs this whenever a mapping lands).
-    space.mappings.push(load_mapping());
-    space.recalc_grid_bounds();
-    assert_eq!(space.focus_grid().span(), (0, 0, 18, 2));
-    // The new columns are empty: the queued chunks are refocused by the
-    // pump, and a query in a cell that owns no chunk answers nothing.
-    assert_eq!(
-        space.find_chunk_from_point(&Vector3::new(50.0, 0.0, 50.0)),
-        None
-    );
-    // `column(point, canCreate)`: the reading face answers nothing for a cell
-    // that has no column yet, and the same cell comes into being when the
-    // caller asks for it.
-    assert!(space.column_at(&Vector3::new(50.0, 0.0, 50.0)).is_none());
-    let column = space
-        .column(&Vector3::new(50.0, 0.0, 50.0), true)
-        .expect("the cell is in the resized span");
-    assert!(column.holdings().is_empty(), "a fresh column holds nothing");
-    assert!(space.column_at(&Vector3::new(50.0, 0.0, 50.0)).is_some());
-    // A chunk entering now lands in the resized index.
-    let mapping = space.mappings[0].clone();
-    let mut chunk = Chunk::new("00000000o", &mapping, &Matrix::identity());
-    chunk.is_loaded = true;
-    chunk.is_bound = true;
-    space.add_chunk(chunk);
-    let found = space
-        .find_chunk_from_point(&Vector3::new(50.0, 0.0, 50.0))
-        .map(|c| c.identifier.clone());
-    assert_eq!(found.as_deref(), Some("00000000o"));
-}
-
-/// BW-10-01-05: the loader's own focus face. `EdgeGeometryMapping::
-/// postBoundChunk` is what focusses a chunk in the reference loader
-/// (`chunk_loading/edge_geometry_mapping.cpp:213-216`): it pulls the chunk
-/// out of the blurred queue, focusses the hull and marks the nine columns
-/// around the centre as having seen it — so a chunk bound this way never
-/// waits for the pump.
-#[test]
-fn see_chunk_focusses_directly_and_pumps_skip_it() {
-    let mapping = load_mapping();
-    let mut space = ChunkSpace::new(0, vec![mapping]);
-    let camera = Vector3::new(50.0, 0.0, 50.0);
-    let candidates = space.scan(&camera, 200.0);
-    space.load_and_bind(&candidates, &resource_resolver);
-
-    // The loader face: focus + see in one step, bypassing the queue.
-    space.focus_chunk("00000000o");
-    space.see_chunk("00000000o");
-    assert!(
-        space
-            .find_chunk_from_point(&Vector3::new(50.0, 0.0, 50.0))
-            .is_some()
-    );
-    // The chunk is not in the queue: the pump over an empty blurred queue
-    // (the loader face already pulled it out) is a no-op.
-    assert!(
-        space.blurred().is_empty(),
-        "the loader face consumed the blur"
-    );
-    space.focus();
-    assert!(
-        space
-            .find_chunk_from_point(&Vector3::new(50.0, 0.0, 50.0))
-            .is_some()
-    );
-    // A chunk the map never saw focusses nothing: the face skips the
-    // unknown identifier and the queue stays empty.
-    space.focus_chunk("00090009o");
-    assert!(space.blurred().is_empty());
-
-    // The pump ignores an identifier that left the map: it is dropped from
-    // the queue, not crashed on (`removeFromBlurred` returns false, the
-    // reference's while loop just moves on).
-    space.chunk_mut("00000000o").unwrap().is_loaded = true;
-    assert!(space.ignore_chunk("00000000o"));
-    assert_eq!(
-        space.find_chunk_from_point(&Vector3::new(50.0, 0.0, 50.0)),
-        None
-    );
-}
-
-/// BW-10-01-05: a negative-coordinate space. The reference's centre-cell
-/// maths truncates toward zero and then decrements negatives — the port
-/// pins the same cells so a space west of the origin indexes the same way.
-#[test]
-fn negative_grid_cells_index_like_the_reference_truncation() {
-    let bounds = GridBounds {
-        min_l_grid_x: -2,
-        min_l_grid_y: -2,
-        max_l_grid_x: -1,
-        max_l_grid_y: -1,
-        min_grid_x: -2,
-        min_grid_y: -2,
-        max_grid_x: -1,
-        max_grid_y: -1,
-    };
-    let mapping = GeometryMapping::new("west/", 100.0, bounds, false);
-    let mut space = ChunkSpace::new(0, vec![mapping.clone()]);
-    // Centre cell of (-50, -50) is (-1, -1) after the decrement; (-150,-50)
-    // is (-2, -1).
-    let mut west = Chunk::new("ffffffffo", &mapping, &Matrix::identity());
-    west.bounding_box = foundation::math::BoundBox::new(
-        Vector3::new(-100.0, -1.0, -100.0),
-        Vector3::new(0.0, 1.0, 0.0),
-    );
-    west.is_loaded = true;
-    west.is_bound = true;
-    space.add_chunk(west);
-    space.focus();
-    // The chunk's centre (-50, 0, -50) sits in cell (-1, -1) and the query
-    // in that cell answers it.
-    let found = space
-        .find_chunk_from_point(&Vector3::new(-50.0, 0.0, -50.0))
-        .map(|c| c.identifier.clone());
-    assert_eq!(found.as_deref(), Some("ffffffffo"));
-    // A cell east of everything answers nothing.
-    assert_eq!(
-        space.find_chunk_from_point(&Vector3::new(50.0, 0.0, -50.0)),
-        None
-    );
-}
-
-/// BW-10-01-05: the focus window is a window. When the mappings' grid bounds
-/// shrink, `ColumnGrid::rect` deletes the columns that fall out of the new
-/// span — the reference destroys them, and destroying a column smudges the
-/// chunks it held, so they must wait for the next focus rather than vanish
-/// from the queue. The port has no obstacle face yet (the scene surface), so
-/// it reports the deleted columns' holdings and blurs them.
-#[test]
-fn shrinking_the_space_blurs_the_displaced_columns() {
-    let mapping = load_mapping();
-    let mut space = ChunkSpace::new(0, vec![mapping]);
-    let camera = Vector3::new(50.0, 0.0, 50.0);
-    let candidates = space.scan(&camera, 200.0);
-    space.load_and_bind(&candidates, &resource_resolver);
-    assert!(space.blurred().is_empty(), "the batch's pump already ran");
-
-    // The cell east of the origin holds its own outside chunk.
-    let displaced = space
-        .focus_grid()
-        .get(1, 0)
-        .and_then(|c| c.outside_chunk())
-        .map(str::to_string);
-    assert_eq!(displaced.as_deref(), Some("00010000o"));
-
-    // The space shrinks to the origin cell: every other column is deleted.
-    space.mappings[0].bounds = GridBounds {
-        min_l_grid_x: 0,
-        min_l_grid_y: 0,
-        max_l_grid_x: 0,
-        max_l_grid_y: 0,
-        min_grid_x: 0,
-        min_grid_y: 0,
-        max_grid_x: 0,
-        max_grid_y: 0,
-    };
-    space.recalc_grid_bounds();
-    assert_eq!(space.focus_grid().span(), (0, 0, 1, 1));
-    assert!(
-        space
-            .blurred()
-            .iter()
-            .any(|id| Some(id.as_str()) == displaced.as_deref()),
-        "the displaced chunk waits for a refocus: {:?}",
-        space.blurred()
-    );
-    // The deleted columns are gone from the index, so a query past the new
-    // span answers nothing instead of returning a dead hull.
-    assert_eq!(
-        space.find_chunk_from_point(&Vector3::new(150.0, 0.0, 50.0)),
-        None
-    );
-}
-
-/// BW-10-01-05: the pump over a queue entry whose chunk left the map. A bound
-/// chunk waits for `focus`; if the map entry goes away without clearing the
-/// queue, the pump must not reach for the gone chunk — it drops the entry,
-/// the way the reference's loop moves on when the identifier does not
-/// resolve.
-#[test]
-fn the_pump_drops_a_blurred_chunk_that_left_the_map() {
-    let mapping = load_mapping();
-    let mut space = ChunkSpace::new(0, vec![mapping]);
-    assert!(space.load_chunk("00000000o", &resource_resolver));
-    assert!(space.bind("00000000o"));
-    // A bound chunk waits in the blurred queue for the focus pump.
-    assert_eq!(space.blurred(), &["00000000o".to_string()]);
-
-    // The map entry leaves behind the queue: the pump must not resolve it.
-    space.remove_chunk("00000000o");
-    space.focus();
-    assert!(
-        space.blurred().is_empty(),
-        "the dangling entry is dropped: {:?}",
-        space.blurred()
-    );
-
-    // Ignoring an identifier the map never held refuses and leaves the index
-    // alone.
-    assert!(!space.ignore_chunk("00090009o"));
 }

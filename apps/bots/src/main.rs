@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use load::report::{ReportEntry, ReportValue, ScenarioReport};
 use load::scenario::Scenario;
-use load::smoke::{MetricValue, SmokeCaps, SmokeRun, run_smoke, smoke_metrics};
+use load::smoke::{MetricValue, SmokeCaps, run_smoke, smoke_metrics};
 
 fn main() {
     std::process::exit(run());
@@ -71,19 +71,6 @@ fn run() -> i32 {
         ));
     }
     if let Some(report_path) = std::env::var("LOAD_REPORT").ok().filter(|p| !p.is_empty()) {
-        // The long-stability and hotspot runs save the process resource
-        // series in the report (the wall-clock half that cannot travel in
-        // the reproducible stdout metrics) with its period and metric
-        // definitions, per the BW-17-03-04 report contract.
-        match &smoke_run {
-            SmokeRun::LongStability(ledger) => {
-                report_values.extend(ledger.resource_report_entries());
-            }
-            SmokeRun::Hotspot(ledger) => {
-                report_values.extend(ledger.resource_report_entries());
-            }
-            _ => {}
-        }
         let topology = std::env::var("LOAD_TARGET")
             .ok()
             .filter(|t| !t.is_empty())

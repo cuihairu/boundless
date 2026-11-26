@@ -24,6 +24,11 @@ const TRANSITIONS: &[&str] = &[
     // `platform::signals` wrappers is pending and tracked with the file's
     // active edits.
     "crates/server-runtime/src/signals.rs",
+    // The app entry rewrite (BW-15-02-01: the dispatcher stop signals and
+    // the runners-budget probe) landed ahead of the platform-routing
+    // conversion for this file; its raw `libc::SIG*` handler registrations
+    // and the `libc::kill` self-raise are pending that file's active edits.
+    "crates/server-runtime/src/app.rs",
 ];
 
 /// Whole-word names that are signal syscalls wherever they appear

@@ -115,17 +115,6 @@ pub struct IndexHeader {
 impl IndexHeader {
     pub const SIZE: usize = INDEX_FORMAT_FIELD_LEN + 4 + 4;
 
-    /// Write the header (the `QuickFileWriter f << ih` flow: NUL-padded
-    /// `bw_snprintf` field plus the two counts).
-    pub fn write(&self, out: &mut Vec<u8>) {
-        let mut field = [0u8; INDEX_FORMAT_FIELD_LEN];
-        let bytes = self.index_format.as_bytes();
-        field[..bytes.len()].copy_from_slice(bytes);
-        out.extend_from_slice(&field);
-        out.extend_from_slice(&self.n_indices.to_le_bytes());
-        out.extend_from_slice(&self.n_triangle_groups.to_le_bytes());
-    }
-
     /// Read the header off the front of `data`.
     pub fn read(data: &[u8]) -> Option<Self> {
         if data.len() < Self::SIZE {

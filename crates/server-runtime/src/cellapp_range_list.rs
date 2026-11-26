@@ -68,10 +68,6 @@ pub type TriggerId = u32;
 pub enum TriggerTarget {
     /// Every enter/leave appends `(entity, entering)`.
     Recorder(Rc<RefCell<Vec<(u32, bool)>>>),
-    /// The witness's AoI trigger (`Witness::triggerEnter`): the same
-    /// `(entity, entering)` tuples, drained by the witness's
-    /// `addToAoI`/`removeFromAoI`.
-    AoI(Rc<RefCell<Vec<(u32, bool)>>>),
 }
 
 /// One node of the range lists — the reference's `RangeListNode` and its
@@ -907,25 +903,19 @@ impl RangeList {
 
     fn trigger_enter(&mut self, trigger: TriggerId, entity: &Rc<RefCell<Entity>>) {
         let id = entity.borrow().id;
-        let events = match &self.triggers[trigger as usize]
+        let TriggerTarget::Recorder(events) = &self.triggers[trigger as usize]
             .as_ref()
             .expect("live trigger")
-            .target
-        {
-            TriggerTarget::Recorder(events) | TriggerTarget::AoI(events) => events,
-        };
+            .target;
         events.borrow_mut().push((id, true));
     }
 
     fn trigger_leave(&mut self, trigger: TriggerId, entity: &Rc<RefCell<Entity>>) {
         let id = entity.borrow().id;
-        let events = match &self.triggers[trigger as usize]
+        let TriggerTarget::Recorder(events) = &self.triggers[trigger as usize]
             .as_ref()
             .expect("live trigger")
-            .target
-        {
-            TriggerTarget::Recorder(events) | TriggerTarget::AoI(events) => events,
-        };
+            .target;
         events.borrow_mut().push((id, false));
     }
 
@@ -1307,52 +1297,6 @@ impl RangeList {
             cursor = self.node(id).next_x;
         }
         order
-    }
-
-    /// `Entity::getEntitiesInRange`'s walk (`entity.cpp:6913`): both X
-    /// directions from `start`, beginning at its neighbours — the
-    /// caller's own node never visits. Only entity nodes advance the
-    /// walk-out test (bound nodes pass through without moving it), the
-    /// squared-distance gate is `<=` (the caller's strict `<` filters
-    /// again), and the script variant's type filter is not carried —
-    /// the noise walk runs unfiltered.
-    pub fn entities_in_x_range(&self, start: NodeId, test: [f32; 3], range: f32) -> Vec<u32> {
-        let range_sqr = range * range;
-        let mut found = Vec::new();
-        for forward in [true, false] {
-            let mut x_dist = 0.0_f32;
-            let mut cursor = if forward {
-                self.node(start).next_x
-            } else {
-                self.node(start).prev_x
-            };
-            while let Some(id) = cursor {
-                if x_dist > range {
-                    break;
-                }
-                if let NodeBody::Entity { entity, .. } =
-                    &self.nodes[id].as_ref().expect("a live node").body
-                {
-                    let borrowed = entity.borrow();
-                    let pos = borrowed.position;
-                    x_dist = if forward {
-                        pos[0] - test[0]
-                    } else {
-                        test[0] - pos[0]
-                    };
-                    let (dx, dy, dz) = (pos[0] - test[0], pos[1] - test[1], pos[2] - test[2]);
-                    if dx * dx + dy * dy + dz * dz <= range_sqr {
-                        found.push(borrowed.id);
-                    }
-                }
-                cursor = if forward {
-                    self.node(id).next_x
-                } else {
-                    self.node(id).prev_x
-                };
-            }
-        }
-        found
     }
 
     /// The Z chain, from head to tail.

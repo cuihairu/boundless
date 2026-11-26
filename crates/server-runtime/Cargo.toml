@@ -6,16 +6,11 @@ publish = false
 version.workspace = true
 license.workspace = true
 repository.workspace = true
-# The benches are declared explicitly: benches/legacy_queue.rs is a module
-# shared by the download_drain bench and the download_drain_alloc test
-# (`#[path]` includes), not a bench target of its own.
-autobenches = false
 
 [dependencies]
 foundation = { workspace = true }
 libc = { workspace = true }
 contracts = { workspace = true }
-flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
 platform = { workspace = true }
 # dbapp storage startup (BW-09-06-01): a downward edge into the domain layer.
 db = { workspace = true }
@@ -33,10 +28,6 @@ flate2 = { version = "1.1.11", default-features = false, features = ["rust_backe
 # (BW-02-01-05); a legal downward edge into the domain layer.
 mercury = { workspace = true }
 resources = { workspace = true }
-# BW-14-01-04: the baseapp script faces drive the CPython host directly
-# (`BigWorld.Base` engine methods and the entity-type registry) -- a downward
-# edge onto the layer-2 host crate, the direction the layering rule allows.
-python-host = { workspace = true }
 # The Controller/Extra sample's grenade simulation reflects off a
 # `WorldTriangle` (BW-14-02-04, `worldtri.cpp:504-512`); a downward edge
 # into the domain layer like mercury/db above.
@@ -60,10 +51,6 @@ db-postgres = { workspace = true }
 # entity defs; the DBApp storage def face is built from the parsed map.
 entitydef = { workspace = true }
 
-# BW-10-07-05 cross-cell bot traversal: the simulated client's movement
-# controller and tick drive the entity through the two cells.
-load = { workspace = true }
-
 # Performance baselines (perf-bench batch 1): the update-loop dispatch bench.
 criterion = "0.8"
 
@@ -72,43 +59,6 @@ criterion = "0.8"
 # (BW-07-05-02/03: what the writer produces must parse back losslessly).
 client = { workspace = true }
 
-# The mixed-version rerun (OPT-02-01-04) builds the register/record
-# envelopes with the logger protocol codecs and speaks them to the
-# reference EL7 `message_logger` over UDP and TCP.
-message_logger = { workspace = true }
-
-# OPT-12-01-01: the observation channels' cost baseline drives the Watcher
-# registry, the MessageLogger entry writer and the profiler global from
-# outside their own crates (test-only edges).
-watcher = { workspace = true }
-profiler = { workspace = true }
-
 [[bench]]
 name = "tick"
-harness = false
-
-# OPT-06-01-03: the download queue's drain mechanics bench.
-[[bench]]
-name = "download_drain"
-harness = false
-
-# OPT-06-01-03: the client download assembly completion bench (6ffd9af).
-[[bench]]
-name = "download_assembly"
-harness = false
-
-[[bench]]
-name = "backup_archive"
-harness = false
-
-[[bench]]
-name = "shared_data"
-harness = false
-
-[[bench]]
-name = "dense_aoi"
-harness = false
-
-[[bench]]
-name = "spatial_parallel"
 harness = false

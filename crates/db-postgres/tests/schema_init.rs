@@ -100,7 +100,7 @@ fn an_empty_database_becomes_a_startable_schema() {
         assert_eq!(existing, 0);
 
         let plan = db_postgres::schema_init::plan();
-        db_postgres::schema_init::apply(&mut storage.client_mut(), &plan).unwrap();
+        db_postgres::schema_init::apply(storage.client_mut(), &plan).unwrap();
 
         // Every fixed table exists.
         for table in fixed_table_names() {
@@ -119,7 +119,7 @@ fn an_empty_database_becomes_a_startable_schema() {
         // The version reads back as current: what the DBApp requires to
         // consider the database startable.
         assert_eq!(
-            db_postgres::schema_init::read_version(&mut storage.client_mut()).unwrap(),
+            db_postgres::schema_init::read_version(storage.client_mut()).unwrap(),
             Some(CURRENT_VERSION)
         );
 
@@ -141,7 +141,7 @@ fn an_empty_database_becomes_a_startable_schema() {
         assert_eq!(storage.get_entity(&schema, &key).unwrap().unwrap(), record);
 
         // A second run changes nothing: same tables, one version row.
-        db_postgres::schema_init::apply(&mut storage.client_mut(), &plan).unwrap();
+        db_postgres::schema_init::apply(storage.client_mut(), &plan).unwrap();
         let version_rows: i64 = storage
             .client_mut()
             .query_one("SELECT count(*) FROM \"bigworldInfo\"", &[])
@@ -149,7 +149,7 @@ fn an_empty_database_becomes_a_startable_schema() {
             .get(0);
         assert_eq!(version_rows, 1);
         assert_eq!(
-            db_postgres::schema_init::read_version(&mut storage.client_mut()).unwrap(),
+            db_postgres::schema_init::read_version(storage.client_mut()).unwrap(),
             Some(CURRENT_VERSION)
         );
     });
@@ -160,7 +160,7 @@ fn an_uninitialised_database_reads_no_version() {
     with_fresh_db(|storage| {
         // The version table does not exist yet: the read reports the
         // uninitialised state cleanly rather than panicking.
-        let result = db_postgres::schema_init::read_version(&mut storage.client_mut());
+        let result = db_postgres::schema_init::read_version(storage.client_mut());
         assert!(result.is_err());
     });
 }

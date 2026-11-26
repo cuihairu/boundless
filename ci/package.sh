@@ -34,7 +34,6 @@ cur_roles() { printf '%s' "${CI_PACKAGE_ROLES:-}"; }
 tsv_escape() { printf '%s' "$1" | tr '\t\n' '  '; }
 
 PKG=boundless-server
-DEBUG_SUFFIX=.debug
 ROLES_SOURCE=crates/server-runtime/src/app.rs
 
 # --- platform -----------------------------------------------------------------
@@ -76,46 +75,19 @@ build_binary() {
     return "$rc"
 }
 
-strip_debug_info() {
-    # strip_debug_info <installed-binary> — OPT-14-01-02: split the debug
-    # info out of the shipped binary. The workspace release profile keeps
-    # `debug = true` for post-incident symbolication, but the installer does
-    # not need it on disk: the sidecar `<PKG>.debug` next to the binary is
-    # what gdb/lldb read. Degrades to a no-op when the binary is not an ELF
-    # or the binutils are missing (stub self-tests, macOS/Windows legs).
-    local bin="$1"
-    command -v objcopy >/dev/null 2>&1 || return 0
-    command -v strip >/dev/null 2>&1 || return 0
-    readelf -h "$bin" >/dev/null 2>&1 || return 0
-    objcopy --only-keep-debug "$bin" "$bin$DEBUG_SUFFIX" || return 0
-    strip --strip-debug "$bin" || return 0
-    objcopy --add-gnu-debuglink="$bin$DEBUG_SUFFIX" "$bin" 2>/dev/null || true
-}
-
 stage_prefix() {
     # stage_prefix <src-binary> <prefix> — the layout an installer lays down.
     local src="$1" prefix="$2"
     mkdir -p "$prefix/bin"
     cp "$src" "$prefix/bin/$PKG" || return 1
     chmod +x "$prefix/bin/$PKG"
-    strip_debug_info "$prefix/bin/$PKG"
 }
 
 archive_prefix() {
-    # archive_prefix <prefix> <tarball> — archive ONLY the runtime payload.
-    # The debug sidecar stays in the staging prefix (where symbolication can
-    # find it); putting it in the shipped tarball would undo the size win.
-    # Metadata is pinned so two runs of the same tree produce one archive:
-    # GNU tar fixes mtime/owner and gzip -n drops the stream timestamp; BSD
-    # tar (macOS legs) keeps its default metadata behaviour.
+    # archive_prefix <prefix> <tarball> — deterministic member order so two
+    # builds of the same tree differ only in the binary itself.
     local prefix="$1" tarball="$2"
-    if tar --version 2>/dev/null | head -1 | grep -q 'GNU tar'; then
-        tar -C "$prefix" --sort=name --mtime='2020-01-01 00:00:00' \
-            --owner=0 --group=0 --numeric-owner -I 'gzip -n' \
-            -cf "$tarball" "bin/$PKG"
-    else
-        tar -C "$prefix" -czf "$tarball" "bin/$PKG"
-    fi
+    tar -C "$prefix" -czf "$tarball" bin
 }
 
 smoke_install() {
@@ -132,12 +104,6 @@ smoke_install() {
         printf 'the archive has no executable bin/%s' "$PKG"
         return 2
     }
-    # The debug sidecar is optional: the shipped binary must launch even if
-    # binutils were unavailable at staging time.
-    if [ -f "$installdir/bin/$PKG$DEBUG_SUFFIX" ]; then
-        printf 'debug sidecar present: %s bytes\n' \
-            "$(wc -c <"$installdir/bin/$PKG$DEBUG_SUFFIX" | tr -d ' ')" >&2
-    fi
     out="$(timeout 30 "$installdir/bin/$PKG" "$role" 2>&1)"
     rc=$?
     if [ "$rc" -ne 0 ]; then
@@ -193,10 +159,7 @@ run_all() {
         ci_fail package-stage "staging the prefix failed"
         return 1
     fi
-    local debug_bytes=0
-    [ -f "$staged/bin/$PKG$DEBUG_SUFFIX" ] && \
-        debug_bytes="$(wc -c <"$staged/bin/$PKG$DEBUG_SUFFIX" | tr -d ' ')"
-    ci_pass package-stage "prefix staged: bin/$PKG (debug sidecar $debug_bytes bytes)"
+    ci_pass package-stage "prefix staged: bin/$PKG"
 
     if ! archive_prefix "$staged" "$tarball"; then
         ci_fail package-archive "tar -czf failed for $tarball"
@@ -271,29 +234,6 @@ STUB
         ci_pass selftest-package-missing "a missing built binary fails the stage"
     else
         ci_fail selftest-package-missing "a missing binary did not fail staging: $(printf '%s\n' "$out" | grep package-stage | head -1)"
-        fails=$((fails + 1))
-    fi
-
-    ci_step "self-test: two packaging runs land the same archive bytes"
-    cat >"$stub" <<'STUB'
-#!/bin/sh
-echo "[baseapp] starting (boundless minimal entry)" >&2
-exit 0
-STUB
-    chmod +x "$stub"
-    local a b hash_a hash_b
-    for leg in a b; do
-        CI_OUT="$r/manifest" CI_PACKAGE_BIN="$stub" CI_PACKAGE_ROLES=baseapp \
-            CI_PACKAGE_OUT="$r/det-$leg" "$0" >/dev/null 2>&1 || true
-    done
-    a="$(echo "$r"/det-a/package/boundless-*.tar.gz)"
-    b="$(echo "$r"/det-b/package/boundless-*.tar.gz)"
-    hash_a="$(sha256sum "$a" 2>/dev/null | cut -d' ' -f1)"
-    hash_b="$(sha256sum "$b" 2>/dev/null | cut -d' ' -f1)"
-    if [ -n "$hash_a" ] && [ "$hash_a" = "$hash_b" ]; then
-        ci_pass selftest-package-deterministic "two runs produce one SHA-256 ($hash_a)"
-    else
-        ci_fail selftest-package-deterministic "the archive is not reproducible: $hash_a / $hash_b"
         fails=$((fails + 1))
     fi
 

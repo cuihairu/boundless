@@ -30,7 +30,6 @@ pub mod packet;
 pub mod packet_filter;
 #[cfg(target_os = "linux")]
 pub mod packet_receiver;
-pub mod packet_receiver_stats;
 #[cfg(target_os = "linux")]
 pub mod packet_sender;
 

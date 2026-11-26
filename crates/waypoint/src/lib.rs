@@ -1,19 +1,14 @@
 //! BW-10-04 waypoint navmesh runtime (`lib/waypoint/`): the old-graph
-//! (version 0 `worldNavmesh`) decode, the waypoint adjacency faces and
-//! the cross-chunk connection face.
+//! (version 0 `worldNavmesh`) decode and the waypoint adjacency faces.
 //!
 //! The reference split lives across `chunk_waypoint.hpp/cpp` (the waypoint
-//! polygon, its edge adjacency encoding and the centre calculation),
+//! polygon, its edge adjacency encoding and the centre calculation) and
 //! `chunk_waypoint_set_data.hpp/cpp` (the per-set storage plus
-//! `readWaypointSet`, the two-cursor binary decode) and
-//! `chunk_waypoint_set.{hpp,cpp}` + `chunk_waypoint_set_state.{hpp,cpp}`
-//! (the runtime connections and the set-level search over them). The
-//! chunk-loading wrapper around them (`navmeshFactory`'s population
-//! registry and `ChunkWaypointSet::bind`'s portal walk) is the chunk
-//! lane's face and stays out of this port.
+//! `readWaypointSet`, the two-cursor binary decode). The chunk-loading
+//! wrapper around them (`navmeshFactory`'s population registry and
+//! `ChunkWaypointSet`) is the chunk lane's face and stays out of this port.
 
 mod astar;
-mod chunk_bind;
 mod chunk_waypoint;
 mod chunk_waypoint_set;
 mod chunk_waypoint_set_data;
@@ -28,7 +23,6 @@ mod navloc;
 mod search_path_base;
 
 pub use astar::{AStar, AStarState};
-pub use chunk_bind::{BindChunk, BindPortal, BindSpace, find_exact};
 pub use chunk_waypoint::{
     ADJACENT_RANGE_END, ADJACENT_RANGE_START, ChunkWaypoint, ChunkWaypointVertexProvider, Edge,
     HEIGHT_RANGE_TOLERANCE, OTHER_CHUNK,

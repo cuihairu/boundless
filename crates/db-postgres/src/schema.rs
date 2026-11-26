@@ -147,20 +147,15 @@ impl EntitySchema {
         quote_ident(&entity_table_name(&self.type_name))
     }
 
-    /// The quoted names of the persistent property columns, in visit
-    /// order: one `sm_<prop>` per property.
-    pub fn quoted_property_columns(&self) -> Vec<String> {
-        self.columns
-            .iter()
-            .map(|(prop, _)| quote_ident(&column_name(prop)))
-            .collect()
-    }
-
-    /// The quoted names of all columns: the id column first, then the
-    /// property columns, in visit order.
+    /// The quoted names of all columns: the id column first, then one
+    /// `sm_<prop>` per persistent property, in visit order.
     pub fn quoted_columns(&self) -> Vec<String> {
         let mut names = vec![quote_ident(ID_COLUMN)];
-        names.extend(self.quoted_property_columns());
+        names.extend(
+            self.columns
+                .iter()
+                .map(|(prop, _)| quote_ident(&column_name(prop))),
+        );
         names
     }
 
@@ -315,19 +310,5 @@ mod tests {
         assert!(ddl.contains("\"sm_name\" TEXT NOT NULL"));
         assert!(ddl.contains("\"sm_loot\" JSONB NOT NULL"));
         assert!(ddl.contains("PRIMARY KEY (\"id\")"));
-    }
-
-    #[test]
-    fn quoted_property_columns_lists_only_the_properties() {
-        let values = vec![PropertyValue::Int(1), PropertyValue::String("a".into())];
-        let schema = EntitySchema::for_record("Account", &["level", "name"], &values).unwrap();
-        assert_eq!(
-            schema.quoted_property_columns(),
-            vec!["\"sm_level\"", "\"sm_name\""]
-        );
-        assert_eq!(
-            schema.quoted_columns(),
-            vec!["\"id\"", "\"sm_level\"", "\"sm_name\""]
-        );
     }
 }

@@ -29,7 +29,6 @@
 //! belongs with the connection-address plumbing.
 
 use foundation::stream::BinaryStream;
-use mercury::interface_element::{InterfaceElement, VARIABLE_LENGTH_MESSAGE};
 
 use crate::login_request::{LoginReplyRecord, ServerAddress};
 use crate::loginapp::{LOG_ON_PARAMS_PASS_THRU, LogOnParams, LogOnStatus};
@@ -106,28 +105,6 @@ pub fn db_reply_timeout() -> DbReplyOutcome {
         message: Some(DB_NO_REPLY.to_string()),
         erase_cache: true,
     }
-}
-
-/// `DBAppInterface::logOn` (`lib/db/dbapp_interface.hpp:57`) element id,
-/// counted in declaration order the way `InterfaceMinder::add` counts it
-/// (`lib/network/interface_minder.cpp:37`, `id = elements_.size()`):
-/// reviverPing 0, handleBaseAppMgrBirth 1, handleDBAppMgrBirth 2,
-/// handleDBAppMgrDeath 3, handleBaseAppDeath 4, shutDown 5,
-/// controlledShutDown 6, cellAppOverloadStatus 7, logOn 8.
-pub const DB_APP_LOG_ON_ELEMENT_ID: u8 = 8;
-
-/// The `logOn` element the LoginApp sends the request on.
-/// `BW_STREAM_MSG_EX( DBApp, logOn )` (`common_interface_macros.hpp:60`)
-/// expands to a variable-length message with a 2-byte length field, so the
-/// element carries no handler on the sending side.
-pub fn db_app_log_on_element() -> InterfaceElement {
-    InterfaceElement::new(
-        "logOn",
-        DB_APP_LOG_ON_ELEMENT_ID,
-        VARIABLE_LENGTH_MESSAGE,
-        2,
-        None,
-    )
 }
 
 /// `LoginApp::login` forward: `dbBundle << source << *pParams`.
@@ -219,9 +196,6 @@ pub fn handle_db_reply(data: &mut BinaryStream, now_epoch: i64) -> DbReplyOutcom
     }
 
     let mut record = LoginReplyRecord::new(ServerAddress::NONE, 0);
-    // The size gate above guarantees the twelve bytes the record reads,
-    // so this refusal is unreachable behind it; the reference checks in
-    // the same order and keeps the arm for a shorter wire form.
     if !record.read_from_stream(data) {
         return DbReplyOutcome::Failure {
             status: LogOnStatus::LoginRejectedDbGeneralFailure as u8,
@@ -599,19 +573,5 @@ mod tests {
             Some(LogOnStatus::LoggedOn as u8)
         );
         assert_eq!(DbReplyOutcome::ShuttingDown.status_byte(), None);
-    }
-
-    /// The `logOn` element the request leg sends on: eighth in the
-    /// `DBAppInterface` declaration order, a variable-length message with
-    /// a 2-byte length field, no receiving handler on the sending side.
-    #[test]
-    fn the_log_on_element_matches_the_reference() {
-        let element = db_app_log_on_element();
-        assert_eq!(element.name(), "logOn");
-        assert_eq!(element.id(), DB_APP_LOG_ON_ELEMENT_ID);
-        assert_eq!(element.id(), 8);
-        assert_eq!(element.length_style(), VARIABLE_LENGTH_MESSAGE);
-        assert_eq!(element.length_param(), 2);
-        assert!(element.handler().is_none(), "the sender serves no face");
     }
 }

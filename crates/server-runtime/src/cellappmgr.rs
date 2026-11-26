@@ -22,7 +22,7 @@ use foundation::stream::{BinaryStream, StreamError};
 use crate::cluster_shutdown::{CellAppMgrShutDown, ShutDownAction};
 use crate::shared_data::{
     CellAppSharedDataOutcome, SHARED_DATA_TYPE_BASE_APP, SHARED_DATA_TYPE_CELL_APP,
-    SHARED_DATA_TYPE_GLOBAL, SharedDataMessage, SharedDataSync, read_shared_section,
+    SHARED_DATA_TYPE_GLOBAL, SharedDataMessage, read_shared_section,
 };
 use crate::shutdown::ShutDownStage;
 
@@ -139,54 +139,6 @@ pub fn clamped_aggression(aggression: f32) -> f32 {
     aggression.clamp(min_aggression(), MAX_AGGRESSION)
 }
 
-/// The CellAppMgr scheduling knobs (`cellappmgr_config.cpp` options and the
-/// `BalanceConfig`/`CellAppLoadConfig` constants they feed).
-///
-/// Every default is the reference value: the reference reads these from its
-/// config section, so the port pins them as constants and this struct is
-/// the seam a fixed-scenario comparison varies. The manager carries one,
-/// so `Default` reproduces the shipped scheduling exactly.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct BalanceTuning {
-    /// `CellAppMgrConfig::loadSmoothingBias` — the EMA weight of each
-    /// `informOfLoad` report.
-    pub load_smoothing_bias: f32,
-    /// `CellAppMgrConfig::estimatedInitialCellLoad` — added to an app's
-    /// estimated load for every cell it is given.
-    pub estimated_initial_cell_load: f32,
-    /// `CellAppLoadConfig::safetyBound` — the floor of the balance-pass
-    /// safety bound.
-    pub safety_bound: f32,
-    /// `CellAppLoadConfig::safetyRatio` — the safety bound's multiplier
-    /// over the tree's average smoothed load.
-    pub safety_ratio: f32,
-    /// `CellAppMgrConfig::metaLoadBalanceTolerance` — how far above the
-    /// fleet average a group must sit before a cell is added to it.
-    pub meta_load_balance_tolerance: f32,
-    /// `CellAppLoadConfig::lowerBound` — the group average below which the
-    /// least-loaded app is retired.
-    pub lower_bound: f32,
-    /// `CellAppMgrConfig::shouldLimitBalanceToChunks` — whether the
-    /// balance pass stops a partition at the growing child's loaded
-    /// chunks.
-    pub limit_to_chunks: bool,
-}
-
-impl Default for BalanceTuning {
-    /// The reference configuration values.
-    fn default() -> Self {
-        BalanceTuning {
-            load_smoothing_bias: LOAD_SMOOTHING_BIAS,
-            estimated_initial_cell_load: ESTIMATED_INITIAL_CELL_LOAD,
-            safety_bound: SAFETY_BOUND,
-            safety_ratio: SAFETY_RATIO,
-            meta_load_balance_tolerance: META_LOAD_BALANCE_TOLERANCE,
-            lower_bound: LOWER_BOUND,
-            limit_to_chunks: SHOULD_LIMIT_BALANCE_TO_CHUNKS,
-        }
-    }
-}
-
 // -----------------------------------------------------------------------------
 // Section: Rect
 // -----------------------------------------------------------------------------
@@ -215,14 +167,6 @@ impl Range1d {
         self.max - self.min
     }
 }
-
-#[cfg(test)]
-#[path = "cellappmgr_baseline.rs"]
-mod cellappmgr_baseline;
-
-#[cfg(test)]
-#[path = "cellappmgr_tuning.rs"]
-mod cellappmgr_tuning;
 
 /// A rectangle in the `x`/`y` plane, the coordinate system `BW::Rect` uses
 /// for a space's cell partitioning.
@@ -1034,26 +978,6 @@ pub struct BalanceContext<'a> {
     pub limit_to_chunks: bool,
     /// `CellAppMgrConfig::shouldBalanceUnloadedChunks`.
     pub balance_unloaded_chunks: bool,
-    /// `CellAppLoadConfig::safetyBound`.
-    pub safety_bound: f32,
-    /// `CellAppLoadConfig::safetyRatio`.
-    pub safety_ratio: f32,
-}
-
-impl<'a> BalanceContext<'a> {
-    /// A context with the reference knobs, for direct callers of
-    /// [`Space::load_balance`].
-    pub fn new(space_bounds: Rect, space_grid: f32, apps: &'a CellAppRegistry) -> Self {
-        BalanceContext {
-            space_bounds,
-            space_grid,
-            apps,
-            limit_to_chunks: SHOULD_LIMIT_BALANCE_TO_CHUNKS,
-            balance_unloaded_chunks: true,
-            safety_bound: SAFETY_BOUND,
-            safety_ratio: SAFETY_RATIO,
-        }
-    }
 }
 
 /// A node of the BSP tree: either a partition or a cell leaf.
@@ -1263,18 +1187,6 @@ impl BspNode {
             BspNode::Internal(node) => {
                 node.left.for_each_cell_mut(f);
                 node.right.for_each_cell_mut(f);
-            }
-        }
-    }
-
-    /// Visit every partition line of the subtree, left to right.
-    pub fn visit_partitions(&self, out: &mut Vec<(bool, f32)>) {
-        match self {
-            BspNode::Leaf(_) => {}
-            BspNode::Internal(node) => {
-                out.push((node.horizontal, node.position));
-                node.left.visit_partitions(out);
-                node.right.visit_partitions(out);
             }
         }
     }
@@ -1748,16 +1660,10 @@ impl CellAppRecord {
     /// exponential moving average with `loadSmoothingBias`; the estimate
     /// tracks the smoothed value.
     pub fn inform_of_load(&mut self, load: f32, num_entities: u32, now_ms: u64) {
-        self.inform_of_load_with(load, num_entities, now_ms, LOAD_SMOOTHING_BIAS);
-    }
-
-    /// The same report with an explicit smoothing bias, for the fixed
-    /// scenario comparison. The reference reads the bias from its config;
-    /// the constant remains the default so existing callers are unchanged.
-    pub fn inform_of_load_with(&mut self, load: f32, num_entities: u32, now_ms: u64, bias: f32) {
         self.last_received_load = load;
         self.curr_load = load;
-        self.smoothed_load = ((1.0 - bias) * self.smoothed_load) + (bias * load);
+        self.smoothed_load =
+            ((1.0 - LOAD_SMOOTHING_BIAS) * self.smoothed_load) + (LOAD_SMOOTHING_BIAS * load);
         self.estimated_load = self.smoothed_load;
         self.num_entities = num_entities;
         self.last_heard_ms = now_ms;
@@ -2203,16 +2109,6 @@ impl Space {
         }
     }
 
-    /// The partition lines of the tree, left to right: each is the line's
-    /// axis (`true` for a horizontal/y split) and its position.
-    pub fn partition_positions(&self) -> Vec<(bool, f32)> {
-        let mut out = Vec::new();
-        if let Some(node) = &self.root {
-            node.visit_partitions(&mut out);
-        }
-        out
-    }
-
     /// `Space::loadBalance`: run one balancing pass over the BSP tree,
     /// then delete any cell the pass retired to zero area.
     pub fn load_balance(&mut self, ctx: &BalanceContext) -> Vec<Addr> {
@@ -2225,9 +2121,7 @@ impl Space {
         if let Some(node) = &mut self.root {
             node.update_load(ctx.apps, self.bounds);
 
-            let safety = ctx
-                .safety_bound
-                .max(node.avg_smoothed_load() * ctx.safety_ratio);
+            let safety = SAFETY_BOUND.max(node.avg_smoothed_load() * SAFETY_RATIO);
             let mut to_delete = Vec::new();
             node.balance(Rect::unbounded(), safety, ctx, false, &mut to_delete);
             node.update_load(ctx.apps, self.bounds);
@@ -2724,10 +2618,6 @@ pub enum AddAppOutcome {
         timeout_period: f32,
         /// `initData.isReady`.
         is_ready: bool,
-        /// The join fill (`CellAppMgr::addApp`, `cellappmgr.cpp:1351-1377`):
-        /// every authoritative shared-data entry, cell data first, one
-        /// `setSharedData` message per entry.
-        shared_data: Vec<SharedDataMessage>,
     },
 }
 
@@ -2780,9 +2670,6 @@ pub struct CellAppMgr {
     pub spaces_shutting_down: BTreeSet<SpaceId>,
     /// `shouldMetaLoadBalance_`.
     pub should_meta_load_balance: bool,
-    /// The scheduling knobs the manager's passes read, defaulting to the
-    /// reference configuration.
-    pub tuning: BalanceTuning,
     /// The scoring criteria, from `cellAppMgr/metaLoadBalancePriority`.
     pub scorers: Vec<ScorerConfig>,
     /// The outbound messages accumulated by the last call, in order.
@@ -2806,7 +2693,6 @@ impl CellAppMgr {
     pub fn new() -> Self {
         Self {
             scorers: default_scorers(),
-            tuning: BalanceTuning::default(),
             ..Self::default()
         }
     }
@@ -2836,28 +2722,11 @@ impl CellAppMgr {
         app.last_heard_ms = now_ms;
         self.apps.add(app);
         self.pending_apps.push(addr);
-        // The join fill (`CellAppMgr::addApp`, `cellappmgr.cpp:1351-1377`):
-        // the new app's bundle carries every authoritative entry, cell
-        // data first, one `setSharedData` message per entry.
-        let shared_data = self.join_sync().expand();
         AddAppOutcome::Accepted {
             id,
             timeout_period: CELL_APP_TIMEOUT,
             is_ready: self.has_started,
-            shared_data,
         }
-    }
-
-    /// The batched join-sync of the authoritative maps (cell data first,
-    /// then global data): the optimization form of the per-entry fill,
-    /// one message instead of one per entry.
-    pub fn join_sync(&self) -> SharedDataSync {
-        SharedDataSync::from_maps(
-            SHARED_DATA_TYPE_CELL_APP,
-            &self.shared_cell_app_data,
-            SHARED_DATA_TYPE_GLOBAL,
-            &self.shared_global_data,
-        )
     }
 
     /// `CellAppMgr::delApp`.
@@ -3163,7 +3032,7 @@ impl CellAppMgr {
         let cell = space.add_cell(&record);
         if let Some(rec) = self.apps.find_mut(app) {
             rec.num_cells += 1;
-            rec.estimated_load += self.tuning.estimated_initial_cell_load;
+            rec.estimated_load += ESTIMATED_INITIAL_CELL_LOAD;
         }
         self.outbox.push(Outbound::AddCell(app, space_id));
         Some(cell.app)
@@ -3177,7 +3046,7 @@ impl CellAppMgr {
         let cell = space.add_cell(&record);
         if let Some(rec) = self.apps.find_mut(app) {
             rec.num_cells += 1;
-            rec.estimated_load += self.tuning.estimated_initial_cell_load;
+            rec.estimated_load += ESTIMATED_INITIAL_CELL_LOAD;
         }
         self.outbox.push(Outbound::AddCell(app, space_id));
         Some(cell.app)
@@ -3218,7 +3087,7 @@ impl CellAppMgr {
             return;
         }
         let groups = CellAppGroups::identify(&self.apps, &self.spaces);
-        let merge_threshold = self.apps.avg_load() + self.tuning.meta_load_balance_tolerance;
+        let merge_threshold = self.apps.avg_load() + META_LOAD_BALANCE_TOLERANCE;
 
         let overloaded = groups.overloaded_groups(&self.apps, merge_threshold);
         for group in overloaded {
@@ -3229,7 +3098,7 @@ impl CellAppMgr {
 
         if !has_loading_spaces {
             for group in &groups.groups {
-                self.group_check_underloaded(group, self.tuning.lower_bound);
+                self.group_check_underloaded(group, LOWER_BOUND);
             }
         }
     }
@@ -3326,10 +3195,8 @@ impl CellAppMgr {
                 space_bounds: space.bounds,
                 space_grid: space.grid,
                 apps: &self.apps,
-                limit_to_chunks: self.tuning.limit_to_chunks,
+                limit_to_chunks: SHOULD_LIMIT_BALANCE_TO_CHUNKS,
                 balance_unloaded_chunks: true,
-                safety_bound: self.tuning.safety_bound,
-                safety_ratio: self.tuning.safety_ratio,
             };
             let removed = space.load_balance(&ctx);
             for app in removed {
@@ -3392,7 +3259,7 @@ impl CellAppMgr {
                 space.add_cell(&rec);
                 if let Some(r) = self.apps.find_mut(alt) {
                     r.num_cells += 1;
-                    r.estimated_load += self.tuning.estimated_initial_cell_load;
+                    r.estimated_load += ESTIMATED_INITIAL_CELL_LOAD;
                 }
                 self.outbox.push(Outbound::AddCell(alt, space_id));
             }
@@ -4246,37 +4113,6 @@ mod tests {
 
         let out = mgr.set_shared_data(SHARED_DATA_TYPE_GLOBAL, "g", "v", (0, 0));
         assert_eq!(out.base_app_mgr, None);
-    }
-
-    /// A newly accepted CellApp's fill carries every authoritative entry,
-    /// cell data first (`cellappmgr.cpp:1351-1377`), and is exactly the
-    /// batched join-sync's expansion.
-    #[test]
-    fn a_joined_cell_app_receives_the_authoritative_entries() {
-        let mut mgr = mgr_with(vec![((0x7f000001, 3000), 0.5)]);
-        mgr.set_shared_data(SHARED_DATA_TYPE_CELL_APP, "c", "x", (0, 0));
-        mgr.set_shared_data(SHARED_DATA_TYPE_GLOBAL, "g", "v", (0, 0));
-
-        let out = mgr.add_app((0x7f000002, 3001), 5000, 1000);
-        let AddAppOutcome::Accepted { shared_data, .. } = out else {
-            panic!("the fixture app joins");
-        };
-        assert_eq!(shared_data, mgr.join_sync().expand());
-        assert_eq!(shared_data.len(), 2);
-        assert!(
-            matches!(
-                &shared_data[0],
-                SharedDataMessage::Set { data_type: SHARED_DATA_TYPE_CELL_APP, key, .. } if key == "c"
-            ),
-            "cell data streams first"
-        );
-        assert!(
-            matches!(
-                &shared_data[1],
-                SharedDataMessage::Set { data_type: SHARED_DATA_TYPE_GLOBAL, key, .. } if key == "g"
-            ),
-            "global data follows"
-        );
     }
 
     /// The delete path mirrors the set path on the CellAppMgr side.

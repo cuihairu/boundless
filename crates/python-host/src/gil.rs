@@ -36,7 +36,6 @@
 
 use std::collections::VecDeque;
 use std::os::raw::c_void;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use crate::capi;
@@ -85,17 +84,6 @@ fn queue() -> MutexGuard<'static, Queue> {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
-
-/// The number of callbacks waiting, kept in step with the queue under its
-/// lock. It feeds the idle-frame fast path of [`process`]: the poll-side
-/// steady state is a pass over an empty queue, and the reference's tick
-/// (`bgtask_manager.cpp:744-749`) pays one lock for that check per frame --
-/// here an idle frame pays one atomic load and never takes the mutex.
-/// Writers update it while holding the queue lock, so whenever the lock is
-/// not held the count and the queue agree; a reader that races a poster may
-/// transiently see the older count, which can only delay a callback to the
-/// next pass -- the reference's own "always wait at least 1 frame" rule.
-static QUEUED: AtomicUsize = AtomicUsize::new(0);
 
 // The thread-local context `Script::s_defaultContext` stands for: one entry
 // per thread, null until the thread that owns the interpreter installs one.
@@ -200,18 +188,12 @@ pub unsafe fn release_lock() -> Result<(), ReleaseError> {
 /// reachable from any thread (`bgtask_manager.cpp:709-715`). The callback
 /// runs on the thread that owns the GIL, during the next [`process`].
 pub fn post(callback: impl FnOnce() + Send + 'static) {
-    // The allocation lands before the lock, so the critical section is the
-    // push and the count step, not the heap.
-    let callback: Callback = Box::new(callback);
-    let mut queue = queue();
-    queue.callbacks.push_back(callback);
-    QUEUED.fetch_add(1, Ordering::Release);
+    queue().callbacks.push_back(Box::new(callback));
 }
 
-/// The number of callbacks waiting for the script thread. Exact whenever no
-/// post or pass is in flight; a caller racing them may see the older count.
+/// The number of callbacks waiting for the script thread.
 pub fn pending() -> usize {
-    QUEUED.load(Ordering::Acquire)
+    queue().callbacks.len()
 }
 
 /// `TaskManager::tick` (`bgtask_manager.cpp:744-749`): run every waiting
@@ -235,26 +217,15 @@ pub fn pending() -> usize {
 /// The calling thread must own the GIL: every callback may touch the
 /// interpreter.
 pub unsafe fn process() -> usize {
-    // The idle-frame fast path: nothing queued means nothing to take, and
-    // the frame pays an atomic load instead of the queue lock. A post that
-    // races this load holds the count step until it can take the lock, so
-    // the worst race outcome is this pass returns 0 and the callback runs
-    // next pass -- the reference's own ordering rule.
-    if QUEUED.load(Ordering::Acquire) == 0 {
-        return 0;
-    }
     // The pass runs the snapshot it took out of the queue, so a callback that
     // posts another does not run in this pass and cannot deadlock on the
     // queue lock; and the lock is free by the time the snapshot runs, so an
     // aborting callback cannot poison it for its neighbours.
-    let due = {
+    let (waiting, due) = {
         let mut queue = queue();
-        // The take empties the deque, so the count that agrees with the
-        // queue at this point is zero: posters that ran before us under the
-        // lock are all in `due`, posters that run after us re-count from 0.
+        let waiting = queue.callbacks.len();
         let due = std::mem::take(&mut queue.callbacks);
-        QUEUED.store(0, Ordering::Release);
-        due
+        (waiting, due)
     };
     let mut completed = 0;
     for callback in due {
@@ -266,6 +237,10 @@ pub unsafe fn process() -> usize {
         }
         completed += 1;
     }
+    debug_assert!(
+        completed <= waiting,
+        "a pass cannot complete more callbacks than it took"
+    );
     completed
 }
 
@@ -278,7 +253,6 @@ pub fn clear() -> usize {
     let mut queue = queue();
     let dropped = queue.callbacks.len();
     queue.callbacks.clear();
-    QUEUED.store(0, Ordering::Release);
     dropped
 }
 

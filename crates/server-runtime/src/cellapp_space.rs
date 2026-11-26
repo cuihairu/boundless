@@ -17,7 +17,7 @@
 //! live dispatcher pass, which keeps the one-second delay observable.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crate::cellappmgr::SpaceId;
@@ -177,7 +177,7 @@ impl SpaceDataMapping {
 }
 
 /// One cell of a Space (`CellInfo` in the space's tree).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CellInfo {
     /// The space this cell partitions.
     pub space_id: SpaceId,
@@ -185,29 +185,6 @@ pub struct CellInfo {
     pub app_addr: u32,
     /// The cell's tree identity.
     pub node: CellInfoNode,
-    /// `rect()`: the cell's partition rectangle, `(minX, minZ, maxX,
-    /// maxZ)`. The ghost maintainer intersects it against the real's
-    /// hysteresis area; `pCellAt` contains-checks it.
-    pub rect: (f32, f32, f32, f32),
-    /// `isDeletePending()`: the cell is being deleted; no ghosts are
-    /// created on it and it is no offload destination.
-    pub is_delete_pending: bool,
-}
-
-impl CellInfo {
-    /// `rect().contains( x, z )`: the cell owns this point.
-    pub fn contains(&self, x: f32, z: f32) -> bool {
-        let (min_x, min_z, max_x, max_z) = self.rect;
-        x >= min_x && x <= max_x && z >= min_z && z <= max_z
-    }
-
-    /// `Rect::intersects`: any overlap with the other
-    /// `(minX, minZ, maxX, maxZ)` rectangle.
-    pub fn intersects(&self, other: (f32, f32, f32, f32)) -> bool {
-        let (min_x, min_z, max_x, max_z) = self.rect;
-        let (o_min_x, o_min_z, o_max_x, o_max_z) = other;
-        min_x <= o_max_x && max_x >= o_min_x && min_z <= o_max_z && max_z >= o_min_z
-    }
 }
 
 /// The identity a `Cell`'s info holds; [`Space::has_single_cell`] compares
@@ -239,12 +216,6 @@ pub struct Cell {
     /// How many `Cell::reuse` deliveries this cell has had ("Cell did not
     /// fully remove; reusing.").
     pub reuse_count: u32,
-    /// `shouldOffload_` (the constructor's `true`): the check drives
-    /// offloads and ghost maintenance for this cell.
-    pub should_offload: bool,
-    /// `isRemoved_`: the cell has been removed and may be deleted once
-    /// empty (`isReadyForDeletion`).
-    pub is_removed: bool,
 }
 
 impl Cell {
@@ -283,21 +254,6 @@ pub struct Entity {
     pub is_on_ground: bool,
     /// `lastEventNumber_`.
     pub last_event_number: u32,
-    /// `lastTrimmedEventNumber()`: the oldest event the client-facing
-    /// history still holds; a witness cache re-entering with a stamp
-    /// older than this takes the refresh path (`EntityCache::reuse`).
-    pub last_trimmed_event_number: u32,
-    /// `volatileUpdateNumber()`: the volatile update counter the
-    /// witness caches restamp from on reset (their `lastVolatile` is
-    /// this minus one).
-    pub volatile_update_number: u16,
-    /// `propertyOwner_`'s ghost half: the property data
-    /// `ghostedDataUpdate` set, by the type's property index.
-    pub ghost_properties: BTreeMap<i32, Vec<u8>>,
-    /// `nextRealAddr_`: the address the entity's real is moving to (a
-    /// real mid-offload names its destination; a ghost holds the
-    /// sign-off it received until the new real's first message).
-    pub next_real_addr: Option<u32>,
     /// `baseAddr_`: the base's internal address, when the stream carried one.
     pub base_addr: Option<(u32, u16)>,
     /// The Witness indicator byte `RealEntity::init` read (`'W'`/`'-'`).
@@ -354,31 +310,6 @@ pub struct Entity {
     /// `triggers_` (`entity.hpp`): this entity's own range triggers,
     /// sorted by range, largest first.
     pub range_triggers: Vec<crate::cellapp_range_list::TriggerId>,
-    /// `eventHistory_`: the events the witnesses' caches replay from.
-    pub event_history: crate::cellapp_witness::EventHistory,
-    /// `periodsWithoutWitness_`: the unwitnessed tally the send pass
-    /// clears and the tick increments.
-    pub periods_without_witness: u32,
-    /// `EntityDescription::volatileInfo()`: the per-type volatile
-    /// priorities this entity's projections gate on.
-    pub volatile_info: crate::cellapp_witness::VolatileInfo,
-    /// The `CellAppInterface::witnessed` sends a ghost's witnessed arm
-    /// made: the ghost ids the real was told about.
-    pub witnessed_sends: Vec<u32>,
-    /// `RealEntity::creationTime()`: the tick the real was created at —
-    /// the ghost maintainer keeps ghosts of brand-new reals.
-    pub creation_time: u32,
-    /// `pRealChannel_`'s address on a ghost: where the real lives
-    /// (`readGhostDataFromStreamInternal`), `None` while real or unset.
-    pub real_addr: Option<u32>,
-    /// `numTimesRealOffloaded_`: the offload tally the ghost stream
-    /// carries (`BufferedGhostMessage` also reads it off the head).
-    pub num_times_real_offloaded: u32,
-    /// `aoiUpdateSchemeID_` (uint8).
-    pub aoi_update_scheme_id: u8,
-    /// `RealEntity::haunts_`: the ghosts this real maintains, per remote
-    /// CellApp address, with each haunt's creation tick.
-    pub haunts: Vec<crate::cellapp_ghost::Haunt>,
 }
 
 impl Entity {
@@ -397,10 +328,6 @@ impl Entity {
             direction: [0.0; 3],
             is_on_ground: false,
             last_event_number: 0,
-            last_trimmed_event_number: 0,
-            volatile_update_number: 0,
-            ghost_properties: BTreeMap::new(),
-            next_real_addr: None,
             base_addr: None,
             has_witness: false,
             controllers: crate::cellapp_real_entity::Controllers::default(),
@@ -414,20 +341,11 @@ impl Entity {
             local_direction: [0.0; 3],
             controlled_by: 0,
             accel_vehicle: None,
-            event_history: crate::cellapp_witness::EventHistory::default(),
-            periods_without_witness: crate::cellapp_witness::NOT_WITNESSED_THRESHOLD,
-            volatile_info: crate::cellapp_witness::VolatileInfo::default(),
-            witnessed_sends: Vec::new(),
             accel_sample: [0.0; 3],
             accel_sample_time: 0,
             accel_velocity: [0.0; 3],
             range_node: None,
             range_triggers: Vec::new(),
-            creation_time: 0,
-            real_addr: None,
-            num_times_real_offloaded: 0,
-            aoi_update_scheme_id: 0,
-            haunts: Vec::new(),
         }
     }
 }
@@ -552,18 +470,6 @@ pub struct ChunkSpace {
     pub cleared: bool,
 }
 
-/// One obstacle the space's `collide` query answers against. The
-/// reference's chunk collision is the chunk lane's geometry; this port
-/// carries the same query as an obstacle registry the tests drive —
-/// `ChunkSpace::collide`'s "any obstacle will do" face.
-#[derive(Clone, Copy, Debug)]
-pub struct Blocker {
-    /// The obstacle centre.
-    pub center: [f32; 3],
-    /// The obstacle radius.
-    pub radius: f32,
-}
-
 /// `PhysicalChunkSpace` (`physical_chunk_space.cpp`): chunked geometry
 /// through a `ChunkSpace` this backend owns.
 #[derive(Debug)]
@@ -573,14 +479,6 @@ pub struct PhysicalChunkSpace {
     pub chunk_space: ChunkSpace,
     /// `geometryMappings_`: one entry per `SpaceEntryID`.
     pub mappings: BTreeMap<u32, GeometryMapping>,
-    /// The obstacles `collide` answers against (the chunk geometry's
-    /// port seam).
-    pub blockers: Vec<Blocker>,
-    /// `subBounds()`: the loaded geometry's bounds, `(min, max)`. The
-    /// reference's grows as chunks load; the port's is written whole.
-    pub bounds: ([f32; 3], [f32; 3]),
-    /// `ChunkSpace::gridSize()`: the square chunk size the grid uses.
-    pub grid_size: f32,
 }
 
 impl PhysicalChunkSpace {
@@ -593,50 +491,7 @@ impl PhysicalChunkSpace {
                 cleared: false,
             },
             mappings: BTreeMap::new(),
-            blockers: Vec::new(),
-            bounds: ([0.0; 3], [0.0; 3]),
-            grid_size: 200.0,
         }
-    }
-
-    /// `ChunkSpace::collide( source, destination )` (`chunk_space.hpp`):
-    /// walk the ray and answer the distance to the first obstacle —
-    /// any obstacle will do (`entity_vision.cpp:303`). Clear ground
-    /// answers `0.f`, the reference's "nothing hit" reading.
-    pub fn collide(&self, source: [f32; 3], destination: [f32; 3]) -> f32 {
-        let dir = [
-            destination[0] - source[0],
-            destination[1] - source[1],
-            destination[2] - source[2],
-        ];
-        let len_sq = dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2];
-        if len_sq <= 0.0 {
-            return 0.0;
-        }
-        for blocker in &self.blockers {
-            let to_center = [
-                blocker.center[0] - source[0],
-                blocker.center[1] - source[1],
-                blocker.center[2] - source[2],
-            ];
-            let proj = to_center[0] * dir[0] + to_center[1] * dir[1] + to_center[2] * dir[2];
-            let t_closest = proj / len_sq;
-            if !(0.0..=1.0).contains(&t_closest) {
-                continue;
-            }
-            let closest = [
-                source[0] + dir[0] * t_closest,
-                source[1] + dir[1] * t_closest,
-                source[2] + dir[2] * t_closest,
-            ];
-            let dx = blocker.center[0] - closest[0];
-            let dy = blocker.center[1] - closest[1];
-            let dz = blocker.center[2] - closest[2];
-            if dx * dx + dy * dy + dz * dz <= blocker.radius * blocker.radius {
-                return t_closest * len_sq.sqrt();
-            }
-        }
-        0.0
     }
 
     /// `loadResource` → `addMappingAsync`: the mapping arrives pending.
@@ -701,10 +556,6 @@ pub struct PhysicalDelegateSpace {
     /// `worlds_`: the materialised instances (holding the path once
     /// `CreateWorldInstance` succeeded).
     pub worlds: BTreeMap<u32, String>,
-    /// `subBounds()`: the loaded geometry's bounds, `(min, max)`. A
-    /// delegate space has no chunk grid, so the viewer's grid size
-    /// falls back to this bounds' square.
-    pub bounds: ([f32; 3], [f32; 3]),
     /// The factory every call goes through — shared with the holder, so
     /// the releases survive the space.
     factory: Rc<RefCell<SpaceWorldFactory>>,
@@ -719,7 +570,6 @@ impl PhysicalDelegateSpace {
             id,
             paths: BTreeMap::new(),
             worlds: BTreeMap::new(),
-            bounds: ([0.0; 3], [0.0; 3]),
             factory,
         }
     }
@@ -806,33 +656,6 @@ impl PhysicalSpace {
         match self {
             PhysicalSpace::Chunk(chunk) => Some(chunk),
             PhysicalSpace::Delegate(_) => None,
-        }
-    }
-
-    /// `subBounds()` plus the grid size the backend carries: the chunk
-    /// grid reports `ChunkSpace::gridSize()`, the delegate has none and
-    /// the viewer falls back to the bounds' square.
-    pub fn sub_bounds(&self) -> (([f32; 3], [f32; 3]), Option<f32>) {
-        match self {
-            PhysicalSpace::Chunk(chunk) => (chunk.bounds, Some(chunk.grid_size)),
-            PhysicalSpace::Delegate(delegate) => (delegate.bounds, None),
-        }
-    }
-
-    /// The test seam: write the loaded geometry's bounds whole.
-    pub fn set_sub_bounds(&mut self, min: [f32; 3], max: [f32; 3]) {
-        let bounds = match self {
-            PhysicalSpace::Chunk(chunk) => &mut chunk.bounds,
-            PhysicalSpace::Delegate(delegate) => &mut delegate.bounds,
-        };
-        *bounds = (min, max);
-    }
-
-    /// The test seam: set the chunk grid's size (no face on a delegate
-    /// backend — it has no grid).
-    pub fn set_grid_size(&mut self, grid_size: f32) {
-        if let PhysicalSpace::Chunk(chunk) = self {
-            chunk.grid_size = grid_size;
         }
     }
 
@@ -1020,21 +843,6 @@ impl Space {
     /// `setLastMappedGeometry`.
     pub fn set_last_mapped_geometry(&mut self, geometry: String) {
         self.last_mapped_geometry = geometry;
-    }
-
-    /// `dataBySeq( seq, entryID, key )`: the entry the sequence names,
-    /// and the value still in the mapping. A revoked key hands back no
-    /// value — the reference returns `NULL` then, too.
-    pub fn data_by_seq(&self, seq: u32) -> (u32, u16, Option<&Vec<u8>>) {
-        debug_assert!(self.beg_data_seq <= seq as u64);
-        debug_assert!((seq as u64) < self.end_data_seq);
-        let (entry_id, key) = self.recent_data[(seq as usize) - self.beg_data_seq as usize];
-        let blob = (key != NO_SPACE_DATA_KEY)
-            .then(|| self.space_data.data_retrieve_specific_ptr(entry_id))
-            .flatten()
-            .filter(|value| value.key != NO_SPACE_DATA_KEY)
-            .map(|value| &value.data);
-        (entry_id, key, blob)
     }
 
     /// `pPhysicalSpace()`: the mounted backend. The accessor hands out a
@@ -1227,9 +1035,6 @@ impl Space {
         if effective_key < SPACE_DATA_FIRST_CELL_ONLY_KEY {
             self.recent_data.push((entry_id, key));
             self.end_data_seq += 1;
-            // `s_allSpacesDataChangeSeq_` is a free global in the
-            // reference; the `CellApp` carries it here.
-            cell_app.all_spaces_data_change_seq += 1;
         }
 
         // effect this change unless that has already been done
@@ -1356,17 +1161,6 @@ impl Space {
     /// `isShuttingDown`: the timer has been armed and not cancelled.
     pub fn is_shutting_down(&self) -> bool {
         self.timer_armed_at.is_some()
-    }
-
-    /// `cellInfos_`: every cell this space spans, tree order.
-    pub fn cells(&self) -> impl Iterator<Item = &CellInfo> + '_ {
-        self.cells.iter()
-    }
-
-    /// `spaceEntities()` (`entities_`): every entity the space holds,
-    /// reals and ghosts alike.
-    pub fn space_entities(&self) -> &[Rc<RefCell<Entity>>] {
-        &self.entities
     }
 
     /// `addEntity( Entity * )`.
@@ -1817,170 +1611,6 @@ pub struct CellApp {
     /// deliberately external (the position-write funnel cannot reach
     /// per-space data), the passengers' state is the standing precedent.
     pub range_lists: BTreeMap<SpaceId, crate::cellapp_range_list::RangeList>,
-    /// The witnesses, by the entity whose client they serve (the
-    /// reference keeps one `Witness*` per real entity with a witness —
-    /// `Entity::pWitness()`), BW-08-03.
-    pub witnesses: BTreeMap<u32, crate::cellapp_witness::Witness>,
-    /// `CellAppConfig::aoiUpdateSchemes()`.
-    pub aoi_schemes: crate::cellapp_witness::AoIUpdateSchemes,
-    /// The per-type description faces the witness reads
-    /// (`EntityDescription::canBeOnClient` and friends).
-    pub entity_type_faces: BTreeMap<u32, crate::cellapp_witness::EntityTypeDef>,
-    /// `Entity::propertyEventStamps()`, per entity: the client-server
-    /// properties and their change stamps.
-    pub entity_properties: BTreeMap<u32, Vec<crate::cellapp_witness::ClientProperty>>,
-    /// The witness WARNING/INFO faces, in delivery order.
-    pub witness_warnings: Vec<crate::cellapp_witness::WitnessNote>,
-    /// The witness ERROR/CRITICAL faces, in delivery order.
-    pub witness_errors: Vec<crate::cellapp_witness::WitnessNote>,
-    /// `CellApp::emergencyThrottle()`: the load throttle (1.0 is none).
-    pub emergency_throttle: f32,
-    /// `CellApp::throttle_`: the emergency-throttle state machine the
-    /// load update drives.
-    pub throttle: crate::cellapp_throttle::EmergencyThrottle,
-    /// `CellApp::persistentLoad_`: the smoothed persistent load.
-    pub persistent_load: f32,
-    /// `CellApp::transientLoad_`: the smoothed transient load.
-    pub transient_load: f32,
-    /// `CellApp::totalLoad_`: the smoothed total load.
-    pub total_load: f32,
-    /// `CellApp::totalAddedLoad_`: the artificial load, in ticks.
-    pub total_added_load: f32,
-    /// The tick-warning WARNING faces, in delivery order.
-    pub tick_warnings: Vec<String>,
-    /// The frame samples `update_load` reads at the tick tail. `None`
-    /// means no profiled frame was measured — the throttle holds.
-    pub load_sample: Option<crate::cellapp_throttle::LoadSample>,
-    /// `Cell::pReplayData()`: the per-space collector that shapes this
-    /// tick's replay blocks; empty until `start_recording` mounts one.
-    pub replay_collectors: BTreeMap<SpaceId, crate::cellapp_replay::ReplayCollector>,
-    /// The `onRecordingTickData` / `onRecordingStarted` / `onRecordingStopped`
-    /// script events, in delivery order: `(space id, game time, name,
-    /// block bytes)`.
-    pub recording_events: Vec<(SpaceId, u32, String, Vec<u8>)>,
-    /// The recording WARNING faces, in delivery order.
-    pub recording_warnings: Vec<String>,
-    /// `CellAppConfig::witnessUpdateMaxPriorityDelta()` (default 5.0).
-    pub witness_max_priority_delta: f32,
-    /// The fixed per-send bundle growth while the update writer is
-    /// BW-08-03-04's face.
-    /// `CellAppConfig::entitySpamSize()` (default 200).
-    pub witness_spam_size: i32,
-    /// `Space::s_allSpacesDataChangeSeq_`: the global space-data
-    /// sequence the witnesses compare against.
-    pub all_spaces_data_change_seq: u64,
-    /// The spaces, by id. Held on the CellApp like the range lists —
-    /// this port's spaces are deliberately external, and the witness's
-    /// space-data face reaches for the witnessing entity's own space
-    /// through here.
-    pub spaces: BTreeMap<SpaceId, Space>,
-    /// `CellAppConfig::maxTimeBetweenPlayerUpdatesInTicks()`: how long a
-    /// player's detailed position may ride unchanged. `-1` always skips
-    /// the repeat, `0` never does.
-    pub max_time_between_player_updates: i32,
-    /// `CellAppConfig::packedXZScale()`: `maxAoIRadius` over the floor of
-    /// the packed limit.
-    pub packed_xz_scale: f32,
-    /// `CellAppConfig::sendDetailedPlayerVehicles()` (default false).
-    pub send_detailed_player_vehicles: bool,
-    /// The `onWitnessed` callback deliveries the send pass made.
-    pub witnessed_notifications: Vec<(u32, bool)>,
-    /// `CellAppConfig::ghostDistance()` (the `DEFAULT_AOI_RADIUS`, 500).
-    pub ghost_distance: f32,
-    /// `CellAppConfig::maxGhostsToDelete()` (default 100).
-    pub max_ghosts_to_delete: u32,
-    /// The ghost wires the maintainer sent: `createGhost`/`delGhost`
-    /// bundles, in send order, per destination address. The tests deliver
-    /// them into the peer CellApp; the reference hands them to
-    /// `CellAppChannels`' bundles.
-    pub ghost_outbox: Vec<crate::cellapp_ghost::GhostWire>,
-    /// The `CellAppInterface::onload` wires an offload streamed: the
-    /// real entity's data bound for the app it is moving to. The tests
-    /// deliver them into the peer CellApp; the reference hands them to
-    /// the destination's bundle.
-    pub onload_outbox: Vec<crate::cellapp_ghost::OnloadWire>,
-    /// `CellAppInterface::onloadTeleportedEntity` wires: the cross-space
-    /// teleport's head (the nearby id and the ghost body) with the tail
-    /// `onload` boxed inside.
-    pub teleport_outbox: Vec<crate::cellapp_ghost::TeleportWire>,
-    /// `BaseAppIntInterface::emergencySetCurrentCell` wires from the
-    /// death sweep: one per zombied ghost with a base.
-    pub emergency_outbox: Vec<crate::cellapp_ghost::EmergencySetCurrentCellWire>,
-    /// `CellAppChannels::hasRecentlyDied`: apps the death sweep marked
-    /// gone, so a ghost whose next real names one still zombies.
-    pub dead_apps: BTreeSet<u32>,
-    /// `ProximityRangeTrigger`'s callback ledger: one entry per
-    /// `onEnterTrap`/`onLeaveTrap` the trap dispatch ran (the payload
-    /// tuple `(who, range, controllerID, userArg)` the script call
-    /// alone cannot carry).
-    pub trap_calls: Vec<crate::cellapp_vision::TrapCall>,
-    /// `EntityVision`'s diff callbacks: one entry per
-    /// `onStartSeeing`/`onStopSeeing`.
-    pub vision_calls: Vec<crate::cellapp_vision::VisionCall>,
-    /// `Entity::heardNoise`'s deliveries: one entry per `onNoise` the
-    /// noise dispatch ran (the payload tuple
-    /// `(who, propRange, distance, event, info)` the script call alone
-    /// cannot carry).
-    pub noise_calls: Vec<crate::cellapp_noise::NoiseCall>,
-    /// `EntityType::getTypes()`' names, by type id — the registry the
-    /// Cell Viewer's type-names query reads.
-    pub entity_type_names: BTreeMap<u32, String>,
-    /// The Cell Viewer connection's WARNING/ERROR faces, in the order
-    /// the requests raised them.
-    pub viewer_notes: Vec<String>,
-    /// The live traps, by controller id: the trigger, the trap range
-    /// and the recorder sink the range-list crossings land in.
-    pub trap_triggers:
-        BTreeMap<crate::cellapp_real_entity::ControllerId, crate::cellapp_vision::TrapTriggerState>,
-    /// The live trap membership, by controller id: the crossing ledger
-    /// survives the sink being drained for script dispatch.
-    pub trap_members: BTreeMap<crate::cellapp_real_entity::ControllerId, BTreeSet<u32>>,
-    /// The seer triggers, by entity id: the trigger and the vision
-    /// range (`pVisionTrigger_`).
-    pub vision_triggers: BTreeMap<u32, crate::cellapp_vision::VisionTriggerState>,
-    /// `EntityVision` (`entity_vision.hpp`): the per-entity vision
-    /// extra — the seeing/visible heights, the current cone, and the
-    /// `vision_`/`visibility_` controller backlinks whose presence is
-    /// `canBeSeen`.
-    pub vision_extras: BTreeMap<u32, crate::cellapp_vision::VisionExtra>,
-    /// `entitiesInVisionRange_`: the ids each seer's trigger currently
-    /// holds.
-    pub entities_in_vision_range: BTreeMap<u32, BTreeSet<u32>>,
-    /// `visibleEntities_`: the ids each seer's last vision pass said
-    /// it could see.
-    pub visible_entities: BTreeMap<u32, BTreeSet<u32>>,
-    /// The vision ERROR/INFO faces, in delivery order: the incumbent
-    /// `VisionController::startReal` error, the delegate-space
-    /// `updateVisibleEntities` error, and the `setVisibleEntities`
-    /// restore warnings.
-    pub vision_notes: Vec<(u32, &'static str)>,
-    /// `CellAppChannels`' per-channel `mark()` — the ghost maintainer's
-    /// this-round mark bookkeeping, by remote address.
-    pub channel_marks: BTreeMap<u32, i32>,
-    /// `CellAppChannel::isGood()`'s failed set: the addresses a
-    /// `channel failure` took down. Empty by default.
-    pub dead_channels: BTreeSet<u32>,
-    /// `pEntityType_->description().property( index )`: the port's
-    /// property-description table (the reference's def-driven one), keyed
-    /// by entity type. Each entry is the (property index, componentised
-    /// flag) pair `ghostedDataUpdate` looks up.
-    pub ghost_property_descriptions: BTreeMap<u32, Vec<(i32, bool /* componentised */)>>,
-    /// The reference's `countReceived` / CRITICAL / ERROR notes, kept as
-    /// text in the port.
-    pub ghost_property_notes: Vec<String>,
-    /// `BufferedGhostMessages`: the switch-period messages held per
-    /// ghost, keyed by entity id.
-    pub buffered_ghost_messages:
-        BTreeMap<u32, crate::cellapp_ghost::BufferedGhostMessagesForEntity>,
-    /// `EntityPopulation::currChannels_`: the real channel address
-    /// cached for an entity id this app has seen as a ghost.
-    pub curr_real_channels: BTreeMap<u32, u32>,
-    /// `EntityPopulation::prevChannels_`: the previous generation of
-    /// cached real channels, still good until the trim rolls it over.
-    pub prev_real_channels: BTreeMap<u32, u32>,
-    /// `Entity::forwardMessageToReal` bundles: real-domain calls
-    /// forwarded to the cached real, with their original reply id.
-    pub real_call_outbox: Vec<crate::cellapp_ghost::RealCallWire>,
 }
 
 impl Default for CellApp {
@@ -2039,58 +1669,6 @@ impl Default for CellApp {
             passenger_warnings: Vec::new(),
             population_observers: BTreeMap::new(),
             physics_corrections: Vec::new(),
-            witnesses: BTreeMap::new(),
-            aoi_schemes: crate::cellapp_witness::AoIUpdateSchemes::default(),
-            entity_type_faces: BTreeMap::new(),
-            entity_properties: BTreeMap::new(),
-            witness_warnings: Vec::new(),
-            witness_errors: Vec::new(),
-            emergency_throttle: 1.0,
-            throttle: crate::cellapp_throttle::EmergencyThrottle::default(),
-            persistent_load: 0.0,
-            transient_load: 0.0,
-            total_load: 0.0,
-            total_added_load: 0.0,
-            tick_warnings: Vec::new(),
-            load_sample: None,
-            replay_collectors: BTreeMap::new(),
-            recording_events: Vec::new(),
-            recording_warnings: Vec::new(),
-            witness_max_priority_delta: 5.0,
-            witness_spam_size: 200,
-            all_spaces_data_change_seq: 0,
-            spaces: BTreeMap::new(),
-            packed_xz_scale: 500.0 / 28.0,
-            send_detailed_player_vehicles: false,
-            witnessed_notifications: Vec::new(),
-            ghost_distance: crate::cellapp_ghost::DEFAULT_AOI_RADIUS,
-            max_ghosts_to_delete: crate::cellapp_ghost::MAX_GHOSTS_TO_DELETE,
-            ghost_outbox: Vec::new(),
-            onload_outbox: Vec::new(),
-            teleport_outbox: Vec::new(),
-            emergency_outbox: Vec::new(),
-            dead_apps: BTreeSet::new(),
-            trap_calls: Vec::new(),
-            vision_calls: Vec::new(),
-            noise_calls: Vec::new(),
-            entity_type_names: BTreeMap::new(),
-            viewer_notes: Vec::new(),
-            trap_triggers: BTreeMap::new(),
-            trap_members: BTreeMap::new(),
-            vision_triggers: BTreeMap::new(),
-            vision_extras: BTreeMap::new(),
-            entities_in_vision_range: BTreeMap::new(),
-            visible_entities: BTreeMap::new(),
-            vision_notes: Vec::new(),
-            channel_marks: BTreeMap::new(),
-            dead_channels: BTreeSet::new(),
-            ghost_property_descriptions: BTreeMap::new(),
-            ghost_property_notes: Vec::new(),
-            buffered_ghost_messages: BTreeMap::new(),
-            curr_real_channels: BTreeMap::new(),
-            prev_real_channels: BTreeMap::new(),
-            real_call_outbox: Vec::new(),
-            max_time_between_player_updates: 0,
         }
     }
 }
@@ -2229,8 +1807,6 @@ impl CellApp {
                     info: info.clone(),
                     space_gone_count: 0,
                     reuse_count: 0,
-                    should_offload: true,
-                    is_removed: false,
                 }));
                 space.set_cell(cell.clone());
                 self.cells.push(cell);
@@ -2265,8 +1841,6 @@ mod tests {
             space_id,
             app_addr: APP_ADDR,
             node: CellInfoNode(node),
-            rect: (0.0, 0.0, 0.0, 0.0),
-            is_delete_pending: false,
         }
     }
 
@@ -2278,8 +1852,6 @@ mod tests {
             info: cell_info(id, node),
             space_gone_count: 0,
             reuse_count: 0,
-            should_offload: true,
-            is_removed: false,
         }));
         let mut space = Space::new(id);
         space.update_geometry(&mut cell_app, vec![cell_info(id, node)]);
@@ -2392,8 +1964,6 @@ mod tests {
             space_id: 2,
             app_addr: APP_ADDR,
             node: CellInfoNode::next(CellInfoNode(0)),
-            rect: (0.0, 0.0, 0.0, 0.0),
-            is_delete_pending: false,
         });
         let e = entity(1, true);
         multi.add_entity(e.clone());
@@ -2408,8 +1978,6 @@ mod tests {
             info: cell_info(3, 1),
             space_gone_count: 0,
             reuse_count: 0,
-            should_offload: true,
-            is_removed: false,
         }));
         not_started.update_geometry(&mut unstarted_app, vec![cell_info(3, 1)]);
         not_started.set_cell(cell);
@@ -2473,8 +2041,6 @@ mod tests {
             space_id: 5,
             app_addr: APP_ADDR,
             node: CellInfoNode::next(CellInfoNode(0)),
-            rect: (0.0, 0.0, 0.0, 0.0),
-            is_delete_pending: false,
         });
         assert!(space.shut_down_space(0));
         assert!(space.tick(1_000_000, &mut app));
@@ -2554,15 +2120,11 @@ mod tests {
                 space_id: 5,
                 app_addr: 10,
                 node: CellInfoNode(0),
-                rect: (0.0, 0.0, 0.0, 0.0),
-                is_delete_pending: false,
             },
             CellInfo {
                 space_id: 5,
                 app_addr: 11,
                 node: CellInfoNode(1),
-                rect: (0.0, 0.0, 0.0, 0.0),
-                is_delete_pending: false,
             },
         ];
 
@@ -2706,8 +2268,6 @@ mod tests {
                     space_id: 5,
                     app_addr: 11,
                     node: CellInfoNode(0),
-                    rect: (0.0, 0.0, 0.0, 0.0),
-                    is_delete_pending: false,
                 }],
                 is_first_cell: false,
                 is_from_db: false,

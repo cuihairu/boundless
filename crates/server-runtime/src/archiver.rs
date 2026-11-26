@@ -24,13 +24,9 @@
 //! entity. The archive payload is the same `writeBackupData` stream the backup
 //! path uses.
 
-use crate::base_backup::{
-    BackupError, read_backup_data, read_backup_data_wrapped, restore_base, write_backup_data,
-    write_backup_data_wrapped,
-};
+use crate::base_backup::{BackupError, read_backup_data, restore_base, write_backup_data};
 use crate::baseappmgr::Addr;
 use crate::entity_creator::{BaseEntity, DatabaseId, EntityId, EntityType};
-use crate::replay_recording::CompressError;
 use foundation::stream::BinaryStream;
 use std::collections::BTreeMap;
 
@@ -259,27 +255,13 @@ pub fn restore_archived(
     lookup: &impl Fn(&str) -> Option<EntityType>,
 ) -> Option<Result<BaseEntity, BackupError>> {
     let data = store.get(db_id)?;
-    Some(restore_bytes(data, lookup, false))
+    Some(restore_bytes(data, lookup))
 }
 
-/// `restore_archived` for bytes persisted through
-/// [`encode_with_compression`]: the body comes out of the
-/// `CompressionIStream` frame (`base.cpp:2521`).
-pub fn restore_archived_with_compression(
-    store: &ArchiveStore,
-    db_id: DatabaseId,
-    lookup: &impl Fn(&str) -> Option<EntityType>,
-) -> Option<Result<BaseEntity, BackupError>> {
-    let data = store.get(db_id)?;
-    Some(restore_bytes(data, lookup, true))
-}
-
-/// Rebuild an entity from persisted archive bytes, in either the shipped or
-/// the wrapped payload form.
+/// Rebuild an entity from persisted archive bytes.
 fn restore_bytes(
     data: &[u8],
     lookup: &impl Fn(&str) -> Option<EntityType>,
-    wrapped: bool,
 ) -> Result<BaseEntity, BackupError> {
     let type_name = type_name_of(data)?;
     let ty = lookup(&type_name).ok_or(BackupError::UnknownType {
@@ -287,11 +269,7 @@ fn restore_bytes(
     })?;
     let mut stream = BinaryStream::new();
     stream.write_bytes(data);
-    let parsed = if wrapped {
-        read_backup_data_wrapped(&mut stream, &ty)?
-    } else {
-        read_backup_data(&mut stream, &ty)?
-    };
+    let parsed = read_backup_data(&mut stream, &ty)?;
     restore_base(&parsed, &ty)
 }
 
@@ -300,20 +278,6 @@ fn encode(base: &BaseEntity) -> Vec<u8> {
     let mut stream = BinaryStream::new();
     write_backup_data(base, &mut stream);
     stream.as_bytes().to_vec()
-}
-
-/// The archive payload through the `CompressionOStream` frame
-/// (`Base::writeBackupData`, `base.cpp:2322-2327`): the same stream shape
-/// [`crate::base_backup::write_backup_data_wrapped`] gives the backup path,
-/// so an archive byte stays a backup byte under the entity type's
-/// compression choice.
-pub fn encode_with_compression(
-    base: &BaseEntity,
-    compression_type: u8,
-) -> Result<Vec<u8>, CompressError> {
-    let mut stream = BinaryStream::new();
-    write_backup_data_wrapped(base, &mut stream, compression_type)?;
-    Ok(stream.as_bytes().to_vec())
 }
 
 /// Peek the type name in the header of persisted bytes.
@@ -523,49 +487,5 @@ mod tests {
         let store = ArchiveStore::new();
         let ty = account_type();
         assert!(restore_archived(&store, 7, &lookup_of(ty)).is_none());
-    }
-
-    /// A compressed archive is still a backup byte: the store read restores
-    /// the same state, and the `NONE` encoding is the shipped payload.
-    #[test]
-    fn a_compressed_archive_restores_the_persisted_state() {
-        let mut base = persisted_base(42, 7);
-        base.base_props
-            .insert("health".to_string(), PropValue::Int(200));
-        base.base_props
-            .insert("name".to_string(), PropValue::Str("alice".to_string()));
-        base.cell_props
-            .insert("pos".to_string(), PropValue::Vec3([1.0, 2.0, 3.0]));
-
-        let shipped = encode(&base);
-        let none =
-            encode_with_compression(&base, crate::replay_recording::COMPRESSION_NONE).unwrap();
-        assert_ne!(none, shipped, "the NONE archive carries the type byte");
-        assert_eq!(
-            &none[shipped_header_len(&base) + 1..],
-            &shipped[shipped_header_len(&base)..],
-            "the NONE archive is the shipped payload behind the type byte"
-        );
-
-        let ty = account_type();
-        for compression_type in [
-            crate::replay_recording::COMPRESSION_NONE,
-            crate::replay_recording::COMPRESSION_ZIP_BEST_SPEED,
-            crate::replay_recording::COMPRESSION_ZIP_BEST_COMPRESSION,
-        ] {
-            let mut store = ArchiveStore::new();
-            store.write(7, encode_with_compression(&base, compression_type).unwrap());
-            let restored = restore_archived_with_compression(&store, 7, &lookup_of(ty.clone()))
-                .expect("persisted")
-                .expect("restored");
-            assert_eq!(restored.id, 42);
-            assert_eq!(restored.base_props, base.base_props);
-            assert_eq!(restored.cell_props, base.cell_props);
-        }
-    }
-
-    /// The plaintext header length of a fixture base's payload.
-    fn shipped_header_len(base: &BaseEntity) -> usize {
-        crate::base_backup::header_len(base)
     }
 }

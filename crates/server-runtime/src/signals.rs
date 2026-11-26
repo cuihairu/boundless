@@ -295,8 +295,6 @@ pub fn disposition_of(sig_num: i32) -> usize {
 type HandlerEntry = (i32, HandlerId, Rc<RefCell<dyn SignalHandler>>);
 
 /// `SignalProcessor`: registration + the dispatch drain. The global
-type HandlerEntry = (i32, HandlerId, Rc<RefCell<dyn SignalHandler>>);
-
 /// signal/quit-handler state is shared exactly like the reference's
 /// singleton; instances manage the main-thread registration table.
 pub struct SignalProcessor {

@@ -23,7 +23,6 @@
 pub mod accounts;
 pub mod backup;
 pub mod dry_run;
-pub mod import_mysql;
 pub mod json;
 pub mod schema;
 pub mod schema_init;
@@ -35,7 +34,6 @@ pub use backup::{
     BackupCell, BackupColumn, BackupColumnKind, BackupDump, BackupTable, BackupTableData,
     export_backup, fixed_table_specs, restore_backup,
 };
-pub use import_mysql::{ImportReport, MySqlEntityRow, import_accounts, import_entities};
 pub use schema::{ColumnKind, EntitySchema, column_name, entity_table_name, quote_ident};
 pub use schema_init::{CURRENT_VERSION, OLDEST_SUPPORTED_VERSION};
 pub use store::PostgresStorage;

@@ -53,21 +53,13 @@ pub const SO_RCVBUF: i32 = libc::SO_RCVBUF;
 /// `O_NONBLOCK`, the flag value `setnonblocking` writes.
 pub const O_NONBLOCK: i32 = libc::O_NONBLOCK;
 /// `FIONREAD`, the ioctl that reports the readable byte count.
-/// `libc::Ioctl` is a Linux-only alias; the BSDs spell the request type
-/// as `c_ulong` directly.
-#[cfg(target_os = "linux")]
 pub const FIONREAD: libc::Ioctl = libc::FIONREAD;
-#[cfg(not(target_os = "linux"))]
-pub const FIONREAD: libc::c_ulong = libc::FIONREAD;
 /// `MSG_NOSIGNAL`, set on every `sendto` on Linux so an undeliverable
 /// packet does not raise SIGPIPE.
 pub const MSG_NOSIGNAL: i32 = libc::MSG_NOSIGNAL;
-/// `IP_RECVERR`, enables the per-socket error queue. Linux only: the
-/// error queue is an IP-layer facility the BSDs do not implement.
-#[cfg(target_os = "linux")]
+/// `IP_RECVERR`, enables the per-socket error queue.
 pub const IP_RECVERR: i32 = libc::IP_RECVERR;
 /// `MSG_ERRQUEUE`, reads from that queue.
-#[cfg(target_os = "linux")]
 pub const MSG_ERRQUEUE: i32 = libc::MSG_ERRQUEUE;
 /// `ECONNREFUSED`, the error an ICMP "port unreachable" turns into.
 pub const ECONNREFUSED: i32 = libc::ECONNREFUSED;
@@ -186,160 +178,6 @@ pub fn recvfrom(fd: RawFd, buf: &mut [u8]) -> (i32, u16, u32) {
 /// `::recv`.
 pub fn recv(fd: RawFd, buf: &mut [u8]) -> i32 {
     unsafe { libc::recv(fd, buf.as_mut_ptr() as *mut _, buf.len(), 0) as i32 }
-}
-
-/// The retained scratch `::sendmmsg` needs: the iovec and message
-/// arrays, sized once for the batch width and refilled per call, so a
-/// steady-state loop allocates nothing.
-#[cfg(target_os = "linux")]
-pub struct SendScratch {
-    iovecs: Vec<libc::iovec>,
-    msgs: Vec<libc::mmsghdr>,
-    dest: libc::sockaddr_in,
-}
-
-#[cfg(target_os = "linux")]
-impl SendScratch {
-    /// Scratch for batches of up to `width` buffers.
-    pub fn new(width: usize) -> Self {
-        Self {
-            iovecs: Vec::with_capacity(width),
-            msgs: Vec::with_capacity(width),
-            dest: sockaddr_in(0, 0),
-        }
-    }
-}
-
-/// `::sendmmsg` (Linux): push up to one datagram per buffer to the
-/// fixed destination in a single syscall, amortizing the per-call trap
-/// across the batch. Returns the number of datagrams accepted; a
-/// negative return is `-errno`, same as `sendto`. The scratch is
-/// refilled per call and never reallocated once the batch width
-/// stabilizes.
-#[cfg(target_os = "linux")]
-pub fn sendmmsg(
-    fd: RawFd,
-    buffers: &[&[u8]],
-    port: u16,
-    ip: u32,
-    scratch: &mut SendScratch,
-) -> i32 {
-    scratch.dest = sockaddr_in(port, ip);
-    scratch.iovecs.clear();
-    scratch.iovecs.extend(buffers.iter().map(|b| libc::iovec {
-        iov_base: b.as_ptr() as *mut _,
-        iov_len: b.len(),
-    }));
-    scratch.msgs.clear();
-    scratch
-        .msgs
-        .extend((0..buffers.len()).map(|i| libc::mmsghdr {
-            msg_hdr: libc::msghdr {
-                msg_name: &mut scratch.dest as *mut _ as *mut _,
-                msg_namelen: std::mem::size_of::<libc::sockaddr_in>() as u32,
-                msg_iov: &mut scratch.iovecs[i] as *mut _,
-                msg_iovlen: 1,
-                msg_control: std::ptr::null_mut(),
-                msg_controllen: 0,
-                msg_flags: 0,
-            },
-            msg_len: 0,
-        }));
-    unsafe {
-        libc::sendmmsg(
-            fd,
-            scratch.msgs.as_mut_ptr(),
-            scratch.msgs.len() as u32,
-            MSG_NOSIGNAL,
-        )
-    }
-}
-
-/// The retained scratch `::recvmmsg` needs: one iovec and one source
-/// slot per batch slot plus the message array, sized once for the batch
-/// width and refilled per call, so a steady-state drain allocates
-/// nothing per datagram.
-#[cfg(target_os = "linux")]
-pub struct RecvScratch {
-    iovecs: Vec<libc::iovec>,
-    addrs: Vec<libc::sockaddr_in>,
-    msgs: Vec<libc::mmsghdr>,
-}
-
-#[cfg(target_os = "linux")]
-impl RecvScratch {
-    /// Scratch for batches of up to `width` buffers.
-    pub fn new(width: usize) -> Self {
-        Self {
-            iovecs: Vec::with_capacity(width),
-            addrs: Vec::with_capacity(width),
-            msgs: Vec::with_capacity(width),
-        }
-    }
-}
-
-/// `::recvmmsg` (Linux): receive up to one datagram per buffer in a
-/// single syscall. Returns the number of datagrams read (a negative
-/// return is `-errno`), and fills `out` -- reused, not reallocated, so a
-/// steady-state drain with pooled buffers allocates nothing per
-/// datagram -- with `(length, source port, source ip)` triples in batch
-/// order; the address parts are in network byte order, matching
-/// `recvfrom`. With flags at zero the socket's own blocking mode
-/// governs: on a nonblocking socket the call returns the datagrams
-/// available now.
-#[cfg(target_os = "linux")]
-pub fn recvmmsg(
-    fd: RawFd,
-    bufs: &mut [&mut [u8]],
-    out: &mut Vec<(usize, u16, u32)>,
-    scratch: &mut RecvScratch,
-) -> i32 {
-    out.clear();
-    if bufs.is_empty() {
-        return 0;
-    }
-    scratch.iovecs.clear();
-    scratch.iovecs.extend(bufs.iter_mut().map(|b| libc::iovec {
-        iov_base: b.as_mut_ptr() as *mut _,
-        iov_len: b.len(),
-    }));
-    scratch.addrs.clear();
-    scratch
-        .addrs
-        .extend((0..bufs.len()).map(|_| sockaddr_in(0, 0)));
-    scratch.msgs.clear();
-    scratch.msgs.extend((0..bufs.len()).map(|i| libc::mmsghdr {
-        msg_hdr: libc::msghdr {
-            msg_name: &mut scratch.addrs[i] as *mut _ as *mut _,
-            msg_namelen: std::mem::size_of::<libc::sockaddr_in>() as u32,
-            msg_iov: &mut scratch.iovecs[i] as *mut _,
-            msg_iovlen: 1,
-            msg_control: std::ptr::null_mut(),
-            msg_controllen: 0,
-            msg_flags: 0,
-        },
-        msg_len: 0,
-    }));
-    let count = unsafe {
-        libc::recvmmsg(
-            fd,
-            scratch.msgs.as_mut_ptr(),
-            scratch.msgs.len() as u32,
-            0,
-            std::ptr::null_mut(),
-        )
-    };
-    if count <= 0 {
-        return count;
-    }
-    for i in 0..count as usize {
-        out.push((
-            scratch.msgs[i].msg_len as usize,
-            scratch.addrs[i].sin_port,
-            scratch.addrs[i].sin_addr.s_addr,
-        ));
-    }
-    count
 }
 
 /// `::shutdown` -- the `TCPChannel::doShutDown` half-close.
@@ -517,60 +355,44 @@ pub struct QueuedError {
 /// Returns `None` when the queue is empty. When the kernel left
 /// `msg_namelen` at zero (the bug the reference works around) the
 /// offender is read out of `SO_EE_OFFENDER` with its port forced to zero.
-///
-/// The error queue is a Linux IP-layer facility; the BSDs have no
-/// `IP_RECVERR` queue to read, so there this reports "no queued error"
-/// and `Endpoint::readFromErrorQueue` answers `false`, the same way the
-/// reference behaves where the platform has no queue.
 pub fn read_error_queue(fd: RawFd) -> Option<QueuedError> {
-    #[cfg(target_os = "linux")]
-    {
-        let mut offender = sockaddr_in(0, 0);
-        let mut header = libc::msghdr {
-            msg_name: &mut offender as *mut _ as *mut _,
-            msg_namelen: std::mem::size_of::<libc::sockaddr_in>() as u32,
-            msg_iov: std::ptr::null_mut(),
-            msg_iovlen: 0,
-            msg_control: std::ptr::null_mut(),
-            msg_controllen: 0,
-            msg_flags: 0,
-        };
+    let mut offender = sockaddr_in(0, 0);
+    let mut header = libc::msghdr {
+        msg_name: &mut offender as *mut _ as *mut _,
+        msg_namelen: std::mem::size_of::<libc::sockaddr_in>() as u32,
+        msg_iov: std::ptr::null_mut(),
+        msg_iovlen: 0,
+        msg_control: std::ptr::null_mut(),
+        msg_controllen: 0,
+        msg_flags: 0,
+    };
 
-        let mut data = [0u8; 256];
-        let mut control = [0u8; 256];
-        let mut packet = libc::iovec {
-            iov_base: data.as_mut_ptr() as *mut _,
-            iov_len: data.len(),
-        };
-        header.msg_iov = &mut packet;
-        header.msg_iovlen = 1;
-        header.msg_control = control.as_mut_ptr() as *mut _;
-        // `msg_controllen` is a `u32` on Linux and a `size_t` on the BSDs.
-        header.msg_controllen = control.len() as _;
+    let mut data = [0u8; 256];
+    let mut control = [0u8; 256];
+    let mut packet = libc::iovec {
+        iov_base: data.as_mut_ptr() as *mut _,
+        iov_len: data.len(),
+    };
+    header.msg_iov = &mut packet;
+    header.msg_iovlen = 1;
+    header.msg_control = control.as_mut_ptr() as *mut _;
+    header.msg_controllen = control.len();
 
-        if unsafe { libc::recvmsg(fd, &mut header, MSG_ERRQUEUE) } < 0 {
-            return None;
-        }
-
-        let cursor = find_recv_error(&header)?;
-        parse_queued_error(
-            unsafe { libc::CMSG_DATA(cursor) as *const u8 },
-            &header,
-            &offender,
-        )
+    if unsafe { libc::recvmsg(fd, &mut header, MSG_ERRQUEUE) } < 0 {
+        return None;
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = fd;
-        None
-    }
+
+    let cursor = find_recv_error(&header)?;
+    parse_queued_error(
+        unsafe { libc::CMSG_DATA(cursor) as *const u8 },
+        &header,
+        &offender,
+    )
 }
 
 /// Walk `header`'s control messages for the `IP_RECVERR` one. Kept apart
 /// from `read_error_queue` so the walk can be driven from a fixture
 /// instead of needing a kernel that actually fails to deliver a packet.
-/// Linux only, with the queue it reads.
-#[cfg(target_os = "linux")]
 fn find_recv_error(header: &libc::msghdr) -> Option<*mut libc::cmsghdr> {
     let mut cursor = unsafe { libc::CMSG_FIRSTHDR(header) };
     while !cursor.is_null() {
@@ -587,8 +409,6 @@ fn find_recv_error(header: &libc::msghdr) -> Option<*mut libc::cmsghdr> {
 /// Decode the `IP_RECVERR` data at `data`, which the kernel fills with a
 /// `sock_extended_err` at the start. `SO_EE_OFFENDER` steps back out of it
 /// to the offender address for the kernel that drops `msg_name`.
-/// Linux only, with the queue it decodes.
-#[cfg(target_os = "linux")]
 fn parse_queued_error(
     data: *const u8,
     header: &libc::msghdr,
@@ -667,23 +487,9 @@ pub fn host_by_addr(ip: u32) -> Option<String> {
 
 /// `struct sockaddr_in` for the port and address the caller already holds
 /// in network byte order.
-#[cfg(target_os = "linux")]
 fn sockaddr_in(port: u16, ip: u32) -> libc::sockaddr_in {
     libc::sockaddr_in {
         sin_family: AF_INET as u16,
-        sin_port: port,
-        sin_addr: libc::in_addr { s_addr: ip },
-        sin_zero: [0; 8],
-    }
-}
-
-/// The BSD spelling: `sockaddr_in` carries a `sin_len` header field and a
-/// one-byte `sin_family`, so the address must announce its own size.
-#[cfg(not(target_os = "linux"))]
-fn sockaddr_in(port: u16, ip: u32) -> libc::sockaddr_in {
-    libc::sockaddr_in {
-        sin_len: std::mem::size_of::<libc::sockaddr_in>() as u8,
-        sin_family: AF_INET as u8,
         sin_port: port,
         sin_addr: libc::in_addr { s_addr: ip },
         sin_zero: [0; 8],
@@ -920,7 +726,6 @@ mod tests {
 
     /// The error queue stays empty on a healthy socket, and enabling it
     /// is a plain `IP_RECVERR` option.
-    #[cfg(target_os = "linux")]
     #[test]
     fn the_error_queue_is_empty_when_nothing_failed() {
         let fd = create_socket(SOCK_DGRAM);
@@ -932,7 +737,6 @@ mod tests {
 
     /// An undeliverable packet lands on the error queue with the
     /// destination as its offender.
-    #[cfg(target_os = "linux")]
     #[test]
     fn the_error_queue_reports_an_undeliverable_packet() {
         let fd = create_socket(SOCK_DGRAM);
@@ -953,7 +757,6 @@ mod tests {
     /// Lay one control message into `control` at the kernel's alignment and
     /// return where the next one starts. `data` must already look like the
     /// kernel lays it out.
-    #[cfg(target_os = "linux")]
     fn put_control_message(
         control: &mut [u8],
         from: usize,
@@ -979,7 +782,6 @@ mod tests {
     /// The `IP_RECVERR` data exactly as the kernel fills it: a
     /// `sock_extended_err` at the start, then the offender address, which
     /// is what `SO_EE_OFFENDER` steps to.
-    #[cfg(target_os = "linux")]
     fn extended_error_fixture() -> ([u8; 48], libc::sockaddr_in) {
         let offender = sockaddr_in(htons(4321), 0x0100_007f);
         let ext = libc::sock_extended_err {
@@ -1019,7 +821,6 @@ mod tests {
     /// out of a message, so the fixture drives it directly: an
     /// unrelated message comes first, the kernel drops `msg_name`
     /// sometimes.
-    #[cfg(target_os = "linux")]
     #[test]
     fn the_error_queue_parser_walks_past_other_control_messages() {
         let (block, offender) = extended_error_fixture();

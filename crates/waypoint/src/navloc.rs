@@ -107,20 +107,13 @@ impl NavLoc {
     }
 
     /// The stored point is pulled into the located waypoint. The chunk
-    /// mapping is the identity here (registered); the owning chunk's
-    /// bounding box rides the set's mounted-chunk seam — unmounted keeps
-    /// the out-of-chunk fallback arm off.
+    /// mapping is the identity here (registered).
     pub(crate) fn clip_in_place(&mut self) {
         if let Some(set) = &self.p_set
             && self.waypoint >= 0
         {
             let wp = &set.waypoints()[self.waypoint as usize];
-            wp.clip(
-                set.edges(),
-                set.as_ref(),
-                set.chunk_bounding_box().as_ref(),
-                &mut self.point,
-            );
+            wp.clip(set.edges(), set.as_ref(), &mut self.point);
         }
     }
 

@@ -35,7 +35,6 @@ mod provider;
 pub(crate) mod vector;
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use crate::binding::TypeSpec;
@@ -45,46 +44,18 @@ use crate::pyref::PyRef;
 /// The type objects this module created, by the Python-visible name: the
 /// `Check` of every class is an exact type-object identity test
 /// (`pyobject_plus.hpp:118-123`), which is this map keyed on the address.
-///
-/// Published as a copy-on-write snapshot behind an `AtomicPtr`: the reads
-/// (`check_type`, `type_address`) sit on the hottest conversion path and
-/// only ever take a shared snapshot, so the global mutex this table held
-/// per lookup is gone. Writes happen only while the module is being
-/// installed, from one thread, before any script runs; the superseded
-/// snapshots are deliberately leaked (the same trade `binding.rs` makes
-/// for its descriptor arrays) rather than reclaimed under an allocation a
-/// reader may hold a reference into.
-static TYPES: AtomicPtr<BTreeMap<&'static str, usize>> = AtomicPtr::new(std::ptr::null_mut());
+static TYPES: OnceLock<Mutex<BTreeMap<String, usize>>> = OnceLock::new();
 
-/// The current snapshot of the table, or `None` before the first type is
-/// recorded. A snapshot is immutable once published; the returned reference
-/// is valid for the rest of the process.
-fn type_snapshot() -> Option<&'static BTreeMap<&'static str, usize>> {
-    let pointer = TYPES.load(Ordering::Acquire);
-    if pointer.is_null() {
-        None
-    } else {
-        // SAFETY: every pointer the registry ever stores was produced by
-        // `Box::into_raw` in `remember_type` and is never freed.
-        Some(unsafe { &*pointer })
-    }
+fn types() -> &'static Mutex<BTreeMap<String, usize>> {
+    TYPES.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-/// Record a created type under its Python name. Every call site passes a
-/// name the compiler can prove outlives the program (the module's own
-/// `&'static str` constants and `vector_name`'s), so the snapshot stores
-/// the string's address without allocating an owned copy.
-pub(super) fn remember_type(name: &'static str, object: &crate::pyref::PyRef) {
-    let previous = TYPES.load(Ordering::Acquire);
-    // SAFETY: as `type_snapshot` -- the previous snapshot, when present,
-    // is a live leaked box.
-    let base: BTreeMap<&'static str, usize> = match previous.is_null() {
-        true => BTreeMap::new(),
-        false => unsafe { &*previous }.clone(),
-    };
-    let mut next = base;
-    next.insert(name, object.as_ptr() as usize);
-    TYPES.store(Box::into_raw(Box::new(next)), Ordering::Release);
+/// Record a created type under its Python name.
+pub(super) fn remember_type(name: &str, object: &crate::pyref::PyRef) {
+    types()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(name.to_owned(), object.as_ptr() as usize);
 }
 
 /// `Class::Check` (`pyobject_plus.hpp:118-123`): the object's type is
@@ -100,7 +71,12 @@ pub(super) unsafe fn check_type(object: *mut capi::PyObject, name: &str) -> bool
     if object.is_null() {
         return false;
     }
-    match type_snapshot().and_then(|types| types.get(name).copied()) {
+    let registered = types()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(name)
+        .copied();
+    match registered {
         Some(address) => (unsafe { capi::Py_TYPE(object) }) as usize == address,
         None => false,
     }
@@ -109,7 +85,11 @@ pub(super) unsafe fn check_type(object: *mut capi::PyObject, name: &str) -> bool
 /// The address of a created type object, for hosts that need to build
 /// instances of it.
 pub(super) fn type_address(name: &str) -> Option<usize> {
-    type_snapshot().and_then(|types| types.get(name).copied())
+    types()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(name)
+        .copied()
 }
 
 /// One instance teardown: drops the Rust body the instance carries, the
@@ -307,27 +287,9 @@ pub(super) unsafe fn coerce_float(object: *mut capi::PyObject, var_name: &str) -
     }
     if unsafe { capi::py_long_check(object) } {
         // The reference does not check the overflow error here
-        // (`script.cpp:1820-1825`): a value past `long` reads as `-1`,
-        // its `OverflowError` left pending — a stale indicator the
-        // reference survives because it arms its trace callback inside
-        // the profiling binaries alone, while this host installs
-        // `_bw_profile` at init and no callback return can hide a
-        // pending error from the armed monitoring shim (reproduced
-        // against CPython 3.14). The value keeps the reference's `-1`
-        // read; only the error this read itself raised is dropped, and
-        // an error raised before the call — a sibling `coerce_float` in
-        // the same parse, say `setPitchYaw('x', 1)` — is stashed across
-        // it and handed back, the way the reference's parse stacks its
-        // pending errors.
+        // (`script.cpp:1820-1825`): a value past `long` reads as `-1`.
         // SAFETY: the check above guarantees an int object.
-        let prior = unsafe { capi::PyErr_GetRaisedException() };
         let value = unsafe { capi::PyLong_AsLong(object) };
-        unsafe { capi::clear_error() };
-        if !prior.is_null() {
-            // SAFETY: the stashed exception is owned and moves back to
-            // the interpreter.
-            unsafe { capi::PyErr_SetRaisedException(prior) };
-        }
         return Some(value as f64);
     }
     raise_type_error(&format!("{var_name} must be set to a float"));
@@ -493,12 +455,10 @@ pub fn reset() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clear();
-    // The snapshot registries retire by swinging the pointer back to null:
-    // readers then see an empty table, the superseded snapshots stay
-    // allocated (a fini-time reader may still hold one), and a subsequent
-    // init starts from a fresh table.
-    TYPES.store(std::ptr::null_mut(), Ordering::Release);
-    vector::reset();
+    types()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
 }
 
 /// `ProviderStore::tick(dTime)` (`script_math.cpp:5329-5350`), the step the

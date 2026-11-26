@@ -87,16 +87,6 @@ jobs:
         shell: bash
         run: ci/package.sh
 
-      # OPT-14-01-01 — measure the produced archive and its first run. The
-      # committed three-platform catalog is checked on every leg; the local
-      # row is only rewritten by an explicit `record` run, so a daily job
-      # never mutates the checkout. The macOS/Windows legs stay pending with
-      # their named blockers until those targets compile.
-      - name: Record package baseline
-        if: steps.freshness.outputs.stale != 'true'
-        shell: bash
-        run: ci/package-baseline.sh
-
       # BW-22-04-05 — the delivered artifact carries its own hash sheet.
       - name: Stamp and verify checksums
         if: always() && steps.freshness.outputs.stale != 'true'

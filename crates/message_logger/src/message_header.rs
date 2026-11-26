@@ -24,27 +24,19 @@ pub struct MessageHeader {
 impl MessageHeader {
     /// `LoggerMessageHeader::write`
     /// (`logger_message_forwarder.cpp:94-99`).
-    ///
-    /// The source travels as the raw little-endian encoding of the
-    /// `DebugMessageSource` enum: the stream family has no overload for it
-    /// (`debug_message_source.hpp:8-13` is a plain enum), so the generic
-    /// template streams it (`sizeof == 4`, host byte order —
-    /// `binary_stream.hpp:143-171`, `binary_stream.ipp:536-543`). The two
-    /// priority bytes are `uint8` typedefs.
     pub fn write(&self, stream: &mut MemoryOStream) {
         stream.write_u8(self.component_priority);
         stream.write_u8(self.message_priority);
-        stream.write_u32(u32::from(self.message_source.to_byte()));
+        stream.write_u8(self.message_source.to_byte());
         stream.write_string(&self.category);
     }
 
     /// `LoggerMessageHeader::read`
-    /// (`logger_message_forwarder.cpp:101-106`). See [`Self::write`] for the
-    /// four-byte source field.
+    /// (`logger_message_forwarder.cpp:101-106`).
     pub fn read(stream: &mut MemoryIStream) -> Option<Self> {
         let component_priority = stream.read_u8()?;
         let message_priority = stream.read_u8()?;
-        let message_source = MessageSource::from_byte(stream.read_u32()? as u8);
+        let message_source = MessageSource::from_byte(stream.read_u8()?);
         let category = stream.read_string();
         if stream.error() {
             return None;
@@ -102,16 +94,12 @@ mod tests {
     }
 
     #[test]
-    fn the_wire_lays_out_the_raw_enum_source_and_category() {
-        // componentPriority (u8), messagePriority (u8), the DebugMessageSource
-        // enum as its 4-byte little-endian encoding, then the packed category.
+    fn the_wire_lays_out_two_bytes_source_and_category() {
         let mut stream = MemoryOStream::new();
         sample().write(&mut stream);
         assert_eq!(
             stream.data(),
-            &[
-                0, 4, 0, 0, 0, 0, 7, b'N', b'e', b't', b'w', b'o', b'r', b'k'
-            ]
+            &[0, 4, 0, 7, b'N', b'e', b't', b'w', b'o', b'r', b'k']
         );
     }
 

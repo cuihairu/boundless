@@ -107,11 +107,10 @@ impl DataDownloads {
             return None;
         }
         let download = self.downloads.remove(&id).unwrap();
-        let data = assemble(download.segments);
         Some(DownloadEvent::Complete(StreamComplete {
             id,
             description: download.description.unwrap_or_default(),
-            data,
+            data: download.segments.concat(),
         }))
     }
 
@@ -171,20 +170,6 @@ fn read_packed_int(reader: &mut StreamReader<'_>) -> Option<i32> {
     }
 }
 
-/// Join the segments in arrival order. The buffer is pre-sized to the total
-/// and the segments are consumed as they are copied, so at no point do the
-/// result and the whole segment set coexist: the peak live payload is the
-/// stream itself, not the stream twice (`Vec::concat` held the full result
-/// beside every segment until the call returned).
-fn assemble(segments: Vec<Vec<u8>>) -> Vec<u8> {
-    let total: usize = segments.iter().map(|segment| segment.len()).sum();
-    let mut data = Vec::with_capacity(total);
-    for segment in segments {
-        data.extend_from_slice(&segment);
-    }
-    data
-}
-
 /// The `BW::string` operator: a packed-int length, then that many bytes.
 fn read_packed_string(reader: &mut StreamReader<'_>) -> Option<Vec<u8>> {
     let length = read_packed_int(reader)?;
@@ -202,20 +187,6 @@ mod tests {
         let mut payload = vec![description.len() as u8];
         payload.extend_from_slice(description);
         payload
-    }
-
-    /// The assembly is pre-sized to the exact total: no growth reallocation
-    /// during the copy-in, and the segments are consumed by value, so none
-    /// survives the call (the peak-memory half of the OPT-06-01-03 claim).
-    #[test]
-    fn the_assembly_is_pre_sized_and_consumes_the_segments() {
-        let segments = vec![vec![1, 2, 3], vec![], vec![4, 5], vec![6]];
-        let data = assemble(segments);
-        assert_eq!(data, vec![1, 2, 3, 4, 5, 6]);
-        assert_eq!(data.capacity(), 6, "buffer must be sized once, exactly");
-        let empty = assemble(Vec::new());
-        assert_eq!(empty, Vec::<u8>::new());
-        assert_eq!(empty.capacity(), 0);
     }
 
     #[test]

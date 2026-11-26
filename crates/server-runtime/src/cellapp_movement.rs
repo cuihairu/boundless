@@ -874,11 +874,6 @@ impl CellApp {
             ControllerKind::Navigation { .. } => {
                 self.update_navigation_controller(&entity_rc, entity, id)
             }
-            // `VisionController::update`: the period gate, then the
-            // occlusion pass (`vision_controller.cpp:122`).
-            ControllerKind::Vision { .. } => {
-                self.update_vision_controller(&entity_rc, id);
-            }
             // Only the timer drives, the exclusive placeholders and the
             // ghost-domain passenger markers reach the registry dispatch
             // without a movement family behind them; all hang inert by

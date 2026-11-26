@@ -2,73 +2,67 @@
 
 基线 `4657a17`，产物树 `game/bin/server/el7/`，参考源 `programming/bigworld/`。对应 todo.md BW-00-02-03：**留存拓扑、配置和日志**。
 
-## 状态：全集群稳态已录（2026-11-24 v2）
+## 状态：BLOCKED（关键凭据缺件）
 
-**十进程单机集群全绿拉起并稳态运行**：`bwmachined2` + 三管理器（dbappmgr/cellappmgr/baseappmgr）+ 四应用（dbapp/cellapp/baseapp×2/loginapp）+ serviceapp，全部打点 `---- X is running ----`（`data/bw00-02-03-logs-v2/`）。首跑（v1，下方"BLOCKED"节）记录的三项阻塞现已按各自真实成因解除：
+单机集群**全绿拉起**被 `server/bigworld.key`（BigWorld 服务器许可密钥）硬阻塞：baseapp/cellapp/dbapp/loginapp 四个组件均在 `ServerApp::init` 硬失败——`ERROR: No key file server/bigworld.key found.` + `ERROR: [Server] Failed to initialise <App>`（日志见下）。该文件为 BigWorld 商业授权凭据，**不存在于本仓，且不可自造**（需向 BigWorld 官方申领）。缺件：`<res>/server/bigworld.key`。
 
-| v1 卡点 | 真实成因 | v2 解法 |
+拓扑、配置与可采集的启动日志已如实留存（下方三节），以佐证"除许可密钥外其余环节可达"。
+
+## 拓扑（单机集群进程集）
+
+产物树实查（`game/bin/server/el7/`）给出单机集群的进程集与角色：
+
+| 进程 | 角色 | 二进制 |
 |---|---|---|
-| loginapp 缺 `server/loginapp.privkey` | 密钥对**本来就不是发行内容**——按部署模型由运营方生成（`loginapp.cpp:519-556` 只在加载失败时报错；`allowUnencryptedLogins` 是另一条开发口径，本基线未用） | `openssl genrsa 2048` + `rsa -pubout` 生成密钥对入 smoke res（`loginapp.privkey`/`loginapp.pubkey`） |
-| dbapp `No module named 'twisted'` | 服务端 Python 路径 `scripts/server_common/site-packages` 此前为空 | 安装 wheel 组（twisted-24.7.0/zope.interface-7.0/sqlalchemy-1.4.54/msgpack-1.1.0/pika-1.3.2 等）入 `game/res/bigworld/scripts/server_common/site-packages/`（v1 误记为 key 错误） |
-| baseapp 缺 `server/bigworld.key` | **仍然不可解**：密钥内容用内置 RSA 公钥 `RSA_public_decrypt` 验签（`ping_manager.cpp:193-260`），无 BigWorld 私钥无法构造；无配置开关 | smoke 口径：`ping_manager.o` 以 `useOpenSSL=0` 单独重编（PingManager 整体被 `USE_OPENSSL` 门控，这是全仓唯一引用该 key 的翻译单元）后正常链接——**该二进制非原版**，原版 baseapp 仍硬阻塞，偏差如实登记 |
+| `bwmachined2` | 机守护：广播发现、端口登记、进程看护 | `tools/bwmachined2` |
+| `baseappmgr` | base 应用管理器 | `server/baseappmgr` |
+| `baseapp` | base 应用（客户端会话/脚本） | `server/baseapp` |
+| `cellappmgr` | cell 应用管理器 | `server/cellappmgr` |
+| `cellapp` | cell 应用（空间逻辑） | `server/cellapp` |
+| `dbappmgr` | DB 应用管理器 | `server/dbappmgr` |
+| `dbapp` | DB 应用（持久化） | `server/dbapp` |
+| `loginapp` | 登录应用 | `server/loginapp` |
+| `reviver` | 组件复活看护 | `server/reviver` |
+| `serviceapp` | 服务应用 | `server/serviceapp` |
+| `bots` | 机器人（压测/自动测试客户端） | `server/bots` |
+| `process_defs` | 实体 def → Python 过程定义代码生成器 | `tools/process_defs` |
+| `message_logger` | 日志收集器 | `tools/message_logger` |
+| `res_packer` | 资源打包 | `tools/res_packer` |
 
-v1 文档中"cellapp/dbapp/loginapp 同 key 错误"为误判（cellapp 日志实际无 key 错误，dbapp 是 twisted 导入失败，loginapp 是 privkey 缺失），本版已按各自日志更正。
+- 组件配置装载（`lib/server/bwconfig.cpp:182`）：每个进程以 `server/bw.xml` 为主配置，先尝试 `server/bw_<username>.xml`（个性化），沿 `parentFile` 链回退。
+- 机守护配置（`server/tools/bwmachined/linux_machine_guard.cpp:31-32`）：`/etc/bwmachined.conf` + `/etc/bigworld.conf`（INI 式 `[tag]`/`key=value`，`bwmachined.cpp:553-611`）；**两个文件本机均不存在，bwmachined2 仅 WARN 继续**（见日志）。
+- 实跑拓扑（本机 ens18 = 192.168.5.188）：bwmachined2 广播发现 → 确认 ens18 为默认广播路由接口 → `Listening for requests` → `Bootstrap complete; 1 machines on network`（`bwmachined2.record.txt` 转自 syslog）。
 
-## v2 拓扑（实跑进程集）
-
-`data/bw00-02-03-logs-v2/cluster-ps.txt`（10 进程 ps 快照，2026-11-24 17:04）：
-
-| 进程 | PID | 启动序 | 稳态打点 |
-|---|---|---|---|
-| `bwmachined2 -f` | 2729221 | 1 | syslog `Bootstrap complete; 1 machines on network` |
-| `dbappmgr` | 2729340 | 2 | `---- DBAppMgr is running ----` |
-| `cellappmgr` | 2729344 | 2 | `---- CellAppMgr is running ----` |
-| `baseappmgr` | 2729348 | 2 | `---- BaseAppMgr is running ----` |
-| `dbapp` | 2729514 | 3 | `---- DBApp is running ----`（MySQL 已连） |
-| `cellapp` | 2729742 | 4 | `---- CellApp is running ----` |
-| `baseapp`（主） | 2729846 | 5 | `---- BaseApp is running ----` |
-| `baseapp`（备） | 2729957 | 5 | `---- BaseApp is running ----`（互备对，baseappmgr 可做死亡接管） |
-| `loginapp` | 2730070 | 6 | `---- LoginApp is running ----` |
-| `serviceapp` | 2730163 | 7 | `---- ServiceApp is running ----`（DBApp/LoginApp 受理登录前需要它，desiredServiceApps 缺省 1） |
-
-机守护登记链（syslog 摘录 `bwmachined2-syslog.txt`）：`Confirmed 192.168.5.188 (ens18)` → `Listening for requests` → 逐组件 `Added cellappmgr/BaseAppMgrInterface/CellAppMgrInterface/baseappmgr/DBAppMgrInterface/dbappmgr/DBAppInterface/dbapp01/BaseAppIntInterface ... (SERVER_COMPONENT) for uid:1000`。
-
-## v2 配置
+## 配置
 
 | 项 | 值 | 出处 |
 |---|---|---|
-| res 路径 | `BW_RES_PATH=<examples/client_integration/python/simple/res>:<game/res/bigworld>:<scripts/cluster-smoke/res>`（三段，各组件日志 `Resource path (1 of 3)` 实印） | 实跑 |
-| 生效配置 | `server/bw_cui.xml`——BWConfig 在 Linux 载 `server/bw_<pw_name>.xml`（`bwconfig.cpp:182`），由 `bw_deep.xml` 深链覆盖层生成 | `scripts/cluster-smoke/res/server/bw_deep.xml` |
-| 覆盖层要点 | `gameUpdateHertz=10`、`personality=egclient4`、`baseApp/archivePeriod=0`、`billingSystem shouldAcceptUnknownUsers=true + entityTypeForUnknownUsers=ClientAvatar`、`loginApp/allowLogin=true`、`cellApp/aoiUpdateSchemes`（空节，防 `AoIUpdateSchemes::init` 空解引用）、`db/mysql 127.0.0.1:3306 bigworld syncTablesToDefs=true numConnections=5 utf8mb4`、`secondaryDB enable=false` | `bw_deep.xml` 实文 |
-| loginapp 密钥 | `loginApp/privateKey = server/loginapp.privkey`（smoke res 提供），配对 `loginapp.pubkey` 供客户端 | 实跑 `loginapp.log` 配置段 |
-| 服务端 Python 包 | `game/res/bigworld/scripts/server_common/site-packages/`（twisted/zope/sqlalchemy/msgpack/pika）+ `scripts/common/site-packages/`（attrs/automat/constantly/hyperlink/idna/incremental/pympler/setuptools/typing_extensions） | 目录实查 |
-| MySQL | MariaDB 11.8 本机 `active`，库 `bigworld`、账号 `bigworld/bigworld`（127.0.0.1 与 localhost 双授权） | deep-chain `provision_db` |
+| 主配置链 | `server/bw.xml`（可 `parentFile` 串联），个性化优先 `server/bw_<user>.xml` | `bwconfig.cpp:182-233` |
+| 机守护配置 | `/etc/bwmachined.conf`、`/etc/bigworld.conf`（INI） | `linux_machine_guard.cpp:31-32` |
+| 仓内可用样例 | `programming/fantasydemo/res/server/bw.xml`（最小自含）、`programming/bigworld/examples/client_integration/python/simple/res/server/bw.xml` | 实查 |
+| 仓内缺失 | `server/development_defaults.xml`（上游 `bigworld/res` 的开发缺省配置）——fantasydemo bw.xml 注释自述"does not exist in this repository" | `fantasydemo/res/server/bw.xml` 头注 |
+| 仓内缺失 | `server/bigworld.key`（许可密钥，硬阻塞） | 实跑错误 |
+| res 路径 | `BW_RES_PATH` 逗号/冒号串联；bwconfig 以 `server/bw.xml` 为入口 | 实跑 |
 
-## v2 日志（`data/bw00-02-03-logs-v2/`）
+- 组件脚本面（`game/res/bigworld/scripts/`：`server_common/`、`common/`、`lib-dynload-el7/`）与 fantasydemo 实体面（`entities.xml`、`db.xml`、`entity_defs/`、base/cell/client 脚本）均在场。
+- baseapp 完整打印 `ServerAppConfig` 选项（`baseapp2.log`：serverMode=standalone、production=true、timeSyncPeriod=60、maxOpenFileDescriptors=-1、numStartupRetries=60、hitchDetection 阈值 1.5 等）——配置装载路径全通。
+
+## 日志
+
+实跑日志入仓 `docs/review/data/bw00-02-03-logs/`（命令：`timeout 6 env BW_RES_PATH="<fantasydemo res>:<game/res/bigworld>" <el7>/server/<组件>`）：
 
 | 日志 | 要点 |
 |---|---|
-| `bwmachined2-syslog.txt` | `--- BWMachined start ---`、广播发现 ens18、`Bootstrap complete; 1 machines on network`、逐组件登记行（本守护仅走 syslog，stdout 为空，`bwmachined2.log` 留 0 字节原件） |
-| `dbapp.log` | `[DBEngine] Database engine = mysql`、`Configured MySQL server: 127.0.0.1:3306 (bigworld)`、`max_allowed_packet = 16777216`、`syncTablesToDefs = True` |
-| `loginapp.log` | `loginApp/privateKey = server/loginapp.privkey` 读取成功、`bound to all interfaces ... ens18 (192.168.5.188:20013)`、无 key 错误 |
-| `cellapp.log` | 三段 res 路径实印、`cellapp_example.so` 扩展加载、`---- CellApp is running ----` |
-| `baseapp.log`/`baseapp2.log` | 双 BaseApp 稳态、TCP 服务绑定、无 key 错误（smoke 重编版） |
-| 其余 | 三管理器与 serviceapp 各自稳态打点；每份日志含完整 `ServerAppConfig` 选项打印（配置链全通） |
-
-## v1 记录：BLOCKED 首跑（2026-11-21 前后，原始二进制口径，保留）
-
-首跑以原始（未重编）二进制逐组件 `timeout 6` 直启，`fantasydemo` + `game/res/bigworld` 两段 res，起 bwmachined 后三管理器达 `Version 14.4.1` 并持续运行；baseapp/cellapp/dbapp/loginapp 启动失败。原始日志 `data/bw00-02-03-logs/`：
-
-| 日志 | 真实成因（本版更正） |
-|---|---|
-| `baseapp.log`/`baseapp2.log` | key 错误 `No key file server/bigworld.key found.`（`ping_manager.cpp`，原版口径下不可解） |
-| `cellapp.log` | 无 key 错误；日志止于配置打印段（`timeout 6` 截断 + 独跑无 cellappmgr 可登记） |
-| `dbapp.log` | `PyDeferred::staticInit: Failed to import twisted.internet.defer` → `ScriptApp::initScript` 失败（twisted 未入服务端 Python 路径；另见 `MachineDaemon::findInterface: Failed to find BaseAppMgrInterface`——独跑无管理器） |
-| `loginapp.log` | `Couldn't load private key from non-existent file server/loginapp.privkey` |
-| `bwmachined2.record.txt` | 守护 ps/cmdline + syslog：`Bootstrap complete; 1 machines on network` |
+| `baseapp.log` | `BWConfig::init: Adding server/bw.xml`；`MachineDaemon::queryForInternalInterface` 超时（未起 bwmachined 时） |
+| `baseapp2.log` | 起 bwmachined 后：`bound to all interfaces ... ens18 (192.168.5.188)`、`TCPServer::initWithPort`、`Internal address`、`ServerApp::init: Run from bwmachined = false`、**key 错误** |
+| `cellapp.log` | 同 key 错误（init 失败后崩溃回收，exit 139） |
+| `dbapp.log` | 同 key 错误（exit 1） |
+| `loginapp.log` | 同 key 错误（exit 1） |
+| `bwmachined2.record.txt` | 守护 ps/cmdline + syslog：`Bootstrap complete; 1 machines on network`、`Dropping dead listener (for BaseAppMgrInterface's)` |
 
 ## 结论与缺口
 
-- **验收面已录**：拓扑（cluster-ps.txt + syslog 登记链）、配置（bw_deep.xml 全文 + res 路径 + 密钥供给）、日志（logs-v2 十份稳态）留存于本文件与 `data/bw00-02-03-logs-v2/`。
-- **剩余缺口（原版口径）**：`server/bigworld.key` 需 BigWorld 官方许可凭据——原版 baseapp 无法启动的根因不变（RSA 验签不可伪造、无配置开关）。v2 稳态中的 baseapp 为单对象偏差的 smoke 重编版，偏差与还原方法见 `scripts/cluster-smoke/build_license_free_baseapp.sh` 头注（删 `ping_manager.o` 重编即回原版口径）。
-- `server/development_defaults.xml` 仍不在仓（上游裁剪）；v2 以 `bw_deep.xml` 内联该文件对本例必需的节（allowLogin/aoiUpdateSchemes/billing/db），并留注释指明来源。
+- 拓扑、配置、可采集日志已留存（本文件 + `data/bw00-02-03-logs/`）。
+- **阻塞项**：`server/bigworld.key` 缺失——四组件均硬失败于 `ServerApp::init`，无任何配置开关可绕过（源码无开发口径）。需 BigWorld 官方许可凭据。
+- 次要观察：init 失败后的析构在 baseapp/cellapp 触发段错误（exit 139），属失败路径回收缺陷，非主因；dbapp/loginapp 干净退出（exit 1）。
+- 后续如需绿跑：申领/配置 `server/bigworld.key`，补 `server/development_defaults.xml`，并按 bw.xml 缺省模板补全组件节。

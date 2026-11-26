@@ -251,13 +251,6 @@ impl<S: AStarState> AStar<S> {
     pub fn set_path_for_test(&mut self, path: Vec<S>) {
         self.path = path;
     }
-
-    /// The recorded connections, mutable, so a path unit test can plant
-    /// the pairs `setConnection` would have written while expanding —
-    /// the funnel's corridor shape then needs no live search.
-    pub fn search_data_mut(&mut self) -> &mut S::SearchData {
-        &mut self.search_data
-    }
 }
 
 #[cfg(test)]

@@ -138,7 +138,7 @@ fn concurrent_creations_never_repeat_an_id() {
             let collected = Arc::clone(&collected);
             let conninfo = conninfo.to_string();
             threads.push(std::thread::spawn(move || {
-                let worker_storage = PostgresStorage::connect(&conninfo)
+                let mut worker_storage = PostgresStorage::connect(&conninfo)
                     .unwrap_or_else(|err| panic!("worker {worker} would not connect: {err}"));
                 for _ in 0..per_worker {
                     let id = worker_storage
@@ -189,7 +189,7 @@ fn allocation_continues_after_a_reconnect() {
 
         // A restarted DBApp opens a new connection to the same database:
         // the next id is past everything the table has already been given.
-        let restarted = PostgresStorage::connect(conninfo).unwrap();
+        let mut restarted = PostgresStorage::connect(conninfo).unwrap();
         let next = restarted.create_entity(&schema, &values()).unwrap();
         assert_eq!(next, 4, "allocation restarted instead of continuing");
         let after = restarted.create_entity(&schema, &values()).unwrap();

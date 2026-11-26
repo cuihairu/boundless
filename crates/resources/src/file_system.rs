@@ -379,7 +379,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn symlinks_follow_stat_semantics() {
         let root = temp_root("link");
         write(&root, "/real.txt", b"real");

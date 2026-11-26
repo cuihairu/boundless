@@ -106,7 +106,7 @@ fn make_convex_hull(pts: &mut Vec<Vector3>, plane: &PlaneEq) {
 
     // And return to 3D space.
     for p in pts.iter_mut() {
-        *p = plane.param(&super::vector::Vector2::new(p.x, p.y));
+        *p = plane.param(super::vector::Vector2::new(p.x, p.y));
     }
 }
 

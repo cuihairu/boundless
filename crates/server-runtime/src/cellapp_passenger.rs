@@ -443,9 +443,6 @@ impl CellApp {
                 borrowed.space_id,
             )
         };
-        // The replay volatile queue rides the position internals
-        // (`entity.cpp:3949`): the real movers join the tick's set.
-        self.queue_entity_volatile(entity_rc.borrow().id);
         if let Some(node) = range_node {
             self.shuffle_range_face(node, &range_triggers, space_id, old_position);
         }

@@ -648,10 +648,6 @@ pub struct Witness {
     /// plain vector with swap-pop removal keeps the same behaviour. The real
     /// heap ordering arrives with BW-08-03-03.
     entity_queue: Vec<EntityId>,
-    /// Cached minimum priority over `entity_queue` — `None` when unknown
-    /// (stale after any removal or queued-priority change). `add_to_seen`'s
-    /// join-at-minimum read is O(1) while it stays valid.
-    queue_min: Option<f64>,
     /// `freeAliases_` — LIFO pool; slot 0xff is reserved for `NO_ID_ALIAS`,
     /// so the filled pool is 0..254 ascending and allocation pops the back.
     free_aliases: Vec<u8>,
@@ -712,7 +708,6 @@ impl Witness {
             entities,
             aoi_map: HashMap::new(),
             entity_queue: Vec::new(),
-            queue_min: None,
             free_aliases: (0..=254u8).collect(),
             bundle: Vec::new(),
             warnings: Vec::new(),
@@ -951,22 +946,14 @@ impl Witness {
         let initial_priority = if self.entity_queue.is_empty() {
             0.0
         } else {
-            match self.queue_min {
-                Some(min) => min,
-                None => {
-                    let min = self
-                        .entity_queue
-                        .iter()
-                        .filter_map(|qid| self.aoi_map.get(qid).map(|c| c.priority()))
-                        .fold(f64::INFINITY, f64::min);
-                    self.queue_min = Some(min);
-                    min
-                }
-            }
+            self.entity_queue
+                .iter()
+                .filter_map(|qid| self.aoi_map.get(qid).map(|c| c.priority()))
+                .fold(f64::INFINITY, f64::min)
         };
 
         self.cache_mut(id).set_priority(initial_priority);
-        self.queue_push(id);
+        self.entity_queue.push(id);
     }
 
     /// `Witness::requestEntityUpdate` — the client replied to our enterAoI;
@@ -1174,9 +1161,6 @@ impl Witness {
             self.send_create(id);
             let entity = self.entities.get(&id).cloned().expect("entity in AoI");
             self.cache_mut(id).update_priority(&entity, origin);
-            // The entry stays queued and its priority rose: the cached
-            // minimum may now be stale-low.
-            self.queue_min = None;
             false
         } else if self.cache_mut(id).has_flag(REFRESH) {
             self.cache_mut(id).clear_flag(REFRESH);
@@ -1201,19 +1185,20 @@ impl Witness {
         })
     }
 
-    /// `std::push_heap` / `std::make_heap` — (re)join the queue. A push can
-    /// only lower the cached minimum, so a valid cache folds the new member
-    /// in; an unknown cache stays unknown (the next `add_to_seen` scan
-    /// recomputes it).
+    /// `std::pop_heap` — take the front out of the queue.
+    fn queue_pop(&mut self) -> Option<EntityId> {
+        let front = self.queue_front()?;
+        let index = self
+            .entity_queue
+            .iter()
+            .position(|id| *id == front)
+            .expect("front still queued");
+        self.entity_queue.swap_remove(index);
+        Some(front)
+    }
+
+    /// `std::push_heap` / `std::make_heap` — (re)join the queue.
     fn queue_push(&mut self, id: EntityId) {
-        if let Some(min) = self.queue_min {
-            let priority = self
-                .aoi_map
-                .get(&id)
-                .map(|cache| cache.priority())
-                .unwrap_or(f64::INFINITY);
-            self.queue_min = Some(min.min(priority));
-        }
         self.entity_queue.push(id);
     }
 
@@ -1654,29 +1639,13 @@ impl Witness {
         // the reference.
         let mut popped: Vec<(EntityId, bool)> = Vec::new();
 
-        // The queue only shrinks during the pass — every priority mutation
-        // below hits an already-popped id — so one sort reproduces exactly
-        // the min-first sequence the per-pop linear scans produced
-        // (`queue_front` is a total order: priority bits then id). Pops
-        // advance a cursor; the visited prefix is drained afterwards.
-        self.entity_queue.sort_by_key(|id| {
-            let priority = self
-                .aoi_map
-                .get(id)
-                .map(|cache| cache.priority())
-                .unwrap_or(f64::INFINITY);
-            (priority.to_bits(), *id)
-        });
-
-        let mut cursor = 0usize;
-        while cursor < self.entity_queue.len() {
-            let id = self.entity_queue[cursor];
+        while let Some(id) = self.queue_front() {
             let front_priority = self.aoi_map.get(&id).map(|c| c.priority()).unwrap_or(0.0);
             if front_priority >= max_priority || self.bundle_bytes as i32 >= desired_packet_size - 2
             {
                 break;
             }
-            cursor += 1;
+            self.queue_pop();
             let was_prioritised = self
                 .aoi_map
                 .get(&id)
@@ -1723,11 +1692,6 @@ impl Witness {
                 popped.push((id, was_prioritised));
             }
         }
-
-        // The visited prefix left the queue; the minimum is unknown until
-        // the next scan (or is re-established by the requeue pushes below).
-        self.entity_queue.drain(..cursor);
-        self.queue_min = None;
 
         // Pay back any budget overshoot next tick.
         self.bandwidth_deficit = (self.bundle_bytes as i32 - desired_packet_size).max(0);
@@ -1810,7 +1774,6 @@ impl Witness {
             if !cache.is_updatable() && self.apply_state_change(id, origin) {
                 // the reference swap-pops the vacated slot
                 self.entity_queue.swap_remove(i);
-                self.queue_min = None;
             } else {
                 i += 1;
             }
@@ -3605,120 +3568,5 @@ mod tests {
         let priority = world.witness.cache_priority(2).unwrap();
         assert!((priority - 1.0).abs() < 1e-9, "{priority}");
         world.take();
-    }
-
-    /// A dense grid of 64 volatile entities packed at spacing 5 around the
-    /// witness: the broadcast volume the three dense-AOI faces charge the
-    /// client bundle is structural. The enter cycle is two 8-byte messages
-    /// per entity, a steady tick is one 16-byte update per moved entity
-    /// (1-byte alias + 3-byte PackedXZ + 12-byte yaw/pitch/roll), and one
-    /// migration wave is three 8-byte messages per entity. Pinning these
-    /// keeps any future scheduling change honest about its bandwidth cost.
-    #[test]
-    fn the_dense_area_broadcast_volume_is_pinned() {
-        const COUNT: EntityId = 66; // ids 2..=65 on an 8x8 grid
-        let mut self_entity = EntitySnapshot::new(1, 1, (17.5, 0.0, 17.5));
-        self_entity.volatile = VolatileInfo::NONE;
-        let mut witness = Witness::new(1, self_entity);
-        witness.set_witness_capacity(2_000_000, 10);
-        for id in 2..COUNT {
-            let col = (id - 2) % 8;
-            let row = (id - 2) / 8;
-            witness.upsert_entity(EntitySnapshot::new(
-                id,
-                2,
-                (
-                    17.5 + (col as f32 - 3.5) * 5.0,
-                    0.0,
-                    17.5 + (row as f32 - 3.5) * 5.0,
-                ),
-            ));
-        }
-
-        // The enter cycle: every entity costs exactly one EnterAoI and one
-        // CreateEntity, 16 wire bytes, and the closest entity gets alias 254.
-        for id in 2..COUNT {
-            witness.add_to_aoi(id, false);
-        }
-        witness.flush_state_changes();
-        for id in 2..COUNT {
-            witness.request_entity_update(id, &[]);
-        }
-        witness.flush_state_changes();
-        let entered = witness.take_bundle();
-        assert_eq!(entered.len(), 128);
-        assert_eq!(witness.bundle_size(), 0); // taken above
-        let entered_bytes: usize = entered.iter().map(|m| m.wire_size()).sum();
-        assert_eq!(entered_bytes, 1024);
-        assert_eq!(
-            entered[0],
-            ClientMessage::EnterAoI {
-                id: 2,
-                id_alias: 254
-            }
-        );
-        assert!(entered.iter().all(|m| m.wire_size() == 8));
-
-        // A steady tick with every entity moved: one 16-byte EntityUpdate
-        // per entity, relative XZ against the reference plus full direction.
-        for id in 2..COUNT {
-            let mut entity = witness.entity(id).cloned().unwrap();
-            entity.volatile_update_number += 1;
-            entity.position.0 += 0.25;
-            witness.upsert_entity(entity);
-        }
-        witness.update();
-        let ticked = witness.take_bundle();
-        assert_eq!(ticked.len(), 64);
-        let tick_bytes: usize = ticked.iter().map(|m| m.wire_size()).sum();
-        assert_eq!(tick_bytes, 1024);
-        assert!(ticked.iter().all(|m| matches!(
-            m,
-            ClientMessage::EntityUpdate {
-                id: _,
-                id_alias: Some(_),
-                pos: PosProjection::Relative {
-                    on_ground: true,
-                    ..
-                },
-                dir: DirProjection::YawPitchRoll { .. },
-                events,
-                bytes: 16,
-            } if events.is_empty()
-        )));
-        assert!(witness.warnings().is_empty());
-
-        // One migration wave (every entity leaves and re-enters): the leave
-        // and the re-observation cost three 8-byte messages per entity, and
-        // the alias pool hands the same alias back.
-        for id in 2..COUNT {
-            witness.remove_from_aoi(id, false);
-        }
-        witness.flush_state_changes();
-        for id in 2..COUNT {
-            witness.add_to_aoi(id, false);
-        }
-        witness.flush_state_changes();
-        for id in 2..COUNT {
-            witness.request_entity_update(id, &[]);
-        }
-        witness.flush_state_changes();
-        let migrated = witness.take_bundle();
-        assert_eq!(migrated.len(), 192);
-        let migrated_bytes: usize = migrated.iter().map(|m| m.wire_size()).sum();
-        assert_eq!(migrated_bytes, 1536);
-        // The alias pool round-trips the wave: every entity still holds a
-        // distinct alias, none ran out, and the pool keeps exactly the
-        // 191 aliases nobody holds.
-        let held: Vec<u8> = (2..COUNT)
-            .map(|id| witness.cache_id_alias(id).unwrap())
-            .collect();
-        let mut distinct = held.clone();
-        distinct.sort_unstable();
-        distinct.dedup();
-        assert_eq!(distinct.len(), 64);
-        assert!(!distinct.contains(&NO_ID_ALIAS));
-        assert_eq!(witness.free_aliases.len(), 191);
-        assert!(witness.warnings().is_empty());
     }
 }

@@ -63,45 +63,16 @@ impl std::error::Error for StreamError {}
 
 /// A byte buffer that supports sequential reading and sequential writing,
 /// mirroring the reference `BinaryIStream` / `BinaryOStream` pair.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct BinaryStream {
     buf: Vec<u8>,
     read: usize,
     error: bool,
 }
 
-impl Default for BinaryStream {
-    fn default() -> Self {
-        Self {
-            // `MemoryOStream( int size = 64 )`: the reference output
-            // stream constructor starts with a 64-byte buffer, so small
-            // payloads never pay growth reallocations.
-            buf: Vec::with_capacity(64),
-            read: 0,
-            error: false,
-        }
-    }
-}
-
 impl BinaryStream {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// An empty stream with room for `capacity` written bytes, so a writer
-    /// that knows its payload size allocates once instead of growing.
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self {
-            buf: Vec::with_capacity(capacity),
-            read: 0,
-            error: false,
-        }
-    }
-
-    /// Consume the stream into the bytes written so far, without the final
-    /// `as_bytes().to_vec()` copy a collected payload would otherwise pay.
-    pub fn into_bytes(self) -> Vec<u8> {
-        self.buf
     }
 
     /// Create a stream pre-filled with a fixed-width value.
@@ -1232,15 +1203,5 @@ mod original_fixtures {
         assert_eq!(s.read_blob_raw(4), Err(StreamError::Truncated));
         assert!(s.has_error());
         assert_eq!(s.remaining(), 0);
-    }
-
-    #[test]
-    fn with_capacity_and_into_bytes_move_the_buffer_without_a_copy() {
-        let mut s = BinaryStream::with_capacity(16);
-        s.write_bytes(&decode_hex("0102"));
-        let bytes = s.into_bytes();
-        assert_eq!(bytes, vec![1, 2]);
-        // The moved-out buffer keeps its reservation (no growth paid).
-        assert!(bytes.capacity() >= 16);
     }
 }

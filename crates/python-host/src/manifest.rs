@@ -53,18 +53,6 @@ pub enum Scope {
     Tool,
     /// No engine source; the project resource tree supplies the module.
     Supplied,
-    /// The app set whose scripts define entity classes: the client, the
-    /// cell app and the bots tool each register `BigWorld.Entity` from
-    /// their own source file (`client/script_bigworld.cpp:987`,
-    /// `server/cellapp/cellapp.cpp:3889`,
-    /// `server/tools/bots/entity_type.cpp:110`). Neither the coarse
-    /// [`Scope::Client`] nor [`Scope::Server`] can say this without
-    /// over-claiming: the cell app carries it while the base app does not.
-    EntityApps,
-    /// The base app alone: `server/baseapp/script_bigworld.cpp:2140-2143`
-    /// is the only site that registers `BigWorld.Base` and
-    /// `BigWorld.Proxy` (and `Service`, not yet ported).
-    BaseApp,
 }
 
 impl Scope {
@@ -77,8 +65,6 @@ impl Scope {
             Scope::Server => "server",
             Scope::Tool => "tool",
             Scope::Supplied => "supplied",
-            Scope::EntityApps => "entity-apps",
-            Scope::BaseApp => "baseapp",
         }
     }
 }
@@ -583,41 +569,6 @@ static BIG_WORLD_ITEMS: &[Item] = &[
         "TypeError from the auto argument parse",
         "common/py_physics2.cpp:63",
     ),
-    // The script class bases: each app registers them right after the module
-    // comes up, and every demo script's `class X(...)` names one. Direct
-    // construction stays refused -- in the reference the engine owns every
-    // instance (the scripts only subclass).
-    item(
-        "Entity",
-        Kind::Class,
-        Scope::EntityApps,
-        Status::Ported,
-        "engine-owned; direct construction refused",
-        "the entity script base type",
-        "TypeError on direct construction",
-        "client/script_bigworld.cpp:987 / server/cellapp/cellapp.cpp:3889 / \
-         server/tools/bots/entity_type.cpp:110",
-    ),
-    item(
-        "Base",
-        Kind::Class,
-        Scope::BaseApp,
-        Status::Ported,
-        "engine-owned; direct construction refused",
-        "the base script type (Py_Header(Base, PyObjectPlus))",
-        "TypeError on direct construction",
-        "server/baseapp/script_bigworld.cpp:2140",
-    ),
-    item(
-        "Proxy",
-        Kind::Class,
-        Scope::BaseApp,
-        Status::Ported,
-        "engine-owned; direct construction refused",
-        "the proxy script type, subclassing Base (Py_Header(Proxy, Base))",
-        "TypeError on direct construction",
-        "server/baseapp/script_bigworld.cpp:2142",
-    ),
 ];
 
 /// `Math` is built by `PyImport_AddModule("Math")` inside `TempPyVectorInit`
@@ -1038,121 +989,6 @@ static BW_CONFIG_ITEMS: &[Item] = &[
     ),
 ];
 
-/// The `_bw_profile` tool module (BW-12-03-02, BW-12-03-03): the
-/// start/stop surface and the JSON dump face.
-static BW_PROFILE_ITEMS: &[Item] = &[
-    item(
-        "__onThreadStart",
-        Kind::Function,
-        Scope::Both,
-        Status::Ported,
-        "threadName: str",
-        "None",
-        "TypeError from the auto argument parse",
-        "server/tools/bw_profile/bw_profile.cpp:123-137",
-    ),
-    item(
-        "__onThreadEnd",
-        Kind::Function,
-        Scope::Both,
-        Status::Ported,
-        "no arguments",
-        "None",
-        "",
-        "server/tools/bw_profile/bw_profile.cpp:139-146",
-    ),
-    item(
-        "enable",
-        Kind::Function,
-        Scope::Both,
-        Status::Ported,
-        "flag: int",
-        "None",
-        "TypeError from the auto argument parse",
-        "server/tools/bw_profile/bw_profile.cpp:148-162",
-    ),
-    item(
-        "isEnabled",
-        Kind::Function,
-        Scope::Both,
-        Status::Ported,
-        "no arguments",
-        "int (1 or 0)",
-        "",
-        "server/tools/bw_profile/bw_profile.cpp:163-170",
-    ),
-    item(
-        "tick",
-        Kind::Function,
-        Scope::Both,
-        Status::Ported,
-        "no arguments",
-        "None",
-        "",
-        "server/tools/bw_profile/bw_profile.cpp:171-177",
-    ),
-    item(
-        "startJsonDump",
-        Kind::Function,
-        Scope::Both,
-        Status::Ported,
-        "no arguments",
-        "None",
-        "",
-        "server/tools/bw_profile/bw_profile.cpp:179-186",
-    ),
-    item(
-        "setJsonDumpCount",
-        Kind::Function,
-        Scope::Both,
-        Status::Ported,
-        "count: int",
-        "None",
-        "TypeError from the auto argument parse",
-        "server/tools/bw_profile/bw_profile.cpp:187-201",
-    ),
-    item(
-        "setJsonDumpDir",
-        Kind::Function,
-        Scope::Both,
-        Status::Ported,
-        "dir: str",
-        "None",
-        "IOError \"setJsonDumpDir: Unable to write to JSON dump directory: <dir>: <errno>.\"",
-        "server/tools/bw_profile/bw_profile.cpp:202-236",
-    ),
-    item(
-        "getJsonDumpState",
-        Kind::Function,
-        Scope::Both,
-        Status::Ported,
-        "no arguments",
-        "int (the JsonDumpState value)",
-        "",
-        "server/tools/bw_profile/bw_profile.cpp:237-242",
-    ),
-    item(
-        "getJsonDumpStateValue",
-        Kind::Function,
-        Scope::Both,
-        Status::Ported,
-        "state: str",
-        "int (the JsonDumpState value)",
-        "RuntimeError \"getJsonDumpStateValue: Invalid dump state value <state>\"",
-        "server/tools/bw_profile/bw_profile.cpp:259-301",
-    ),
-    item(
-        "getJsonOutputFilePath",
-        Kind::Function,
-        Scope::Both,
-        Status::Ported,
-        "no arguments",
-        "str",
-        "",
-        "server/tools/bw_profile/bw_profile.cpp:303-308",
-    ),
-];
-
 /// The full inventory. Module rows with no `items` are name-and-scope records:
 /// their surface is either out of this lane's scope (rendering and tool
 /// stacks) or supplied by the project, and rows record that in `note`.
@@ -1219,25 +1055,6 @@ static ENTRIES: &[Entry] = &[
                pickle module for dumps (:132) and a restricted loads \
                (:141-145) (lib/pyscript/pickler.cpp:126)",
         items: &[],
-    },
-    Entry {
-        module: "_bw_profile",
-        scope: Scope::Both,
-        status: Status::Ported,
-        reference: "server/tools/bw_profile/bw_profile.cpp:322-342 (PyInit), \
-                    :76-121 (profileFunc)",
-        note: "the reference builds the extension module into its \
-               profiling binaries and scripts import it, so the module \
-               scope is every role the port's one host runs; the port \
-               registers it in sys.modules at interpreter init (after the \
-               init-time snapshot, so it stays a script's find) and the \
-               install performs the import-time work: the fixed 128MB \
-               profiler budget (:329-331), the `profiler/enabled` watcher \
-               (`lib/cstdmf/profiler.cpp:896-899`) and the trace callback \
-               armed (:340-342). BW-12-03-02 delivered the start/stop \
-               surface; the JSON dump rows land with BW-12-03-03 and stay \
-               pending",
-        items: BW_PROFILE_ITEMS,
     },
     Entry {
         module: "__main__",
@@ -1506,13 +1323,11 @@ impl Mismatch {
 /// claims neither face). This is the runtime shape of the reference's
 /// compile-time gate, and [`crate::timers`] applies the same split to the
 /// method tables it installs.
-pub fn carries_role(scope: Scope, component: &str) -> bool {
+fn carries_role(scope: Scope, component: &str) -> bool {
     match scope {
         Scope::Both | Scope::Tool | Scope::Supplied => true,
         Scope::Server => is_server_component(component),
         Scope::Client => matches!(component, "client" | "editor"),
-        Scope::EntityApps => matches!(component, "client" | "cell" | "bot"),
-        Scope::BaseApp => component == "base",
     }
 }
 
@@ -1581,10 +1396,7 @@ fn audit(
             if surface.status != Status::Ported {
                 continue;
             }
-            let gated = matches!(
-                surface.scope,
-                Scope::Client | Scope::Server | Scope::EntityApps | Scope::BaseApp
-            );
+            let gated = matches!(surface.scope, Scope::Client | Scope::Server);
             if gated && !role(surface.scope) {
                 // The absence is the contract here; a leak is the failure.
                 if carries(entry.module, surface.name) {
@@ -1802,31 +1614,18 @@ mod tests {
     /// The per-role visible surface (BW-03-04-01/02) pinned as the strings
     /// the scenarios compare live `dir(BigWorld)` against: the server
     /// builds carry the listener pair, the timer trio and the mode marker,
-    /// the client and the editor carry the callback pair, the script class
-    /// bases follow their registration sites (`Entity` on the client, the
-    /// cell app and the bots tool, `Base`/`Proxy` on the base app alone),
-    /// and an unknown or empty name carries only the shared faces.
+    /// the client and the editor carry the callback pair, and an unknown or
+    /// empty name carries only the shared faces.
     #[test]
     fn the_role_visible_surface_is_pinned() {
         let server = "addEventListener, addFrequentTask, addTimer, component, \
                       delTimer, fetchURL, removeEventListener, serverMode";
-        let entity_apps = "Entity, addEventListener, addFrequentTask, addTimer, \
-                           component, delTimer, fetchURL, removeEventListener, \
-                           serverMode";
         for (component, expected) in [
-            (
-                "base",
-                "Base, Proxy, addEventListener, addFrequentTask, \
-                      addTimer, component, delTimer, fetchURL, \
-                      removeEventListener, serverMode",
-            ),
-            ("cell", entity_apps),
+            ("base", server),
+            ("cell", server),
             ("database", server),
-            ("bot", entity_apps),
-            (
-                "client",
-                "Entity, callback, cancelCallback, component, fetchURL",
-            ),
+            ("bot", server),
+            ("client", "callback, cancelCallback, component, fetchURL"),
             ("editor", "callback, cancelCallback, component, fetchURL"),
             ("watcher", "component, fetchURL"),
             ("", "component, fetchURL"),
@@ -1876,31 +1675,6 @@ mod tests {
             assert!(carries_role(scope, "cell"), "{scope:?}");
             assert!(carries_role(scope, ""), "{scope:?}");
         }
-        // The entity-class registration split: the client, the cell app and
-        // the bots tool carry `Entity`; the base app carries `Base`/`Proxy`
-        // alone -- and notably not the database app, whose `BigWorld` never
-        // gets either (`dbapp.cpp` only imports the module).
-        for entity in ["client", "cell", "bot"] {
-            assert!(
-                carries_role(Scope::EntityApps, entity),
-                "Entity face on {entity}"
-            );
-            assert!(
-                !carries_role(Scope::BaseApp, entity),
-                "baseapp face on {entity}"
-            );
-        }
-        assert!(carries_role(Scope::BaseApp, "base"), "baseapp face on base");
-        for outside in ["database", "editor", "watcher", ""] {
-            assert!(
-                !carries_role(Scope::EntityApps, outside),
-                "Entity face on {outside}"
-            );
-            assert!(
-                !carries_role(Scope::BaseApp, outside),
-                "baseapp face on {outside}"
-            );
-        }
     }
 
     /// Project-supplied modules are marked as such rather than given an
@@ -1928,9 +1702,8 @@ mod tests {
     /// BW-03-03-03 delivered -- the client pair gated to the client role,
     /// the server trio gated to the server roles -- and the ungated
     /// `fetchURL` BW-03-03-05 delivered, plus the Math module with every
-    /// factory name, and the `_bw_profile` start/stop surface BW-12-03-02
-    /// delivered with its JSON dump face BW-12-03-03 delivered too; the
-    /// Windows-only matrix animation is the one other row still pending.
+    /// factory name; the Windows-only matrix animation is the one row
+    /// still pending.
     #[test]
     fn only_the_delivered_surface_is_marked_ported() {
         let ported_modules: Vec<_> = entries()
@@ -1938,7 +1711,7 @@ mod tests {
             .filter(|entry| entry.status == Status::Ported)
             .map(|entry| entry.module)
             .collect();
-        assert_eq!(ported_modules, vec!["BigWorld", "Math", "_bw_profile"]);
+        assert_eq!(ported_modules, vec!["BigWorld", "Math"]);
         let ported_items: Vec<_> = find("BigWorld")
             .unwrap()
             .items
@@ -1959,9 +1732,6 @@ mod tests {
                 "delTimer",
                 "addFrequentTask",
                 "serverMode",
-                "Entity",
-                "Base",
-                "Proxy",
             ]
         );
         let math = find("Math").unwrap();
@@ -2001,36 +1771,6 @@ mod tests {
             .map(|item| item.name)
             .collect();
         assert_eq!(pending_math, vec!["MatrixAnimation"]);
-        let bw_profile = find("_bw_profile").expect("_bw_profile");
-        let ported_profile: Vec<_> = bw_profile
-            .items
-            .iter()
-            .filter(|item| item.status == Status::Ported)
-            .map(|item| item.name)
-            .collect();
-        assert_eq!(
-            ported_profile,
-            vec![
-                "__onThreadStart",
-                "__onThreadEnd",
-                "enable",
-                "isEnabled",
-                "tick",
-                "startJsonDump",
-                "setJsonDumpCount",
-                "setJsonDumpDir",
-                "getJsonDumpState",
-                "getJsonDumpStateValue",
-                "getJsonOutputFilePath",
-            ]
-        );
-        let pending_profile: Vec<_> = bw_profile
-            .items
-            .iter()
-            .filter(|item| item.status == Status::Pending)
-            .map(|item| item.name)
-            .collect();
-        assert_eq!(pending_profile, Vec::<&str>::new());
     }
 
     /// Rendering a row spells the scope and the status the way the
@@ -2045,8 +1785,6 @@ mod tests {
             (Scope::Server, "server"),
             (Scope::Tool, "tool"),
             (Scope::Supplied, "supplied"),
-            (Scope::EntityApps, "entity-apps"),
-            (Scope::BaseApp, "baseapp"),
         ] {
             assert_eq!(scope.as_str(), word);
         }

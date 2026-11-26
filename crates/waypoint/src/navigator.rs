@@ -294,15 +294,6 @@ impl Navigator {
     /// destination (`findPath`'s "Use dst as point" replacement does not
     /// happen here), and a same-waypoint query answers the source then
     /// the destination.
-    ///
-    /// Pinned on the fixed map (`tests/fixed_map.rs`,
-    /// `the_navigator_answers_the_reference_findfullpath_probes`): the
-    /// reference's own `findFullPath` answers `FFPNONE` on that fixture —
-    /// its space constructor resolves both endpoints to null because the
-    /// fixture's chunks are mounted on their own navigators and never
-    /// registered with the space — so the probes there pin the port's
-    /// route against the chains the log already fixed (the XPATH hops,
-    /// the clipped destination point, `clip`'s makeMaxHeight tail).
     pub fn find_full_path(
         &self,
         src: &NavLoc,

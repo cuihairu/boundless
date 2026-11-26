@@ -473,22 +473,16 @@ impl Fleet {
             updated += 1;
         }
 
-        // One pass over the retry queue: partition the due bots from the
-        // ones still waiting instead of `Vec::remove`-ing each due entry in
-        // its own pass (O(n^2) when a surge makes many retries due at once).
-        // The order of the survivors and of the re-log-ons follows the queue,
-        // so a surge with a fixed seed dispatches the same bots in the same
-        // order as before.
-        let mut waiting = Vec::with_capacity(self.bots_for_log_on_retry.len());
-        for mut bot in std::mem::take(&mut self.bots_for_log_on_retry) {
-            if bot.log_on_retry_time() < now {
+        let mut retry_index = 0;
+        while retry_index < self.bots_for_log_on_retry.len() {
+            if self.bots_for_log_on_retry[retry_index].log_on_retry_time() < now {
+                let mut bot = self.bots_for_log_on_retry.remove(retry_index);
                 bot.log_on();
                 self.bots.push(bot);
             } else {
-                waiting.push(bot);
+                retry_index += 1;
             }
         }
-        self.bots_for_log_on_retry = waiting;
 
         self.in_tick = false;
     }
@@ -1018,34 +1012,5 @@ mod tests {
             second_names,
             (8..=14).map(|n| format!("Bot_{n}_0")).collect::<Vec<_>>()
         );
-    }
-
-    /// A surge where many retries come due at once re-admits every due bot
-    /// in queue order and keeps the not-yet-due ones waiting. The single-pass
-    /// partition must not lose the waiting ones (the old remove-in-a-loop
-    /// shape had a second-order cost but the same order).
-    #[test]
-    fn a_surge_drains_due_retries_in_queue_order_and_keeps_the_rest() {
-        let mut fleet = Fleet::new("0", 100);
-        for i in 0..5 {
-            fleet.add_bot();
-            // Stagger the retry times so bots 0..3 are due at the tick below
-            // and bot 4 still waits. A retry time of 0.0 means "not
-            // scheduled" (the bot drops), so every time here is > 0.
-            fleet.bots_mut()[i].feed_log_on_failure(Some((i + 1) as f64));
-        }
-        fleet.tick(0.0);
-        assert_eq!(fleet.retry_queue_len(), 5);
-
-        // Bots with retry times 1..4 are due at now=4.5; bot 5 waits.
-        fleet.tick(4.5);
-        assert_eq!(fleet.len(), 4);
-        assert_eq!(fleet.retry_queue_len(), 1);
-        let names: Vec<&str> = fleet.bots().iter().map(|b| b.user_name()).collect();
-        assert_eq!(
-            names,
-            (1..=4).map(|n| format!("Bot_{n}_0")).collect::<Vec<_>>()
-        );
-        assert_eq!(fleet.bots()[0].conn_state(), ConnState::LoggingIn);
     }
 }

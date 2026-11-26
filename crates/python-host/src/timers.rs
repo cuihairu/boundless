@@ -496,24 +496,22 @@ fn server_process() {
         let function = node.function.clone();
         let user_arg = node.user_arg;
         drop(store_state);
-        // The reference fires through one `PyObject_CallFunction`
-        // (`app_script_timers.cpp`, `handleTimeout`: `PyObject_CallFunction(
-        // pObject, "ik", id, uintptr( pUser ) )`) — the id and user argument
-        // cross as two format items and the arguments tuple is built inside
-        // the call, instead of the port building two `PyLong`s and a tuple
-        // per fire alongside the call itself.
-        //
-        // SAFETY: the entry holds a live callable, both arguments are C ABI
-        // integers ("i" is `c_int`, "k" is `c_ulong`), and the caller owns
-        // the GIL.
-        let result = unsafe {
-            capi::PyObject_CallFunction(
-                function.as_ptr(),
-                c"ik".as_ptr(),
-                id as std::os::raw::c_int,
+        // SAFETY: both are fresh objects the tuple adopts.
+        let arguments = unsafe {
+            let id_object = capi::PyLong_FromLong(id as std::os::raw::c_long);
+            let user_object = capi::PyLong_FromUnsignedLong(
                 user_arg as std::os::raw::c_long as std::os::raw::c_ulong,
-            )
+            );
+            let tuple = capi::PyTuple_New(2);
+            capi::PyTuple_SetItem(tuple, 0, id_object);
+            capi::PyTuple_SetItem(tuple, 1, user_object);
+            tuple
         };
+        // SAFETY: the entry holds a live callable, the tuple is fresh, and
+        // the caller owns the GIL.
+        let result = unsafe { capi::PyObject_CallObject(function.as_ptr(), arguments) };
+        // SAFETY: the tuple is owned by this call only.
+        unsafe { capi::dec_ref(arguments) };
         if result.is_null() {
             // `PY_ERROR_CHECK` (`pyobject_plus.hpp:49-56`): print and
             // carry on.
@@ -578,18 +576,14 @@ fn frequent_call() {
             let Some(function) = function else {
                 continue;
             };
-            // The reference calls through `Script::ask(pCallback.newRef(),
-            // PyTuple_New(0))` (`script_frequent_tasks.cpp:44-46`) — an
-            // empty tuple allocated, passed and dropped for every task on
-            // every tick. The CPython zero-argument fast path reaches the
-            // same callable with the same (no) arguments without
-            // materializing the tuple; every other contract (a truthy
-            // result deregisters, a failing call prints and the task
-            // stays) is untouched.
-            //
             // SAFETY: the entry holds a live callable and the caller owns
             // the GIL.
-            let result = unsafe { capi::PyObject_CallNoArgs(function.as_ptr()) };
+            let result = unsafe {
+                let arguments = capi::PyTuple_New(0);
+                let answer = capi::PyObject_CallObject(function.as_ptr(), arguments);
+                capi::dec_ref(arguments);
+                answer
+            };
             if result.is_null() {
                 // `Script::ask` printed (`script.cpp:1208-1226`); the
                 // task's own log line only reaches the log, and the task

@@ -7,7 +7,7 @@
 //! `Vec<Edge>`.
 
 use super::{EdgeIndex, WaypointIndex};
-use foundation::math::{BoundBox, Vector2, Vector3};
+use foundation::math::{Vector2, Vector3};
 use std::cell::Cell;
 
 /// `ChunkWaypoint::Edge::adjacentRangeStart` (`chunk_waypoint.cpp:49`):
@@ -176,17 +176,15 @@ impl ChunkWaypoint {
     /// point on the closest edge segment; the height always lands on
     /// `maxHeight_` (the trailing `makeMaxHeight`).
     ///
-    /// The reference then validates the point against the owning chunk's
-    /// bounding box and, when it falls outside, walks the first
-    /// non-chunk-adjacent edge's midpoint segment and pulls the point in
-    /// along it (99% of the way, the `0.99f` nudge). `chunk_bb` plays
-    /// `pChunk->boundingBox()`; unmounted (the search-lane shape) the arm
-    /// stays off and the box reads as unbounded.
+    /// Registered boundary: the reference then validates the point against
+    /// the chunk bounding box and, when it falls outside, nudges it in from
+    /// the first non-chunk-adjacent edge midpoint; that needs the chunk
+    /// face, and the fixture/identity mapping keeps every probe point
+    /// inside it, so the port models the box as unbounded.
     pub fn clip(
         &self,
         edges: &[Edge],
         provider: &dyn ChunkWaypointVertexProvider,
-        chunk_bb: Option<&BoundBox>,
         point: &mut Vector3,
     ) {
         let edge_count = self.edge_count as usize;
@@ -236,35 +234,6 @@ impl ChunkWaypoint {
             point.z = p2d_best.y;
         }
 
-        if let Some(bb) = chunk_bb {
-            let avg_height = (self.min_height + self.max_height) / 2.0;
-            point.y = bb.centre().y;
-
-            if !bb.contains(point) {
-                for i in 0..edge_count {
-                    let edge = &edges[run_start + i];
-                    if !edge.adjacent_to_chunk() {
-                        let next = &edges[run_start + (i + 1) % edge_count];
-                        let this_start = *provider.vertex_by_index(edge.vertex_index);
-                        let next_start = *provider.vertex_by_index(next.vertex_index);
-
-                        let mut wv_start = Vector3::new(this_start.x, avg_height, this_start.y);
-                        let mut wv_end = Vector3::new(next_start.x, avg_height, next_start.y);
-                        let _ = bb.clip(&mut wv_start, &mut wv_end, 0.0);
-
-                        let mut middle = (wv_start + wv_end) * 0.5;
-                        let mut target = *point;
-                        let _ = bb.clip(&mut middle, &mut target, 0.0);
-
-                        // move in a bit
-                        *point = middle + (target - middle) * 0.99;
-
-                        break;
-                    }
-                }
-            }
-        }
-
         self.make_max_height(point);
     }
 
@@ -277,11 +246,10 @@ impl ChunkWaypoint {
         &self,
         edges: &[Edge],
         provider: &dyn ChunkWaypointVertexProvider,
-        chunk_bb: Option<&BoundBox>,
         point: Vector3,
     ) -> f32 {
         let mut clip_point = point;
-        self.clip(edges, provider, chunk_bb, &mut clip_point);
+        self.clip(edges, provider, &mut clip_point);
         clip_point.y = point.y.max(self.min_height).min(self.max_height);
         let d = point - clip_point;
         d.x * d.x + d.y * d.y + d.z * d.z
@@ -353,33 +321,6 @@ mod tests {
             edge_count: provider.0.len() as u32,
             visited: Cell::new(0),
         }
-    }
-
-    #[test]
-    fn the_chunk_box_nudges_an_out_of_chunk_point_in_from_the_edge_midpoint() {
-        // An unmounted clip leaves the polygon result standing.
-        let provider = square_provider();
-        let wp = square_waypoint(&provider);
-        let edges: Vec<Edge> = (0..4)
-            .map(|v| Edge {
-                vertex_index: v,
-                neighbour: 0,
-            })
-            .collect();
-        let mut plain = Vector3::new(3.0, 0.5, 1.0);
-        wp.clip(&edges, &provider, None, &mut plain);
-        assert_eq!(plain, Vector3::new(2.0, 1.0, 1.0));
-
-        // With the chunk box mounted, the clipped point lands outside it
-        // (x 2 against a box ending at 1), so the fallback walks the
-        // first non-chunk edge's midpoint and pulls the point 99% of the
-        // way from that midpoint to the point (chunk_waypoint.cpp:308-313).
-        let bb = BoundBox::new(Vector3::new(0.0, 0.0, 0.0), Vector3::new(1.0, 10.0, 3.0));
-        let mut boxed = Vector3::new(3.0, 0.5, 1.0);
-        wp.clip(&edges, &provider, Some(&bb), &mut boxed);
-        assert!((boxed.x - 0.99).abs() <= 1e-5, "{boxed:?}");
-        assert_eq!(boxed.z, 1.0, "{boxed:?}");
-        assert_eq!(boxed.y, 1.0, "the makeMaxHeight tail");
     }
 
     #[test]
@@ -508,16 +449,16 @@ mod tests {
 
         // Inside the projection, height inside 0..1: the clip is identity.
         assert_eq!(
-            wp.distance_squared(&edges, &provider, None, Vector3::new(1.0, 0.7, 1.0)),
+            wp.distance_squared(&edges, &provider, Vector3::new(1.0, 0.7, 1.0)),
             0.0
         );
         // Still zero at the band's edges — the clamp keeps both ends.
         assert_eq!(
-            wp.distance_squared(&edges, &provider, None, Vector3::new(1.9, 0.0, 0.1)),
+            wp.distance_squared(&edges, &provider, Vector3::new(1.9, 0.0, 0.1)),
             0.0
         );
         assert_eq!(
-            wp.distance_squared(&edges, &provider, None, Vector3::new(1.9, 1.0, 0.1)),
+            wp.distance_squared(&edges, &provider, Vector3::new(1.9, 1.0, 0.1)),
             0.0
         );
     }
@@ -536,12 +477,12 @@ mod tests {
         // Under the band: the x-z clip is identity, the y term is
         // (minHeight - y) squared — 0.5 below the floor.
         assert_eq!(
-            wp.distance_squared(&edges, &provider, None, Vector3::new(1.0, -0.5, 1.0)),
+            wp.distance_squared(&edges, &provider, Vector3::new(1.0, -0.5, 1.0)),
             0.25
         );
         // Over the band: (y - maxHeight) squared — 2 above the roof.
         assert_eq!(
-            wp.distance_squared(&edges, &provider, None, Vector3::new(1.0, 3.0, 1.0)),
+            wp.distance_squared(&edges, &provider, Vector3::new(1.0, 3.0, 1.0)),
             4.0
         );
     }
@@ -560,13 +501,13 @@ mod tests {
         // East of the square: the clip lands on the x = 2 edge, height in
         // band — (3 - 2) squared.
         assert_eq!(
-            wp.distance_squared(&edges, &provider, None, Vector3::new(3.0, 0.5, 1.0)),
+            wp.distance_squared(&edges, &provider, Vector3::new(3.0, 0.5, 1.0)),
             1.0
         );
         // Diagonally outside: the clip lands on the corner (2, 0) —
         // (3 - 2) squared + (1 - 0) squared.
         assert_eq!(
-            wp.distance_squared(&edges, &provider, None, Vector3::new(3.0, 0.5, -1.0)),
+            wp.distance_squared(&edges, &provider, Vector3::new(3.0, 0.5, -1.0)),
             2.0
         );
     }
