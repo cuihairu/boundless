@@ -2930,9 +2930,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化发布包和 Demo 首次启动，衡量体积和安装耗时，复跑干净安装、升级及脚本导入。
 
-- [x] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。（edea922）
-- [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（e0d3672）
-- [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
+- [x] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。（edea922；双交付登记：lane/bw15-platform 7ae598b 同面 ci/release-baseline.sh，主席择一）
+- [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（e0d3672；双交付登记：lane/bw15-platform 4cff41e 同面 profile strip=symbols，主席择一）
+- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（797e770=lane/bw15-platform 988ff5f 跨席复测勾：修脚本过时模块名 libboundless.so→libpython_module.so、安装名 boundless_core.so；install-layout 十三行全 PASS+自测 7/7，boundless_core 0.1.0 导入 answer()=42/engine_version()=14.4.1，升级还原篡改 res 且 data/db/user.db 保留，卸载删包保留 data；本树 tar 31M 无 profile strip=另一交付面 4cff41e 主席择一）
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
 
@@ -4511,9 +4511,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化发布包和 Demo 首次启动，衡量体积和安装耗时，复跑干净安装、升级及脚本导入。
 
-- [x] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。（edea922）
-- [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（e0d3672）
-- [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
+- [x] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。（edea922；双交付登记：lane/bw15-platform 7ae598b 同面 ci/release-baseline.sh，主席择一）
+- [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（e0d3672；双交付登记：lane/bw15-platform 4cff41e 同面 profile strip=symbols，主席择一）
+- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（797e770=lane/bw15-platform 988ff5f 跨席复测勾：修脚本过时模块名 libboundless.so→libpython_module.so、安装名 boundless_core.so；install-layout 十三行全 PASS+自测 7/7，boundless_core 0.1.0 导入 answer()=42/engine_version()=14.4.1，升级还原篡改 res 且 data/db/user.db 保留，卸载删包保留 data；本树 tar 31M 无 profile strip=另一交付面 4cff41e 主席择一）
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
 
@@ -6053,9 +6053,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化发布包和 Demo 首次启动，衡量体积和安装耗时，复跑干净安装、升级及脚本导入。
 
-- [x] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。（edea922）
-- [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（e0d3672）
-- [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
+- [x] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。（edea922；双交付登记：lane/bw15-platform 7ae598b 同面 ci/release-baseline.sh，主席择一）
+- [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（e0d3672；双交付登记：lane/bw15-platform 4cff41e 同面 profile strip=symbols，主席择一）
+- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（797e770=lane/bw15-platform 988ff5f 跨席复测勾：修脚本过时模块名 libboundless.so→libpython_module.so、安装名 boundless_core.so；install-layout 十三行全 PASS+自测 7/7，boundless_core 0.1.0 导入 answer()=42/engine_version()=14.4.1，升级还原篡改 res 且 data/db/user.db 保留，卸载删包保留 data；本树 tar 31M 无 profile strip=另一交付面 4cff41e 主席择一）
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
 
@@ -7595,9 +7595,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化发布包和 Demo 首次启动，衡量体积和安装耗时，复跑干净安装、升级及脚本导入。
 
-- [x] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。（edea922）
-- [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（e0d3672）
-- [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
+- [x] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。（edea922；双交付登记：lane/bw15-platform 7ae598b 同面 ci/release-baseline.sh，主席择一）
+- [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（e0d3672；双交付登记：lane/bw15-platform 4cff41e 同面 profile strip=symbols，主席择一）
+- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（797e770=lane/bw15-platform 988ff5f 跨席复测勾：修脚本过时模块名 libboundless.so→libpython_module.so、安装名 boundless_core.so；install-layout 十三行全 PASS+自测 7/7，boundless_core 0.1.0 导入 answer()=42/engine_version()=14.4.1，升级还原篡改 res 且 data/db/user.db 保留，卸载删包保留 data；本树 tar 31M 无 profile strip=另一交付面 4cff41e 主席择一）
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
 
@@ -9176,9 +9176,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化发布包和 Demo 首次启动，衡量体积和安装耗时，复跑干净安装、升级及脚本导入。
 
-- [x] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。（edea922）
-- [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（e0d3672）
-- [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
+- [x] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。（edea922；双交付登记：lane/bw15-platform 7ae598b 同面 ci/release-baseline.sh，主席择一）
+- [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（e0d3672；双交付登记：lane/bw15-platform 4cff41e 同面 profile strip=symbols，主席择一）
+- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（797e770=lane/bw15-platform 988ff5f 跨席复测勾：修脚本过时模块名 libboundless.so→libpython_module.so、安装名 boundless_core.so；install-layout 十三行全 PASS+自测 7/7，boundless_core 0.1.0 导入 answer()=42/engine_version()=14.4.1，升级还原篡改 res 且 data/db/user.db 保留，卸载删包保留 data；本树 tar 31M 无 profile strip=另一交付面 4cff41e 主席择一）
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
 
@@ -10718,9 +10718,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化发布包和 Demo 首次启动，衡量体积和安装耗时，复跑干净安装、升级及脚本导入。
 
-- [x] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。（edea922）
-- [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（e0d3672）
-- [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
+- [x] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。（edea922；双交付登记：lane/bw15-platform 7ae598b 同面 ci/release-baseline.sh，主席择一）
+- [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（e0d3672；双交付登记：lane/bw15-platform 4cff41e 同面 profile strip=symbols，主席择一）
+- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（797e770=lane/bw15-platform 988ff5f 跨席复测勾：修脚本过时模块名 libboundless.so→libpython_module.so、安装名 boundless_core.so；install-layout 十三行全 PASS+自测 7/7，boundless_core 0.1.0 导入 answer()=42/engine_version()=14.4.1，升级还原篡改 res 且 data/db/user.db 保留，卸载删包保留 data；本树 tar 31M 无 profile strip=另一交付面 4cff41e 主席择一）
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
 
