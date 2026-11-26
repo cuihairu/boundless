@@ -346,3 +346,55 @@ since OPT-02-01-02, `cargo test -p mercury` for the network faces —
 perf gate lands, compare timings against `target/criterion` baselines
 via `--save-baseline` / `--baseline`, not absolute numbers from this
 page.
+
+## OPT-01-01-02 — clock/task dispatch (2026-11-26)
+
+Two candidates were implemented, measured, kept only where the
+measurement survives a shared-box noise floor:
+
+- `time_queue.rs` process loop: the pre-callback bookkeeping (front pop,
+  lateness accounting, `processing_node` publish) is one borrow window,
+  and the post-callback settle (reschedule / cancelled count, clear
+  `processing_node`) is a second. Five-to-six windows per fired timer
+  become two; the callback still runs with the queue unborrowed so
+  re-entry behaves as before.
+- `tick.rs` `Updatables.handles`: pointer keys use an identity hasher
+  (`BuildHasherDefault<PtrHasher>`) instead of `RandomState`'s seeded
+  multiply-xor. The reference reads `removalHandle_` as a plain field;
+  the seeded hash probe is port-only cost on every `call()` iteration.
+
+**Noise floor first.** The unchanged `add_1000_timers` fixture was run
+10 interleaved rounds against two binaries built from the *same* commit:
+A median 90.49 µs, B median 87.39 µs (-3.4%) with individual rounds
+spanning 79.7-132.3 µs. A single-window criterion "improvement" of
+-20% on changed fixtures is therefore not evidence; the earlier A/B
+attempt was parked under load 8-70 for exactly this reason (todo note).
+The two binaries compared below were built in separate target
+directories from `HEAD` (baseline) and the patched worktree
+(candidate); `cmp` confirmed they are distinct binaries.
+
+Interleaved A/B, 10 rounds per fixture, each round one criterion
+estimate at sample size 30, medians of the 10 estimates:
+
+| fixture | baseline µs | candidate µs | delta | unchanged-control delta |
+|---|---|---|---|---|
+| `time_queue/process_1000_due` | 195.10 | 185.84 | -4.7% | -3.4% |
+| `time_queue/add_cancel_process_100` | 12.63 | 12.34 | -2.2% | -3.4% |
+| `updatables/call_1000_over_3_levels` | 75.31 | 65.64 | -12.8% | -3.4% |
+| `updatables/call_1000_over_3_levels` (repeat) | 116.57 | 91.69 | -21.3% | -3.4% |
+| `updatables/register_deregister_100` | 37.01 | 35.89 | -3.0% | -3.4% |
+
+**Reading**: only the `call_1000_over_3_levels` fixture separates from
+the same-binary control in both windows (-12.8%, -21.3% vs -3.4%);
+the timer-queue fixtures and the churn fixture stay inside the noise
+band. The claim is therefore limited to the per-tick dispatch probe,
+where removing the seeded hash is a structural win consistent with the
+reference's field read. No wall-clock regression claim is made for
+timer processing; those changes are kept for the borrow-window
+reduction (fewer borrows per fired timer, same semantics), not for a
+measured speedup. Load during the runs was 6-15 on a 14-core shared
+box; numbers are per-window, not portable.
+
+Gates: `cargo test -p foundation -p server-runtime` 1562 passed / 0
+failed; touched files are rustfmt-clean; full workspace tests remain
+the integration gate before merge.
