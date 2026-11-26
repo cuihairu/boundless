@@ -1816,6 +1816,7 @@
 - [ ] **BW-15-03-01 跑 Windows 服务端全角色**。**验收** 能处理控制事件并关服。
 - [ ] **BW-15-03-02 验证 DLL 和 CPython 发现**。**验收** 已安装布局中模块可导入。
 - [ ] **BW-15-03-03 跑 Windows 客户端与编辑器**。**验收** 固定样本与原版对照。
+  - 交叉编译注记（2026-11-26，lane/bw10-terrain 927463e→abbdf75）：本席双入口（`apps/client`/`apps/editor`）`cargo check --target x86_64-pc-windows-gnu` 绿（仅预存 blowfish manifest 警告）。真跑需 Windows runner（BW-15-05-01）与 mercury Windows 面（server 侧 E0432×16，不拦 client/editor 两入口）；行保持开待真机。
 - [ ] **BW-15-03-04 跑 Windows 工具和发布包**。**验收** 路径编码和启动烟测通过。
 
 #### BW-15-04 macOS
@@ -1826,6 +1827,7 @@
   - 证据（部分，未勾）：macOS 编译前置已通（afe9973）——`server_runtime::signals` 可移植到 `aarch64-apple-darwin`：等待原语按平台分派（Linux `sigwaitinfo`，macOS `sigwait`——libc crate 只给 BSD 族 `sigwait`，二者同是 POSIX 等待且都可被 `EINTR` 打断，`wait_one` 统一为负错误码）；`signal_number_to_string` 的实时信号臂（`SIGRTMIN`/`SIGRTMAX`，glibc 专属）门控到 Linux，macOS 无实时信号范围；`SIGMAX` 按平台取（Linux `SIGSYS`=31，macOS `SIGUSR2`=31，二者皆最高标准信号，`AtomicU32` 掩码一致）；`SIGNAL_NAMES` 按平台分表（参考表是 Linux 编号；macOS 编号不同：`SIGEMT`=7/`SIGBUS`=10/`SIGSYS`=12/`SIGCHLD`=20/`SIGIO`=23/`SIGINFO`=29/`SIGUSR1`=30/`SIGUSR2`=31，无 `SIGSTKFLT`/`SIGPWR`；服务端用的退出信号 `SIGTERM`/`SIGINT`/`SIGQUIT` 两端同号）。实测 `cargo check -p boundless-server --target aarch64-apple-darwin` 绿（仅剩 resources 预存警告）。**剩余**：macOS 上真机运行（`cargo build`+启动/停止/回收，需 macOS runner）；`--all-targets` 测试编译亦已绿（af0182b）——两处内联 `sigtimedwait`（server_app.rs:980/1211，BSD 无此符号）收进 `consume_pending_signal`（Linux `sigtimedwait` 零超时轮询、非 Linux `sigwait`；信号既已确认 pending 则立即返回），实测 `cargo check -p server-runtime --target aarch64-apple-darwin --all-targets` 无错；mercury 尚有 darwin 缺口（`lib.rs` 对 `event_dispatcher`/`packet_receiver` 的门控被 `interface_table.rs:18`/`request_manager.rs:27`/`network_utils.rs:36` 无条件 import；`endpoint.rs:403` 直用 linux-only `socket::IP_RECVERR`）——服务端最小入口不依赖 mercury 故不拦当前构建，待 Mercury 接入服务端（BW-02）时需先补。
 - [ ] **BW-15-04-02 验证 CPython 与应用资源布局**。**验收** 从应用包可加载。
 - [ ] **BW-15-04-03 跑 macOS 客户端和编辑器**。**验收** 设备状态和固定地图测试通过。
+  - 交叉编译注记（2026-11-26，lane/bw10-terrain 927463e→abbdf75）：本席双入口 `cargo check --target aarch64-apple-darwin` 绿（仅预存 blowfish manifest 警告）；kqueue 后端与 macOS 信号面已由 bw15-platform 59da22c/af9973 入库。真跑需 macOS runner（BW-15-05-01）；行保持开待真机。
 - [ ] **BW-15-04-04 跑 macOS 工具和发布包**。**验收** 干净安装后可执行。
 - [ ] **BW-15-04-05 验证与 Linux 和 Windows 互通**。**验收** 跨端登录及实体同步通过。
 
@@ -3394,6 +3396,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **BW-15-03-01 跑 Windows 服务端全角色**。**验收** 能处理控制事件并关服。
 - [ ] **BW-15-03-02 验证 DLL 和 CPython 发现**。**验收** 已安装布局中模块可导入。
 - [ ] **BW-15-03-03 跑 Windows 客户端与编辑器**。**验收** 固定样本与原版对照。
+  - 交叉编译注记（2026-11-26，lane/bw10-terrain 927463e→abbdf75）：本席双入口（`apps/client`/`apps/editor`）`cargo check --target x86_64-pc-windows-gnu` 绿（仅预存 blowfish manifest 警告）。真跑需 Windows runner（BW-15-05-01）与 mercury Windows 面（server 侧 E0432×16，不拦 client/editor 两入口）；行保持开待真机。
 - [ ] **BW-15-03-04 跑 Windows 工具和发布包**。**验收** 路径编码和启动烟测通过。
 
 #### BW-15-04 macOS
@@ -3404,6 +3407,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 证据（部分，未勾）：macOS 编译前置已通（afe9973）——`server_runtime::signals` 可移植到 `aarch64-apple-darwin`：等待原语按平台分派（Linux `sigwaitinfo`，macOS `sigwait`——libc crate 只给 BSD 族 `sigwait`，二者同是 POSIX 等待且都可被 `EINTR` 打断，`wait_one` 统一为负错误码）；`signal_number_to_string` 的实时信号臂（`SIGRTMIN`/`SIGRTMAX`，glibc 专属）门控到 Linux，macOS 无实时信号范围；`SIGMAX` 按平台取（Linux `SIGSYS`=31，macOS `SIGUSR2`=31，二者皆最高标准信号，`AtomicU32` 掩码一致）；`SIGNAL_NAMES` 按平台分表（参考表是 Linux 编号；macOS 编号不同：`SIGEMT`=7/`SIGBUS`=10/`SIGSYS`=12/`SIGCHLD`=20/`SIGIO`=23/`SIGINFO`=29/`SIGUSR1`=30/`SIGUSR2`=31，无 `SIGSTKFLT`/`SIGPWR`；服务端用的退出信号 `SIGTERM`/`SIGINT`/`SIGQUIT` 两端同号）。实测 `cargo check -p boundless-server --target aarch64-apple-darwin` 绿（仅剩 resources 预存警告）。**剩余**：macOS 上真机运行（`cargo build`+启动/停止/回收，需 macOS runner）；`--all-targets` 测试编译亦已绿（af0182b）——两处内联 `sigtimedwait`（server_app.rs:980/1211，BSD 无此符号）收进 `consume_pending_signal`（Linux `sigtimedwait` 零超时轮询、非 Linux `sigwait`；信号既已确认 pending 则立即返回），实测 `cargo check -p server-runtime --target aarch64-apple-darwin --all-targets` 无错；mercury 尚有 darwin 缺口（`lib.rs` 对 `event_dispatcher`/`packet_receiver` 的门控被 `interface_table.rs:18`/`request_manager.rs:27`/`network_utils.rs:36` 无条件 import；`endpoint.rs:403` 直用 linux-only `socket::IP_RECVERR`）——服务端最小入口不依赖 mercury 故不拦当前构建，待 Mercury 接入服务端（BW-02）时需先补。
 - [ ] **BW-15-04-02 验证 CPython 与应用资源布局**。**验收** 从应用包可加载。
 - [ ] **BW-15-04-03 跑 macOS 客户端和编辑器**。**验收** 设备状态和固定地图测试通过。
+  - 交叉编译注记（2026-11-26，lane/bw10-terrain 927463e→abbdf75）：本席双入口 `cargo check --target aarch64-apple-darwin` 绿（仅预存 blowfish manifest 警告）；kqueue 后端与 macOS 信号面已由 bw15-platform 59da22c/af9973 入库。真跑需 macOS runner（BW-15-05-01）；行保持开待真机。
 - [ ] **BW-15-04-04 跑 macOS 工具和发布包**。**验收** 干净安装后可执行。
 - [ ] **BW-15-04-05 验证与 Linux 和 Windows 互通**。**验收** 跨端登录及实体同步通过。
 
@@ -4933,6 +4937,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **BW-15-03-01 跑 Windows 服务端全角色**。**验收** 能处理控制事件并关服。
 - [ ] **BW-15-03-02 验证 DLL 和 CPython 发现**。**验收** 已安装布局中模块可导入。
 - [ ] **BW-15-03-03 跑 Windows 客户端与编辑器**。**验收** 固定样本与原版对照。
+  - 交叉编译注记（2026-11-26，lane/bw10-terrain 927463e→abbdf75）：本席双入口（`apps/client`/`apps/editor`）`cargo check --target x86_64-pc-windows-gnu` 绿（仅预存 blowfish manifest 警告）。真跑需 Windows runner（BW-15-05-01）与 mercury Windows 面（server 侧 E0432×16，不拦 client/editor 两入口）；行保持开待真机。
 - [ ] **BW-15-03-04 跑 Windows 工具和发布包**。**验收** 路径编码和启动烟测通过。
 
 #### BW-15-04 macOS
@@ -4943,6 +4948,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 证据（部分，未勾）：macOS 编译前置已通（afe9973）——`server_runtime::signals` 可移植到 `aarch64-apple-darwin`：等待原语按平台分派（Linux `sigwaitinfo`，macOS `sigwait`——libc crate 只给 BSD 族 `sigwait`，二者同是 POSIX 等待且都可被 `EINTR` 打断，`wait_one` 统一为负错误码）；`signal_number_to_string` 的实时信号臂（`SIGRTMIN`/`SIGRTMAX`，glibc 专属）门控到 Linux，macOS 无实时信号范围；`SIGMAX` 按平台取（Linux `SIGSYS`=31，macOS `SIGUSR2`=31，二者皆最高标准信号，`AtomicU32` 掩码一致）；`SIGNAL_NAMES` 按平台分表（参考表是 Linux 编号；macOS 编号不同：`SIGEMT`=7/`SIGBUS`=10/`SIGSYS`=12/`SIGCHLD`=20/`SIGIO`=23/`SIGINFO`=29/`SIGUSR1`=30/`SIGUSR2`=31，无 `SIGSTKFLT`/`SIGPWR`；服务端用的退出信号 `SIGTERM`/`SIGINT`/`SIGQUIT` 两端同号）。实测 `cargo check -p boundless-server --target aarch64-apple-darwin` 绿（仅剩 resources 预存警告）。**剩余**：macOS 上真机运行（`cargo build`+启动/停止/回收，需 macOS runner）；`--all-targets` 测试编译亦已绿（af0182b）——两处内联 `sigtimedwait`（server_app.rs:980/1211，BSD 无此符号）收进 `consume_pending_signal`（Linux `sigtimedwait` 零超时轮询、非 Linux `sigwait`；信号既已确认 pending 则立即返回），实测 `cargo check -p server-runtime --target aarch64-apple-darwin --all-targets` 无错；mercury 尚有 darwin 缺口（`lib.rs` 对 `event_dispatcher`/`packet_receiver` 的门控被 `interface_table.rs:18`/`request_manager.rs:27`/`network_utils.rs:36` 无条件 import；`endpoint.rs:403` 直用 linux-only `socket::IP_RECVERR`）——服务端最小入口不依赖 mercury 故不拦当前构建，待 Mercury 接入服务端（BW-02）时需先补。
 - [ ] **BW-15-04-02 验证 CPython 与应用资源布局**。**验收** 从应用包可加载。
 - [ ] **BW-15-04-03 跑 macOS 客户端和编辑器**。**验收** 设备状态和固定地图测试通过。
+  - 交叉编译注记（2026-11-26，lane/bw10-terrain 927463e→abbdf75）：本席双入口 `cargo check --target aarch64-apple-darwin` 绿（仅预存 blowfish manifest 警告）；kqueue 后端与 macOS 信号面已由 bw15-platform 59da22c/af9973 入库。真跑需 macOS runner（BW-15-05-01）；行保持开待真机。
 - [ ] **BW-15-04-04 跑 macOS 工具和发布包**。**验收** 干净安装后可执行。
 - [ ] **BW-15-04-05 验证与 Linux 和 Windows 互通**。**验收** 跨端登录及实体同步通过。
 
@@ -6472,6 +6478,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **BW-15-03-01 跑 Windows 服务端全角色**。**验收** 能处理控制事件并关服。
 - [ ] **BW-15-03-02 验证 DLL 和 CPython 发现**。**验收** 已安装布局中模块可导入。
 - [ ] **BW-15-03-03 跑 Windows 客户端与编辑器**。**验收** 固定样本与原版对照。
+  - 交叉编译注记（2026-11-26，lane/bw10-terrain 927463e→abbdf75）：本席双入口（`apps/client`/`apps/editor`）`cargo check --target x86_64-pc-windows-gnu` 绿（仅预存 blowfish manifest 警告）。真跑需 Windows runner（BW-15-05-01）与 mercury Windows 面（server 侧 E0432×16，不拦 client/editor 两入口）；行保持开待真机。
 - [ ] **BW-15-03-04 跑 Windows 工具和发布包**。**验收** 路径编码和启动烟测通过。
 
 #### BW-15-04 macOS
@@ -6482,6 +6489,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 证据（部分，未勾）：macOS 编译前置已通（afe9973）——`server_runtime::signals` 可移植到 `aarch64-apple-darwin`：等待原语按平台分派（Linux `sigwaitinfo`，macOS `sigwait`——libc crate 只给 BSD 族 `sigwait`，二者同是 POSIX 等待且都可被 `EINTR` 打断，`wait_one` 统一为负错误码）；`signal_number_to_string` 的实时信号臂（`SIGRTMIN`/`SIGRTMAX`，glibc 专属）门控到 Linux，macOS 无实时信号范围；`SIGMAX` 按平台取（Linux `SIGSYS`=31，macOS `SIGUSR2`=31，二者皆最高标准信号，`AtomicU32` 掩码一致）；`SIGNAL_NAMES` 按平台分表（参考表是 Linux 编号；macOS 编号不同：`SIGEMT`=7/`SIGBUS`=10/`SIGSYS`=12/`SIGCHLD`=20/`SIGIO`=23/`SIGINFO`=29/`SIGUSR1`=30/`SIGUSR2`=31，无 `SIGSTKFLT`/`SIGPWR`；服务端用的退出信号 `SIGTERM`/`SIGINT`/`SIGQUIT` 两端同号）。实测 `cargo check -p boundless-server --target aarch64-apple-darwin` 绿（仅剩 resources 预存警告）。**剩余**：macOS 上真机运行（`cargo build`+启动/停止/回收，需 macOS runner）；`--all-targets` 测试编译亦已绿（af0182b）——两处内联 `sigtimedwait`（server_app.rs:980/1211，BSD 无此符号）收进 `consume_pending_signal`（Linux `sigtimedwait` 零超时轮询、非 Linux `sigwait`；信号既已确认 pending 则立即返回），实测 `cargo check -p server-runtime --target aarch64-apple-darwin --all-targets` 无错；mercury 尚有 darwin 缺口（`lib.rs` 对 `event_dispatcher`/`packet_receiver` 的门控被 `interface_table.rs:18`/`request_manager.rs:27`/`network_utils.rs:36` 无条件 import；`endpoint.rs:403` 直用 linux-only `socket::IP_RECVERR`）——服务端最小入口不依赖 mercury 故不拦当前构建，待 Mercury 接入服务端（BW-02）时需先补。
 - [ ] **BW-15-04-02 验证 CPython 与应用资源布局**。**验收** 从应用包可加载。
 - [ ] **BW-15-04-03 跑 macOS 客户端和编辑器**。**验收** 设备状态和固定地图测试通过。
+  - 交叉编译注记（2026-11-26，lane/bw10-terrain 927463e→abbdf75）：本席双入口 `cargo check --target aarch64-apple-darwin` 绿（仅预存 blowfish manifest 警告）；kqueue 后端与 macOS 信号面已由 bw15-platform 59da22c/af9973 入库。真跑需 macOS runner（BW-15-05-01）；行保持开待真机。
 - [ ] **BW-15-04-04 跑 macOS 工具和发布包**。**验收** 干净安装后可执行。
 - [ ] **BW-15-04-05 验证与 Linux 和 Windows 互通**。**验收** 跨端登录及实体同步通过。
 
@@ -8050,6 +8058,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **BW-15-03-01 跑 Windows 服务端全角色**。**验收** 能处理控制事件并关服。
 - [ ] **BW-15-03-02 验证 DLL 和 CPython 发现**。**验收** 已安装布局中模块可导入。
 - [ ] **BW-15-03-03 跑 Windows 客户端与编辑器**。**验收** 固定样本与原版对照。
+  - 交叉编译注记（2026-11-26，lane/bw10-terrain 927463e→abbdf75）：本席双入口（`apps/client`/`apps/editor`）`cargo check --target x86_64-pc-windows-gnu` 绿（仅预存 blowfish manifest 警告）。真跑需 Windows runner（BW-15-05-01）与 mercury Windows 面（server 侧 E0432×16，不拦 client/editor 两入口）；行保持开待真机。
 - [ ] **BW-15-03-04 跑 Windows 工具和发布包**。**验收** 路径编码和启动烟测通过。
 
 #### BW-15-04 macOS
@@ -8060,6 +8069,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 证据（部分，未勾）：macOS 编译前置已通（afe9973）——`server_runtime::signals` 可移植到 `aarch64-apple-darwin`：等待原语按平台分派（Linux `sigwaitinfo`，macOS `sigwait`——libc crate 只给 BSD 族 `sigwait`，二者同是 POSIX 等待且都可被 `EINTR` 打断，`wait_one` 统一为负错误码）；`signal_number_to_string` 的实时信号臂（`SIGRTMIN`/`SIGRTMAX`，glibc 专属）门控到 Linux，macOS 无实时信号范围；`SIGMAX` 按平台取（Linux `SIGSYS`=31，macOS `SIGUSR2`=31，二者皆最高标准信号，`AtomicU32` 掩码一致）；`SIGNAL_NAMES` 按平台分表（参考表是 Linux 编号；macOS 编号不同：`SIGEMT`=7/`SIGBUS`=10/`SIGSYS`=12/`SIGCHLD`=20/`SIGIO`=23/`SIGINFO`=29/`SIGUSR1`=30/`SIGUSR2`=31，无 `SIGSTKFLT`/`SIGPWR`；服务端用的退出信号 `SIGTERM`/`SIGINT`/`SIGQUIT` 两端同号）。实测 `cargo check -p boundless-server --target aarch64-apple-darwin` 绿（仅剩 resources 预存警告）。**剩余**：macOS 上真机运行（`cargo build`+启动/停止/回收，需 macOS runner）；`--all-targets` 测试编译亦已绿（af0182b）——两处内联 `sigtimedwait`（server_app.rs:980/1211，BSD 无此符号）收进 `consume_pending_signal`（Linux `sigtimedwait` 零超时轮询、非 Linux `sigwait`；信号既已确认 pending 则立即返回），实测 `cargo check -p server-runtime --target aarch64-apple-darwin --all-targets` 无错；mercury 尚有 darwin 缺口（`lib.rs` 对 `event_dispatcher`/`packet_receiver` 的门控被 `interface_table.rs:18`/`request_manager.rs:27`/`network_utils.rs:36` 无条件 import；`endpoint.rs:403` 直用 linux-only `socket::IP_RECVERR`）——服务端最小入口不依赖 mercury 故不拦当前构建，待 Mercury 接入服务端（BW-02）时需先补。
 - [ ] **BW-15-04-02 验证 CPython 与应用资源布局**。**验收** 从应用包可加载。
 - [ ] **BW-15-04-03 跑 macOS 客户端和编辑器**。**验收** 设备状态和固定地图测试通过。
+  - 交叉编译注记（2026-11-26，lane/bw10-terrain 927463e→abbdf75）：本席双入口 `cargo check --target aarch64-apple-darwin` 绿（仅预存 blowfish manifest 警告）；kqueue 后端与 macOS 信号面已由 bw15-platform 59da22c/af9973 入库。真跑需 macOS runner（BW-15-05-01）；行保持开待真机。
 - [ ] **BW-15-04-04 跑 macOS 工具和发布包**。**验收** 干净安装后可执行。
 - [ ] **BW-15-04-05 验证与 Linux 和 Windows 互通**。**验收** 跨端登录及实体同步通过。
 
@@ -9589,6 +9599,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **BW-15-03-01 跑 Windows 服务端全角色**。**验收** 能处理控制事件并关服。
 - [ ] **BW-15-03-02 验证 DLL 和 CPython 发现**。**验收** 已安装布局中模块可导入。
 - [ ] **BW-15-03-03 跑 Windows 客户端与编辑器**。**验收** 固定样本与原版对照。
+  - 交叉编译注记（2026-11-26，lane/bw10-terrain 927463e→abbdf75）：本席双入口（`apps/client`/`apps/editor`）`cargo check --target x86_64-pc-windows-gnu` 绿（仅预存 blowfish manifest 警告）。真跑需 Windows runner（BW-15-05-01）与 mercury Windows 面（server 侧 E0432×16，不拦 client/editor 两入口）；行保持开待真机。
 - [ ] **BW-15-03-04 跑 Windows 工具和发布包**。**验收** 路径编码和启动烟测通过。
 
 #### BW-15-04 macOS
@@ -9599,6 +9610,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 证据（部分，未勾）：macOS 编译前置已通（afe9973）——`server_runtime::signals` 可移植到 `aarch64-apple-darwin`：等待原语按平台分派（Linux `sigwaitinfo`，macOS `sigwait`——libc crate 只给 BSD 族 `sigwait`，二者同是 POSIX 等待且都可被 `EINTR` 打断，`wait_one` 统一为负错误码）；`signal_number_to_string` 的实时信号臂（`SIGRTMIN`/`SIGRTMAX`，glibc 专属）门控到 Linux，macOS 无实时信号范围；`SIGMAX` 按平台取（Linux `SIGSYS`=31，macOS `SIGUSR2`=31，二者皆最高标准信号，`AtomicU32` 掩码一致）；`SIGNAL_NAMES` 按平台分表（参考表是 Linux 编号；macOS 编号不同：`SIGEMT`=7/`SIGBUS`=10/`SIGSYS`=12/`SIGCHLD`=20/`SIGIO`=23/`SIGINFO`=29/`SIGUSR1`=30/`SIGUSR2`=31，无 `SIGSTKFLT`/`SIGPWR`；服务端用的退出信号 `SIGTERM`/`SIGINT`/`SIGQUIT` 两端同号）。实测 `cargo check -p boundless-server --target aarch64-apple-darwin` 绿（仅剩 resources 预存警告）。**剩余**：macOS 上真机运行（`cargo build`+启动/停止/回收，需 macOS runner）；`--all-targets` 测试编译亦已绿（af0182b）——两处内联 `sigtimedwait`（server_app.rs:980/1211，BSD 无此符号）收进 `consume_pending_signal`（Linux `sigtimedwait` 零超时轮询、非 Linux `sigwait`；信号既已确认 pending 则立即返回），实测 `cargo check -p server-runtime --target aarch64-apple-darwin --all-targets` 无错；mercury 尚有 darwin 缺口（`lib.rs` 对 `event_dispatcher`/`packet_receiver` 的门控被 `interface_table.rs:18`/`request_manager.rs:27`/`network_utils.rs:36` 无条件 import；`endpoint.rs:403` 直用 linux-only `socket::IP_RECVERR`）——服务端最小入口不依赖 mercury 故不拦当前构建，待 Mercury 接入服务端（BW-02）时需先补。
 - [ ] **BW-15-04-02 验证 CPython 与应用资源布局**。**验收** 从应用包可加载。
 - [ ] **BW-15-04-03 跑 macOS 客户端和编辑器**。**验收** 设备状态和固定地图测试通过。
+  - 交叉编译注记（2026-11-26，lane/bw10-terrain 927463e→abbdf75）：本席双入口 `cargo check --target aarch64-apple-darwin` 绿（仅预存 blowfish manifest 警告）；kqueue 后端与 macOS 信号面已由 bw15-platform 59da22c/af9973 入库。真跑需 macOS runner（BW-15-05-01）；行保持开待真机。
 - [ ] **BW-15-04-04 跑 macOS 工具和发布包**。**验收** 干净安装后可执行。
 - [ ] **BW-15-04-05 验证与 Linux 和 Windows 互通**。**验收** 跨端登录及实体同步通过。
 
