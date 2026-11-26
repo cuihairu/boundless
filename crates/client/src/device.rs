@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::render::FrameResult;
-use crate::render::Scene;
+use crate::render::scene::TestScene;
 use crate::render::software::SoftwareDevice;
 
 /// Lifetime counters for every device handle ever created.
@@ -264,7 +264,7 @@ impl Device {
     }
 
     /// Present one frame of the scene (the reference's `device()->Present`).
-    pub fn present(&mut self, scene: &impl Scene) -> FrameResult {
+    pub fn present(&mut self, scene: &TestScene) -> FrameResult {
         self.backend.present(scene)
     }
 
@@ -347,7 +347,7 @@ impl DeviceLifecycle {
     }
 
     /// Present one frame of the scene, if a device is live.
-    pub fn present(&mut self, scene: &impl Scene) -> Option<FrameResult> {
+    pub fn present(&mut self, scene: &TestScene) -> Option<FrameResult> {
         self.device.as_mut().map(|d| d.present(scene))
     }
 
@@ -377,7 +377,6 @@ impl DeviceLifecycle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::scene::TestScene;
 
     fn default_config() -> DeviceConfig {
         DeviceConfig::default()

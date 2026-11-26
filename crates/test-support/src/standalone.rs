@@ -66,8 +66,8 @@ mod tests {
     #[test]
     fn application_packages_are_discovered() {
         // `bots` is the load-generation process (BW-17-01/BW-17-03-05):
-        // the standalone face of the load crate's runtime. The client and
-        // editor entries (BW-15-02-03) join the application set too.
+        // the standalone face of the load crate's runtime. The BW-15-02-03
+        // legs join it: the Linux client and editor entries.
         let packages = application_packages(&root());
         assert_eq!(
             packages,

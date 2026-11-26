@@ -598,8 +598,11 @@ mod tests {
             "scene",
             "waypoint",
             "server-runtime",
+            "client",
             "boundless-server",
             "bots",
+            "boundless-client",
+            "boundless-editor",
             "test-support",
         ] {
             assert!(layer_of(name).is_some(), "{name} has no layer");

@@ -9,18 +9,8 @@
 //! that needs no GPU, so the whole acceptance can run headless.
 
 pub mod framebuffer;
-pub mod map_scene;
 pub mod scene;
 pub mod software;
-
-/// Something the device can present: it paints one frame into the back
-/// buffer. The reference's scene graph sits behind `Moo::rc().device()`
-/// drawing into the same back buffer; the port keeps the seam so the test
-/// scene and the fixed-map scene drive the same device face.
-pub trait Scene {
-    /// Draw this frame into the back buffer.
-    fn draw(&self, fb: &mut framebuffer::Framebuffer);
-}
 
 /// The result of presenting one frame.
 ///

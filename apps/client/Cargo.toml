@@ -1,6 +1,6 @@
 [package]
 name = "boundless-client"
-description = "BW-15-02-03 client entry point: display the fixed map"
+description = "BW-15-02-03 Linux client leg: display the fixed map headless"
 edition.workspace = true
 publish = false
 version.workspace = true
@@ -8,13 +8,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-# The device/scene faces (BW-11-01) and the screenshot channel (BW-11-04-07).
+# The client application crate carries the fixed-map display face
+# (map_view), the software device and the screenshot writer.
 client = { workspace = true }
-# The fixed map is a chunk space (BW-10-01): the settings/grid mapping and
-# the chunk set come from the chunk crate's load path.
-chunk = { workspace = true }
-foundation = { workspace = true }
-resources = { workspace = true }
 
 [[bin]]
 name = "boundless-client"

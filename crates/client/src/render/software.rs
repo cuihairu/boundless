@@ -8,8 +8,8 @@
 //! can be exercised on a machine with no GPU and no display server.
 
 use super::FrameResult;
-use super::Scene;
 use super::framebuffer::Framebuffer;
+use super::scene::TestScene;
 
 /// A device that renders into an in-memory back buffer.
 #[derive(Debug)]
@@ -43,8 +43,22 @@ impl SoftwareDevice {
     }
 
     /// Present one frame of the scene.
-    pub fn present(&mut self, scene: &impl Scene) -> FrameResult {
+    pub fn present(&mut self, scene: &TestScene) -> FrameResult {
         scene.draw(&mut self.framebuffer);
+        self.frames += 1;
+        self.last_checksum = self.framebuffer.checksum();
+        FrameResult {
+            frame_index: self.frames,
+            checksum: self.last_checksum,
+        }
+    }
+
+    /// Present one frame drawn by an arbitrary scene — the same
+    /// frame-count/checksum bookkeeping as [`Self::present`], with the
+    /// draw delegated to the caller (the fixed-map display face,
+    /// `map_view`, presents this way).
+    pub fn present_with(&mut self, draw: impl FnOnce(&mut Framebuffer)) -> FrameResult {
+        draw(&mut self.framebuffer);
         self.frames += 1;
         self.last_checksum = self.framebuffer.checksum();
         FrameResult {
