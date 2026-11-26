@@ -2885,10 +2885,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
-- [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。
-- [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
-- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
-- [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
+- [x] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。（opt-09-db-baseline 席 `da4e411`，lane/opt-09-db-baseline，main=`e59ca31`：crates/db-postgres/tests/store_baseline.rs 6 测=512 行确定性语料同一数据集落 MySQL（DDL 对照参考 db_storage_mysql 布局+值类型逐 kind 对）与 PostgreSQL（JSONB 嵌套列 codec 往返）双后端，schema/确定性/嵌套列各单测；TSV docs/review/fixtures/store-baseline/store-baseline.tsv 22 行，证据页 docs/review/opt-09-01-01-store-baseline.md；workspace 新增 `mysql` 依赖（minimal-rust）；本席 main 复测 6 绿。⚠️ 与 bw14-script-host `7024fb1` 平行交付 FLAG 待主席择一）
+- [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。（opt-09-db-baseline 席 `da9a135`，lane/opt-09-db-baseline，main=`04f5d37`：crates/db-postgres/tests/store_pool_candidates.rs 3 测=连接池与预编译语句候选对照（参考 `numConnections_` 默认 5 长连会话+每线程一连接+启动期预编译实体 SQL 模板两形），各后端延迟与吞吐逐形报告且回读恒等；TSV docs/review/fixtures/store-pool/pool-candidates.tsv 48 行，证据页 docs/review/opt-09-01-02-store-pool.md；本席 main 复测 3 绿）
+- [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。（opt-09-db-baseline 席 `cb65282`，lane/opt-09-db-baseline，main=`8b1fb8a`：crates/db-postgres/tests/store_commit_candidates.rs 4 测=实体写缓冲进 Transaction 按归档周期一 `COMMIT`（参考 sqlite_database.cpp 131-177+db_config 5s 默认）与显式 WRITE_EXPLICIT 两臂提交时长+归档整合恢复时长报告，落库回读逐字段等；TSV docs/review/fixtures/store-commit/commit-candidates.tsv 16 行，证据页 docs/review/opt-09-01-03-store-commit.md；本席 main 复测 4 绿）
+- [x] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。（opt-09-db-baseline 席 `7663701`，lane/opt-09-db-baseline，main=`3a7b9d0`：crates/db-postgres/tests/store_recovery.rs 3 测=参考 MySqlBackgroundTask::doBackgroundTask 契约复跑——可重试失败恰一次重试（attempts 2/on_retry 1）、回滚批零幸存行、事务外断连恰一次自动恢复+事务内手动重连；恢复后数据一致计数钉死；TSV docs/review/fixtures/store-recovery/recovery.tsv 21 行，证据页 docs/review/opt-09-01-04-store-recovery.md；本席 main 复测 3 绿）
 
 ### OPT-10-01 地图加载和查询基线
 
@@ -4465,10 +4465,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
-- [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。
-- [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
-- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
-- [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
+- [x] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。（opt-09-db-baseline 席 `da4e411`，lane/opt-09-db-baseline，main=`e59ca31`：crates/db-postgres/tests/store_baseline.rs 6 测=512 行确定性语料同一数据集落 MySQL（DDL 对照参考 db_storage_mysql 布局+值类型逐 kind 对）与 PostgreSQL（JSONB 嵌套列 codec 往返）双后端，schema/确定性/嵌套列各单测；TSV docs/review/fixtures/store-baseline/store-baseline.tsv 22 行，证据页 docs/review/opt-09-01-01-store-baseline.md；workspace 新增 `mysql` 依赖（minimal-rust）；本席 main 复测 6 绿。⚠️ 与 bw14-script-host `7024fb1` 平行交付 FLAG 待主席择一）
+- [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。（opt-09-db-baseline 席 `da9a135`，lane/opt-09-db-baseline，main=`04f5d37`：crates/db-postgres/tests/store_pool_candidates.rs 3 测=连接池与预编译语句候选对照（参考 `numConnections_` 默认 5 长连会话+每线程一连接+启动期预编译实体 SQL 模板两形），各后端延迟与吞吐逐形报告且回读恒等；TSV docs/review/fixtures/store-pool/pool-candidates.tsv 48 行，证据页 docs/review/opt-09-01-02-store-pool.md；本席 main 复测 3 绿）
+- [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。（opt-09-db-baseline 席 `cb65282`，lane/opt-09-db-baseline，main=`8b1fb8a`：crates/db-postgres/tests/store_commit_candidates.rs 4 测=实体写缓冲进 Transaction 按归档周期一 `COMMIT`（参考 sqlite_database.cpp 131-177+db_config 5s 默认）与显式 WRITE_EXPLICIT 两臂提交时长+归档整合恢复时长报告，落库回读逐字段等；TSV docs/review/fixtures/store-commit/commit-candidates.tsv 16 行，证据页 docs/review/opt-09-01-03-store-commit.md；本席 main 复测 4 绿）
+- [x] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。（opt-09-db-baseline 席 `7663701`，lane/opt-09-db-baseline，main=`3a7b9d0`：crates/db-postgres/tests/store_recovery.rs 3 测=参考 MySqlBackgroundTask::doBackgroundTask 契约复跑——可重试失败恰一次重试（attempts 2/on_retry 1）、回滚批零幸存行、事务外断连恰一次自动恢复+事务内手动重连；恢复后数据一致计数钉死；TSV docs/review/fixtures/store-recovery/recovery.tsv 21 行，证据页 docs/review/opt-09-01-04-store-recovery.md；本席 main 复测 3 绿）
 
 ### OPT-10-01 地图加载和查询基线
 
@@ -6006,10 +6006,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
-- [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。
-- [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
-- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
-- [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
+- [x] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。（opt-09-db-baseline 席 `da4e411`，lane/opt-09-db-baseline，main=`e59ca31`：crates/db-postgres/tests/store_baseline.rs 6 测=512 行确定性语料同一数据集落 MySQL（DDL 对照参考 db_storage_mysql 布局+值类型逐 kind 对）与 PostgreSQL（JSONB 嵌套列 codec 往返）双后端，schema/确定性/嵌套列各单测；TSV docs/review/fixtures/store-baseline/store-baseline.tsv 22 行，证据页 docs/review/opt-09-01-01-store-baseline.md；workspace 新增 `mysql` 依赖（minimal-rust）；本席 main 复测 6 绿。⚠️ 与 bw14-script-host `7024fb1` 平行交付 FLAG 待主席择一）
+- [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。（opt-09-db-baseline 席 `da9a135`，lane/opt-09-db-baseline，main=`04f5d37`：crates/db-postgres/tests/store_pool_candidates.rs 3 测=连接池与预编译语句候选对照（参考 `numConnections_` 默认 5 长连会话+每线程一连接+启动期预编译实体 SQL 模板两形），各后端延迟与吞吐逐形报告且回读恒等；TSV docs/review/fixtures/store-pool/pool-candidates.tsv 48 行，证据页 docs/review/opt-09-01-02-store-pool.md；本席 main 复测 3 绿）
+- [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。（opt-09-db-baseline 席 `cb65282`，lane/opt-09-db-baseline，main=`8b1fb8a`：crates/db-postgres/tests/store_commit_candidates.rs 4 测=实体写缓冲进 Transaction 按归档周期一 `COMMIT`（参考 sqlite_database.cpp 131-177+db_config 5s 默认）与显式 WRITE_EXPLICIT 两臂提交时长+归档整合恢复时长报告，落库回读逐字段等；TSV docs/review/fixtures/store-commit/commit-candidates.tsv 16 行，证据页 docs/review/opt-09-01-03-store-commit.md；本席 main 复测 4 绿）
+- [x] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。（opt-09-db-baseline 席 `7663701`，lane/opt-09-db-baseline，main=`3a7b9d0`：crates/db-postgres/tests/store_recovery.rs 3 测=参考 MySqlBackgroundTask::doBackgroundTask 契约复跑——可重试失败恰一次重试（attempts 2/on_retry 1）、回滚批零幸存行、事务外断连恰一次自动恢复+事务内手动重连；恢复后数据一致计数钉死；TSV docs/review/fixtures/store-recovery/recovery.tsv 21 行，证据页 docs/review/opt-09-01-04-store-recovery.md；本席 main 复测 3 绿）
 
 ### OPT-10-01 地图加载和查询基线
 
@@ -7547,10 +7547,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
-- [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。
-- [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
-- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
-- [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
+- [x] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。（opt-09-db-baseline 席 `da4e411`，lane/opt-09-db-baseline，main=`e59ca31`：crates/db-postgres/tests/store_baseline.rs 6 测=512 行确定性语料同一数据集落 MySQL（DDL 对照参考 db_storage_mysql 布局+值类型逐 kind 对）与 PostgreSQL（JSONB 嵌套列 codec 往返）双后端，schema/确定性/嵌套列各单测；TSV docs/review/fixtures/store-baseline/store-baseline.tsv 22 行，证据页 docs/review/opt-09-01-01-store-baseline.md；workspace 新增 `mysql` 依赖（minimal-rust）；本席 main 复测 6 绿。⚠️ 与 bw14-script-host `7024fb1` 平行交付 FLAG 待主席择一）
+- [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。（opt-09-db-baseline 席 `da9a135`，lane/opt-09-db-baseline，main=`04f5d37`：crates/db-postgres/tests/store_pool_candidates.rs 3 测=连接池与预编译语句候选对照（参考 `numConnections_` 默认 5 长连会话+每线程一连接+启动期预编译实体 SQL 模板两形），各后端延迟与吞吐逐形报告且回读恒等；TSV docs/review/fixtures/store-pool/pool-candidates.tsv 48 行，证据页 docs/review/opt-09-01-02-store-pool.md；本席 main 复测 3 绿）
+- [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。（opt-09-db-baseline 席 `cb65282`，lane/opt-09-db-baseline，main=`8b1fb8a`：crates/db-postgres/tests/store_commit_candidates.rs 4 测=实体写缓冲进 Transaction 按归档周期一 `COMMIT`（参考 sqlite_database.cpp 131-177+db_config 5s 默认）与显式 WRITE_EXPLICIT 两臂提交时长+归档整合恢复时长报告，落库回读逐字段等；TSV docs/review/fixtures/store-commit/commit-candidates.tsv 16 行，证据页 docs/review/opt-09-01-03-store-commit.md；本席 main 复测 4 绿）
+- [x] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。（opt-09-db-baseline 席 `7663701`，lane/opt-09-db-baseline，main=`3a7b9d0`：crates/db-postgres/tests/store_recovery.rs 3 测=参考 MySqlBackgroundTask::doBackgroundTask 契约复跑——可重试失败恰一次重试（attempts 2/on_retry 1）、回滚批零幸存行、事务外断连恰一次自动恢复+事务内手动重连；恢复后数据一致计数钉死；TSV docs/review/fixtures/store-recovery/recovery.tsv 21 行，证据页 docs/review/opt-09-01-04-store-recovery.md；本席 main 复测 3 绿）
 
 ### OPT-10-01 地图加载和查询基线
 
@@ -9127,10 +9127,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
-- [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。
-- [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
-- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
-- [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
+- [x] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。（opt-09-db-baseline 席 `da4e411`，lane/opt-09-db-baseline，main=`e59ca31`：crates/db-postgres/tests/store_baseline.rs 6 测=512 行确定性语料同一数据集落 MySQL（DDL 对照参考 db_storage_mysql 布局+值类型逐 kind 对）与 PostgreSQL（JSONB 嵌套列 codec 往返）双后端，schema/确定性/嵌套列各单测；TSV docs/review/fixtures/store-baseline/store-baseline.tsv 22 行，证据页 docs/review/opt-09-01-01-store-baseline.md；workspace 新增 `mysql` 依赖（minimal-rust）；本席 main 复测 6 绿。⚠️ 与 bw14-script-host `7024fb1` 平行交付 FLAG 待主席择一）
+- [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。（opt-09-db-baseline 席 `da9a135`，lane/opt-09-db-baseline，main=`04f5d37`：crates/db-postgres/tests/store_pool_candidates.rs 3 测=连接池与预编译语句候选对照（参考 `numConnections_` 默认 5 长连会话+每线程一连接+启动期预编译实体 SQL 模板两形），各后端延迟与吞吐逐形报告且回读恒等；TSV docs/review/fixtures/store-pool/pool-candidates.tsv 48 行，证据页 docs/review/opt-09-01-02-store-pool.md；本席 main 复测 3 绿）
+- [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。（opt-09-db-baseline 席 `cb65282`，lane/opt-09-db-baseline，main=`8b1fb8a`：crates/db-postgres/tests/store_commit_candidates.rs 4 测=实体写缓冲进 Transaction 按归档周期一 `COMMIT`（参考 sqlite_database.cpp 131-177+db_config 5s 默认）与显式 WRITE_EXPLICIT 两臂提交时长+归档整合恢复时长报告，落库回读逐字段等；TSV docs/review/fixtures/store-commit/commit-candidates.tsv 16 行，证据页 docs/review/opt-09-01-03-store-commit.md；本席 main 复测 4 绿）
+- [x] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。（opt-09-db-baseline 席 `7663701`，lane/opt-09-db-baseline，main=`3a7b9d0`：crates/db-postgres/tests/store_recovery.rs 3 测=参考 MySqlBackgroundTask::doBackgroundTask 契约复跑——可重试失败恰一次重试（attempts 2/on_retry 1）、回滚批零幸存行、事务外断连恰一次自动恢复+事务内手动重连；恢复后数据一致计数钉死；TSV docs/review/fixtures/store-recovery/recovery.tsv 21 行，证据页 docs/review/opt-09-01-04-store-recovery.md；本席 main 复测 3 绿）
 
 ### OPT-10-01 地图加载和查询基线
 
@@ -10668,10 +10668,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
-- [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。
-- [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
-- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
-- [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
+- [x] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。（opt-09-db-baseline 席 `da4e411`，lane/opt-09-db-baseline，main=`e59ca31`：crates/db-postgres/tests/store_baseline.rs 6 测=512 行确定性语料同一数据集落 MySQL（DDL 对照参考 db_storage_mysql 布局+值类型逐 kind 对）与 PostgreSQL（JSONB 嵌套列 codec 往返）双后端，schema/确定性/嵌套列各单测；TSV docs/review/fixtures/store-baseline/store-baseline.tsv 22 行，证据页 docs/review/opt-09-01-01-store-baseline.md；workspace 新增 `mysql` 依赖（minimal-rust）；本席 main 复测 6 绿。⚠️ 与 bw14-script-host `7024fb1` 平行交付 FLAG 待主席择一）
+- [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。（opt-09-db-baseline 席 `da9a135`，lane/opt-09-db-baseline，main=`04f5d37`：crates/db-postgres/tests/store_pool_candidates.rs 3 测=连接池与预编译语句候选对照（参考 `numConnections_` 默认 5 长连会话+每线程一连接+启动期预编译实体 SQL 模板两形），各后端延迟与吞吐逐形报告且回读恒等；TSV docs/review/fixtures/store-pool/pool-candidates.tsv 48 行，证据页 docs/review/opt-09-01-02-store-pool.md；本席 main 复测 3 绿）
+- [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。（opt-09-db-baseline 席 `cb65282`，lane/opt-09-db-baseline，main=`8b1fb8a`：crates/db-postgres/tests/store_commit_candidates.rs 4 测=实体写缓冲进 Transaction 按归档周期一 `COMMIT`（参考 sqlite_database.cpp 131-177+db_config 5s 默认）与显式 WRITE_EXPLICIT 两臂提交时长+归档整合恢复时长报告，落库回读逐字段等；TSV docs/review/fixtures/store-commit/commit-candidates.tsv 16 行，证据页 docs/review/opt-09-01-03-store-commit.md；本席 main 复测 4 绿）
+- [x] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。（opt-09-db-baseline 席 `7663701`，lane/opt-09-db-baseline，main=`3a7b9d0`：crates/db-postgres/tests/store_recovery.rs 3 测=参考 MySqlBackgroundTask::doBackgroundTask 契约复跑——可重试失败恰一次重试（attempts 2/on_retry 1）、回滚批零幸存行、事务外断连恰一次自动恢复+事务内手动重连；恢复后数据一致计数钉死；TSV docs/review/fixtures/store-recovery/recovery.tsv 21 行，证据页 docs/review/opt-09-01-04-store-recovery.md；本席 main 复测 3 绿）
 
 ### OPT-10-01 地图加载和查询基线
 
