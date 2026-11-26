@@ -1,0 +1,6 @@
+spawn_us	262
+wait_us	7857
+reap_poll_us	1015613
+signal_wait_us	247
+reaped_many	16
+host	linux-x86_64

@@ -65,11 +65,14 @@ client = { workspace = true }
 
 # OPT-12-01-01: the observation channels' cost baseline drives the Watcher
 # registry, the MessageLogger entry writer and the profiler global from
-# outside their own crates (test-only edges; message_logger is a member,
-# not a workspace dependency, so it takes the physics-style path edge).
+# outside their own crates (test-only edges).
 watcher = { workspace = true }
 profiler = { workspace = true }
-message_logger = { path = "../message_logger" }
+# The mixed-version rerun (OPT-02-01-04) builds the register/record
+# envelopes with the logger protocol codecs and speaks them to the
+# reference EL7 `message_logger` over UDP and TCP (workspace edge since
+# the workspace declares the member).
+message_logger = { workspace = true }
 
 [[bench]]
 name = "tick"

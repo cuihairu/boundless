@@ -1,0 +1,4 @@
+platform	backend	device	driver	frames	min_ns	median_ns	p99_ns	max_ns	note
+macos-arm64	-	-	-	-	-	-	-	-	pending: BW-15-04 — the macOS leg cannot run the workspace until the file-system and windowing slices land
+windows-x86_64	-	-	-	-	-	-	-	-	pending: BW-15-03 — server-runtime/src/signals.rs still uses Linux-only signal APIs, so the Windows leg cannot build the workspace
+linux-x86_64	software	SoftwareDevice 640x480 adapter=0 (307200 px rgba8)	cpu_cores=14 os=linux arch=x86_64 cpu_model=Intel(R) Core(TM) i9-10880H CPU @ 2.30GHz kernel=7.0.0-44-generic	64	12716646	18752435	24213315	24213315	backend walk over the fixed camera

@@ -1,0 +1,16 @@
+commit_per_row_rows	512
+commit_per_row_commits	512
+commit_per_row_wall_ms	1079.96
+commit_per_row_ops_per_s	474
+commit_per_64_rows	512
+commit_per_64_commits	8
+commit_per_64_wall_ms	667.52
+commit_per_64_ops_per_s	767
+commit_all_rows	512
+commit_all_commits	1
+commit_all_wall_ms	706.77
+commit_all_ops_per_s	724
+archive_export_ms	36.76
+archive_restore_one_txn_ms	349.69
+archive_per_table_txns	12
+archive_restore_per_table_ms	364.81

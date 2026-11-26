@@ -176,9 +176,7 @@ impl MachinedDaemon {
         let packet = mg::MgmPacket::from_bytes(&buf[..n as usize]).ok()?;
         let mut replies = Vec::new();
         for message in packet.messages {
-            if let Some(reply) = self.dispatch(message, from_ip) {
-                replies.push(reply);
-            }
+            replies.extend(self.dispatch(message, from_ip));
         }
         if replies.is_empty() {
             return None;
@@ -191,33 +189,42 @@ impl MachinedDaemon {
     /// Dispatch one message the way the reference `BWMachined::processMessage`
     /// does: register/deregister mutate the registry and confirm, listener
     /// registrations join the lists, and discovery queries are answered from
-    /// the snapshot. Unhandled message types return no reply.
+    /// the snapshot — a ProcessStats query answers once per matching process,
+    /// like the reference's `replies.append` loop. Unhandled message types
+    /// return no reply.
     fn dispatch(
         &mut self,
         message: mg::MachineGuardMessage,
         from_ip: u32,
-    ) -> Option<mg::MachineGuardMessage> {
+    ) -> Vec<mg::MachineGuardMessage> {
         match &message {
             mg::MachineGuardMessage::Process(pm) => {
-                let confirmation = self.snapshot.registry.handle_command(pm)?;
-                Some(mg::MachineGuardMessage::Process(confirmation))
+                match self.snapshot.registry.handle_command(pm) {
+                    Some(confirmation) => {
+                        vec![mg::MachineGuardMessage::Process(confirmation)]
+                    }
+                    None => Vec::new(),
+                }
             }
             mg::MachineGuardMessage::Listener(lm) => {
                 let addr = from_ip.to_le_bytes();
                 if self.listeners.add(lm, addr) {
-                    Some(message)
+                    vec![message]
                 } else {
-                    None
+                    Vec::new()
                 }
             }
             _ => {
-                let reply = mg::answer_query(&self.snapshot, &message);
-                if let mg::MachineGuardMessage::Unknown(unknown) = &reply
-                    && unknown.header.flags & mg::flags::MESSAGE_NOT_UNDERSTOOD != 0
-                {
-                    return None;
-                }
-                Some(reply)
+                let replies = mg::answer_query_all(&self.snapshot, &message);
+                replies
+                    .into_iter()
+                    .filter(|reply| {
+                        !matches!(reply,
+                            mg::MachineGuardMessage::Unknown(unknown)
+                                if unknown.header.flags
+                                    & mg::flags::MESSAGE_NOT_UNDERSTOOD != 0)
+                    })
+                    .collect()
             }
         }
     }
@@ -264,7 +271,7 @@ mod tests {
         }
     }
 
-    fn pid_query(pid: u16) -> mg::MachineGuardMessage {
+    fn pid_query(pid: u32) -> mg::MachineGuardMessage {
         mg::MachineGuardMessage::Pid(mg::PidMessage {
             header: Header {
                 message: message_id::PID,
@@ -277,7 +284,7 @@ mod tests {
     }
 
     /// A register command for a process on an ephemeral-ish port.
-    fn register_command(pid: u16, port: u16, name: &str) -> mg::MachineGuardMessage {
+    fn register_command(pid: u32, port: u16, name: &str) -> mg::MachineGuardMessage {
         let mut pm = ProcessMessage {
             pid,
             port,

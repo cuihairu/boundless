@@ -1,0 +1,9 @@
+seq_write_us_per_op_64KiB	30.33
+seq_read_us_per_op_64KiB	9.04
+atomic_replace_us_per_op_64KiB	55.81
+mmap_read_us_per_pass_64KiB	506.11
+timer_resolution_micros	1
+sleep_1ms_mean_ms	1.0864
+wakeup_roundtrip_us_per_op	0.95
+host	linux-x86_64
+ops	512

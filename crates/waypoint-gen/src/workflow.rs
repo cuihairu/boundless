@@ -152,7 +152,7 @@ impl<P: NavmeshProbe, F: FloodPhysicsLike> NavmeshChunk<P, F> {
     }
 
     /// The chunk's face and its physics as separate borrows, for
-    /// [`WaypointGenerator::navgen_determine_edges_adjacent_to_other_chunks`].
+    /// [`WaypointGenerator::determine_edges_adjacent_to_other_chunks`].
     pub fn split_at_mut(&mut self) -> (&P, &mut F) {
         (&self.probe, &mut self.physics)
     }
@@ -369,10 +369,8 @@ impl WaypointGenerator {
     ///
     /// The y lookup walks the 16 height layers in order and keeps the
     /// first height inside the polygon's own range; a vertex no layer
-    /// covers lands `0.01` above the polygon's top. The `navgen_` prefix
-    /// separates this workflow face from the generator's own `to_vector3`
-    /// once both generations share the crate.
-    pub(crate) fn navgen_to_vector3(&self, v: (f32, f32), polygon: &PolygonDef) -> Vector3 {
+    /// covers lands `0.01` above the polygon's top.
+    pub(crate) fn to_vector3(&self, v: (f32, f32), polygon: &PolygonDef) -> Vector3 {
         let (origin, resolution) = self.grid_origin();
         let hgt = self.hgt_grids();
         let width = self.grid_x();
@@ -410,7 +408,7 @@ impl WaypointGenerator {
     fn to_world(&self, v: (f32, f32), polygon: &PolygonDef, probe: &dyn NavmeshProbe) -> Vector3 {
         probe
             .transform_inverse()
-            .apply_point(&self.navgen_to_vector3(v, polygon))
+            .apply_point(&self.to_vector3(v, polygon))
     }
 }
 
@@ -597,11 +595,8 @@ impl WaypointGenerator {
     /// Returns the reference's per-polygon portal crossing counts — all
     /// zero on this side, because the field the reference increments is
     /// never assigned anywhere in the method, so the odd-count warning
-    /// at `:2721` is unreachable here as well. The `navgen_` prefix
-    /// separates this workflow face from the generator's own
-    /// `determine_edges_adjacent_to_other_chunks` once both generations
-    /// share the crate.
-    pub fn navgen_determine_edges_adjacent_to_other_chunks(
+    /// at `:2721` is unreachable here as well.
+    pub fn determine_edges_adjacent_to_other_chunks(
         &mut self,
         probe: &dyn NavmeshProbe,
         physics: &mut dyn DropPhysics,
@@ -828,7 +823,7 @@ pub fn generate_from_flood(
 
     gener.generate();
 
-    let mut skipped = gener.navgen_determine_edges_adjacent_to_other_chunks(probe, physics);
+    let mut skipped = gener.determine_edges_adjacent_to_other_chunks(probe, physics);
 
     gener.streamline();
 

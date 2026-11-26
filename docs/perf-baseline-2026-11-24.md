@@ -398,6 +398,3 @@ box; numbers are per-window, not portable.
 Gates: `cargo test -p foundation -p server-runtime` 1562 passed / 0
 failed; touched files are rustfmt-clean; full workspace tests remain
 the integration gate before merge.
-as part of `cargo test -p foundation -p server-runtime`. When a perf
-gate lands, compare timings against `target/criterion` baselines via
-`--save-baseline` / `--baseline`, not absolute numbers from this page.
