@@ -1639,8 +1639,7 @@
 - [x] **BW-13-02-03 移植 res_packer**。**验收** 打包前后资源可等价读回。
   - 证据：`crates/asset-pipeline/src/res_packer.rs`（2387 行 / 22 测；fdce7ff）+ `crates/resources/src/datasection.rs` 增 `del_child_at`（3ac619c）。**结构**：`PackerEnv`（printf+MsgHandler 面：`out` 按序收集、`ERROR: `/`WARNING: ` 前缀、**sub-ERROR 清 error 旗标**——原版 handler 赋值 `errorsOccurred_ = priority >= ERROR` 的怪癖原样保留）；`SourceSection::{open,is_packed,can_pack}`（packed 魔数先、首个非空白 `'<` 判 XML、否则 Bin；派生 `Clone` 供 print 复用，因原版 `XmlPacker::print` 是 const 不消费 `ds_`）；`convert_bytes`/`convert`（`PackedSection::convert` 面，错误消息逐字）；`copy_file`/`file_exists`/`remove_trailing_slash`；`BasePacker` trait + `Claim`（src/dst 空值守卫）；六 packer + `Packers` 注册表（HIGHEST=0/LOWEST=0xFFFF，按**严格大于**插入）；`print_usage` 两块 printf 原文；`parse_args`（`--res/-r` 跳过、`--list/-l` 在 flag 走查中**立即**开且打不开提前退出、`--in/--out/--err/--encrypt/--strip`）；`run`（批列模式 + 兼容模式，返回退出码）。**验收面**：`packed_output_reads_back_equivalent`（XML→packed→`PackedSection` 读回：int/负数/0/大 i64/前导零 `"007"`/bool/float/vector3/文本/canonical base64 blob/嵌套与 matrix 行逐项等价）+ `repacking_packed_output_is_byte_stable`（重打包**逐字节**同——参考经 `asString` 重推每个值）。**--encrypt**：XOR `0xc9`+marker 1；二进制节整体加密（每个节点存自身 raw 块为 `ENCRYPTED_BLOB`，children 块 `[i16 n][n×(i32 dataPos|i16 keyPos)][i32]` 与 `packed::write_node` 同构），`binary_with_encrypt_round_trips` 验证整树可解密。**六 packer**：Xml（LOWEST 兜底，`canPack()||shouldEncrypt` 才认领，print 不消费节，pack 走 convert 去 `metaData`）、Fx（fx/fxh/fxo 三类全跳过：`PACK_SHADER_BINARIES=true`/`PACK_SHADER_SOURCE=false` 仍只认领不产文件）、Image（`--encrypt` 时让位给 XmlPacker；bmp/tga/png/jpg 优先同辈 `.dds`，否则同扩展名拷贝，扩展名不符→"Error: Cannot copy source %s to destination %s.\n"；`.dds` 走字体跳过：同目录 `.font` 的 `creation/sourceFont`+`abs(sourceFontSize)` 拼 `name_size`）、Chunk（clientOnly 过滤服务器实体、去 editorOnly/metaData/navmesh/worldNavmesh 深 2、`.packerTemp` 中转+转换后必删）、CData（`space.settings` 缺→WARNING 且 prepare false；copy 后按 bin/xml 两路删 thumbnail.dds/navmesh/worldNavmesh（受 `clientNavigation/enabled` 门控）+ 每个 `--strip`；保留 `#if 1` 逐个打印存活子）、ModelAnim（model 打包去 metaData、animation/anca 跳过；`.anca` 生成在接缝后退化为拷贝源 `.anca`；打不开模型→"Could not open model file %s\n"）。**CLI 面**：批列 fgets 尾字符吃掉/末行无换行削末字符、`--err` 日志、`"Processing %s..."`+`" %s\n"`、`"\nProcessing complete"`+失败计数三句尾；兼容模式 print（单参）/pack（`"Processing %s to %s..."`+`"...succeeded/failed"`）；未知类型 print 模式**先打印 "Error opening source file: %s\n"（原版 prepare 副作用）再成功返回**；`main` 尾 `return result ? EXIT_SUCCESS : EXIT_FAILURE`。**怪癖保留**：too_many_children 的 `"PackedSetcion"` typo（去掉尾部计数——Rust 错误型无计数）；CDataPacker::print 打出 `"Error: ChunkPacker not initialised properly\n"`（原版串错）。**门禁**：163 asset-pipeline 绿（141 既存+22 新）+ resources 227 绿（+1 `del_child_at`），clippy scoped 仅剩 workspace 两条既存 unused-dep，fmt 净；llvm-cov 0.9.1 `res_packer.rs` 行 92.70%（同 crate 的 offline_processor.rs 92.77% 同档；本 crate 整体 85.75%，未达核心 98% 线——如实登记）。已推 `lane/bw15-platform`（fdce7ff）。
 - [x] **BW-13-02-04 移植 resourcechecker**。**验收** 同一坏资源得到对应诊断。**交付**（2026-11-25，8678b06 + 16eda65 已推 lane/bw15-platform）：`crates/asset-pipeline/src/resource_checker.rs` 移植 `tools/resourcechecker/visual_checker.*` 的 `VisualChecker`。**规则面**：`_bsp.` 命名直接放行且不载规则；规则自 `visual_rules.xml`（cacheRules=true 直开 / false 先 fileExists——两分支同落 openSection，合并为 `cache_rules || file_exists`）；缺规则记 `Unable to find visual_rules.xml file.`（构造期错误，check() 首行 `errors_.clear()` 与原版一致会清掉）；匹配 = 目录路径小写 find 包含 + `stable_sort`（path 长降序、filespec 长降序稳定）+ `PathMatchSpec` 可移植 glob（`*`/`?`/`[seq]`/`[!seq]`，首 `]` 字面量，`{}` 列表无用户未实现已注册）；rulesById + parent 链递归读（宏生 vector/string/int/float/bool + hardPoint 集合）；exportAs ∈ {normal, static, static with nodes} 否则 `Unknown value for exportAs [%s]\n` + 重置 normal。**检查面**：尺寸/三角数（`*indices` 子节 `IndexHeader::read` 计 `nIndices_/3`，负数 wrapping 成 u32）/层级深度（缺 node 节原版解引用空指针即 UB，移植记 0 已注册）/portal 电池（基座矩阵 row0=uAxis、row2=boundary normal、row1=normal×uAxis、平移=normal·d，点从平面空间映射回对象空间；<3 点/非平面（零法线跳过）/朝外（`d − centre·n > 0`，平面法线须指内）/snap 1/2196 容差/距离 1/1024 容差/offset 1/8192 close，printf %f 全 `{:.6}`）/重复节点名/硬点缺失与未知（HP_flash01 与 HP_flash 豁免；`len>3 && substr(0,3)=="HP_"` 照抄）/纹理名空格（renderSet→geometry→primitiveGroup→`material/textureormfm` find_last_of）。**接缝注册**：MessageBox/automatedTest 分支一律走错误记录；`PrimitiveFile::get` 先 `.processed` 后裸名；XML 内容嗅探拒绝（原版空 asBinary 强转 IndexHeader 是 UB）；`snap_vertices` 原版即死字段照抄并注册。**验收即测试**：`portals_are_forbidden_on_normal_visuals`（同一坏视觉在 rules=false 下得 `Must not have any portals`）等 15 测——好视觉全规则零错、too small/too big/三角上下限/层级/朝外/非平面/snap+距离/重复+硬点/纹理/坏 exportAs/缺文件逐项断言原版消息全文。**附带**：`datasection::read_vector3` 改走 openSection 路径行走（原版 readVector3 即 `openSection(tag)`，`boundingBox/min` 两跳；16eda65 附 `read_vector3_walks_slash_paths` 测）；门禁 asset-pipeline 177 + resources 228 测绿，clippy 仅余两既存 workspace unused-dep，fmt 清，llvm-cov resource_checker.rs 行 96.49%（crate 整体 85.60%，工具 crate 口径照旧）。**坑**：原版 portal 点存平面空间 (u,v,0) 经基座矩阵映射回对象空间，测试夹具必须给平面坐标再由 winding 定平面法线朝内（朝外即触发 facing 错误）；`BinSection::save_bytes` 输出含非 UTF-8 magic 字节，夹具写盘必须走原始字节而非 `from_utf8_lossy`（会替换 0xa1 致容器解析空）。
-- [x] **BW-13-02-05 回归 NavGen 入口**。**验收** 可调用 BW-10 的导航生成。**跨席复测勾**（main 交付为准，2026-11-26，本席）：main `79f47c4`（`crates/asset-pipeline/src/navmesh_processor.rs` 2738 行/55 测，LockedChunks 引用计数/ChunkProcessorManagerFace 锁块怪癖/NavmeshProcessor 逐 girth 顶检→flood→as_binary 追加/NavmeshCache 全端口）依赖面 `977f555`（waypoint-gen workflow.rs 914 行：readTGA/extendThroughUnboundPortals/determineEdgesAdjacentToOtherChunks/compileGirthsList/GirthWorkflow）+`d26cb55`（tga temp dir 隔离），本席 cherry-pick `3ddf7b8`+`b868516`+`b91f983`。**缝冲突自纠**（`e5670ac`）：本树 b99cb0e（lane-only，GenChunk/FloodPhysics 缝）与 main 同面（NavmeshProbe/DropPhysics 缝）物理撞名 to_vector3/determine_edges——取 main 版为准，删本树私有重复，navgen_map harness 补 NavmeshProbe/DropPhysics 适配 impl 改骑 workflow 缝，truth log `gen_navgen_map.log` 逐行复现未变（两版行为等价实证）。**复跑证**：waypoint-gen 88 测绿（含 navgen_map truth-log 对照+workflow tests）+asset-pipeline 439 lib+集成 0 failed，fmt/clippy scoped 净（blowfish workspace 预存在非代码）。b99cb0e 余下不撞名面（generate/streamline/calculate_set_membership/as_binary 等）保持开待主席与 main 侧择一。
-
+- [ ] **BW-13-02-05 回归 NavGen 入口**。**验收** 可调用 BW-10 的导航生成。
 
 #### BW-13-03 WorldEditor
 
@@ -1714,11 +1713,6 @@
 
 - [ ] **BW-14-02-01 运行 Python simple 示例**。**验收** 与新服务端完成登录。
   - 卡点（服务端登录链路未落地，同 BW-14-01-02）：simple client 在参考 `examples/client_integration/python/simple/`（自带 res 树，实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对），其登录依赖新服务端 loginapp 挑战协商（BW-06-01-02）+ baseapp onLogin（BW-07-01），当前 `apps/server` 仅最小入口无登录处理。
-  - 复测（2026-11-26，台账席）：注记引用已过时但卡点事实未变——所引依赖均已交付：BW-06-01-02 挑战协商（`3244af7`）、BW-07-01（BW-07 车道 24/24）、BW-14-01-02（`c68667c`，进程内 harness 全链，边界自注「多进程运行不在本项」）；然 `apps/server/src/main.rs` 本日复核仍 36 行最小入口，`app::run`（BW-15-02-01 `750be59`）只接 Dispatcher+信号矩阵、零 mercury 引用（NetworkInterface 构造留随 BW-02-02/角色簇），无可监听的 loginapp——网络登录面本席侧仍缺。行保持开，待 `apps/server` 网络接线（BW-02-02/角色簇）与可跑客户端宿主（BW-21）落地后复测。
-  - 增量落地（2026-11-26，`44aca1e`(merge origin/lane/bw19-docs)，含 `a43f3f3` 收包面测试适配）：**服务端登录面接线已上 main**——角色循环走 `bwMainT` 全体（`app.rs` 新 `MercuryPass` 合流角色 dispatcher 与 Mercury dispatcher，machined 查询/内部接口配置链/`NetworkInterface::new_on_dispatcher` 构造/关服 drain）；loginapp 外口（`loginapp_interface.rs`，`PORT_LOGIN=20013`+`login_minder` 三入口 login/probe/challengeResponse 按声明序+`LoginInterfaceDispatch` 剥 first-request 尾脚+`probe` 真数据报往返）；login 门序与 `challengeResponse` 应答面（`loginapp_login.rs`，复用 BW-06-01-05 版本闸、challenge 缓存/resent quirk 逐字）；dbapp 出站面（`db_login.rs` `DB_APP_LOG_ON_ELEMENT_ID=8`+`DbAppForward`/`DbReplyHandler`，验收级真闭环测过 `the_dbapp_request_leg_reaches_the_wire_and_its_answer_routes_back`）。**适配点**：收包面 graft（`14d3d8c`）后 `the_network_pass_delivers_a_datagram_through_the_loop` 原发裸 `b"ping"` 被参考形 guard 判 corrupted，已改为带 clear flags 头的真帧 `[0,0,p,i,n,g]`（a43f3f3）；覆盖 loginapp_interface 100%、loginapp_login 98.78%、db_login 98.63%、app.rs 99%+。行保持开——simple client 端到端验收仍待 dbappmgr→loginapp `notifyDBAppAlpha` 活网格出生接线与 dbapp logOn 应答角色（BW-09-01 领地）落位后复测。
-  - 复测五（2026-11-26，lane/bw19-docs `0dfc448`）：**参考客户端真机往返已通两道门（82→72）**——预编译 `simple_python_client` 在参考树 `game/bin/server/el7/examples/simple_python_client`（本机可跑，`-server/-user/-password`，README 配方）；Linux 构建路径必须从 res 解析 `loginapp.pubkey` 文件（内嵌 key 仅 PS3/Xbox360 分支，main.cpp:228-238）——取 `scripts/cluster-smoke/res/loginapp.pubkey` 头插 res overlay 即解（BW-00-02-04 卡点在此实验面消除；配对 `res/server/loginapp.privkey`=参照 loginapp_config.cpp:22 默认读 `server/loginapp.privkey`，将来 dbapp 解密腿用）。真跑序列：本席 loginapp 外口 20013 监听（无 machined 回落绑全接口）→ 真客户端实体定义加载/网络绑定/`LoginHandler: LoginApp@127.0.0.1:20013` 起动 → ①默认配置拒 82=`LOGIN_REJECTED_LOGINS_NOT_ALLOWED`（=参照默认 `BW_OPTION(bool,allowLogin,false)` loginapp_config.cpp:24，移植一致非缺陷）→ ②overlay `<loginApp><allowLogin> true` 后拒 72=`LOGIN_REJECTED_DB_NOT_READY`（=参照 loginapp.cpp:862 isDBReady 门**先于**挑战门 1048——gate 序 82→72 实证）。**余卡点收窄两件**：活内部网格出生接线（dbappmgr→loginapp `notifyDBAppAlpha` 上线；dbappmgr.rs 自注 Mercury traffic not modelled）+ dbapp logOn 应答角色（BW-09-01 lane 领地）——两者落位后 overlay 配方（res 头插 loginapp.pubkey+overlay server/bw.xml 开 allowLogin）即可续跑至挑战协商与真登录。行保持开。
-  - 卡点复测（2026-11-26，bw14-script-host 席）：旧注「服务端登录链路未落地」**已过时**——登录链已落地并真机绿：BW-06-01-02 挑战协商（3244af7，main 祖先）+ BW-07-01 baseapp 装载/ID 分配 + BW-14-01-02/05 进程内登录链（`fantasydemo_login.rs` 5 测：既有账户走机/未知用户建档/错密码拒不碰行/新角色建档回指，`fantasydemo_logout_relogin.rs` 2 测：退出持久化重登读回，本席实测全绿）。**真余卡点两处**：①`apps/server` 仍最小入口（`main.rs` 仅 BWResource/BwConfig 初始化 + `app::run` 信号/关停面），无角色运行时把 loginapp/dbapp/baseapp 登录链接到真实 Mercury 端口（同 BW-15-02-01 卡点；BW-08-01-02 CellApp 创建与注册未勾）；②参考 simple 客户端是 **C++ 壳内嵌 Python**（`main.cpp`/`entity.cpp`/`py_server.cpp` 等，目录名「python」指 Python 脚本化实体而非纯 Python 程序），跑通它需移植该壳或等价客户端驱动，与①同属大面工程，随角色运行时落地。simple 自带 res 树实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对。
-
 - [x] **BW-14-02-02 运行原版 Android 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
   - 宿主缺口（未运行互通测试）：`docs/review/bw14-02-02-03-mobile-interop-host-gap.md`（402c28a）——参考 `examples/client_integration/c_plus_plus/android/`（JNI + `android.app.NativeActivity` + `android_native_app_glue` + `connection_model` 静态库 + `-llog -landroid -lEGL -lGLESv1_CM`，NDK `armeabi-v7a`/`APP_STL=gnustl_static`/`APP_PLATFORM=android-9`）需 Android NDK 工具链 + 真机/模拟器，本机 Linux 无 NDK/设备；即使宿主就绪，互通目标（新服务端登录）亦未落地（同 02-01 卡点）。协议结果未采集；两侧缺口均已登记。
 - [x] **BW-14-02-03 运行原版 iOS 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
@@ -1753,7 +1747,7 @@
 - [x] **BW-14-04-03 布置配置及样例资源**。**验收** 首次启动可定位。（commit 5da86a6）
   - 证据：`ci/install-layout.sh` + `docs/review/bw14-04-installable-artifact-layout.md`（b0a4d3e 起，5da86a6 完成）——`res/server/bw.xml` + `res/scripts/`（21 项样例资源镜像）随包布置（install-layout PASS：配置/资源/二进制/模块/`data/` 齐全）。**工具半**：装后 `process_defs -r <prefix>/res` 首启定位并加载安装资源树（install-cli-res PASS）。**服务器半**：`apps/server/src/main.rs`（5da86a6）按参考 `BIGWORLD_MAIN` 接入 `BWResource`/`BWConfig` 链，装后 `boundless-server <role>` 以 `BW_RES_PATH=<prefix>/res` 首启定位安装配置（install-res-server PASS：无「Could not find」/「No configuration section」，正常启动/停止 exit 0）；`role_lifecycle.rs` 首启定位/未定位双测试钉死观测差（定位静默、未定位记参考失败行）。
 - [ ] **BW-14-04-04 执行干净安装烟测**。**验收** 三端能启动和停止。
-  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**复测登记（2026-11-26，main 吸收 lane/bw16-18 `a05a849`←bw10-terrain `1dba9be`）**：`ci/install-layout.sh` self-test 10/10 PASS 含红/绿双验（他席独立跑过），同脚本装后启停绿；两席同证据链镜像非新交付，行保持开。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
+  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
 - [x] **BW-14-04-05 执行升级与卸载**。**验收** 验证用户数据保留行为。（commit b0a4d3e）
   - 证据：`ci/install-layout.sh`（b0a4d3e）——归档只携带包属树（`bin lib res`），用户数据在 `data/`（**不在归档**）。装后种子 `data/db/user.db`，篡改包属文件 `res/server/bw.xml` 后**升级**解包：包属文件还原为打包字节、`data/db/user.db` 保留（install-upgrade PASS）；**卸载**删除 `bin/ lib/ res/`、`data/db/user.db` 保留（install-uninstall PASS）。self-test 绿色全链路 + 4 条红色臂（启动失败/CLI 失败/坏模块/缺定义资源树均按预期咬合）。
 
@@ -1765,15 +1759,15 @@
 
 封装事件轮询和唤醒、单调时钟、信号/控制事件、子进程与退出状态、文件锁、内存映射、动态库和系统目录。对照大小写、路径编码、原子替换、IPv4/IPv6 和断网行为。
 
-- [ ] **BW-15-01-01 封装事件轮询和唤醒**。**验收** 三端可停止空闲循环。（Linux 腿注记 2026-11-26：bw15-platform `774372f`→main `70af995`，crates/platform/tests/idle_loop_stop.rs 1 测绿——空闲循环按需停（trigger 中断 epoll_wait 预算 interrupt1 680µs/1 迭代、preset 迭代、rearm 112/46µs、预算窗 5 迭代）；wakeup.rs 441ff01 既有注记同上；三端行保持开待 Windows/macOS 腿）
+- [ ] **BW-15-01-01 封装事件轮询和唤醒**。**验收** 三端可停止空闲循环。
   - 证据（部分，未勾）：`crates/platform/src/wakeup.rs`（441ff01）——自管道 `Wakeup`（`pipe(2)` 双端 `O_NONBLOCK`、`trigger` 任意线程一字节写入容忍 EAGAIN=已挂起、`consume` 排空重整、Drop 关双端），Linux 实测 5 测：空闲 `epoll_wait`（5s 预算）被另一线程 `trigger` 在 1s 内唤醒、预挂起即回、`consume` 后零超时不再上报、未触发 `consume` 为 no-op、100 轮触发/消费循环稳定；「轮询」半块已由 BW-02-01-02 `platform::poller`+Mercury `EventPoller` 承担（Linux epoll）。**macOS 后端已落（59da22c）**：`crates/platform/src/poller.rs` 拆为 Linux `epoll`/macOS `kqueue` 两后端、`lib.rs` 把 `poller` 门控扩到 macOS——kqueue 与 epoll 同为描述符持久注册集，`create`/`ctl`/`wait` 一对应映射（`kqueue()`；`kevent` EV_ADD/EV_DELETE 按 filter、`CTL_DEL` 先删读再删写、二者其一在册即成功、无册 fd 返 `ENOENT` 同参考 WARNING 分档；`EV_EOF`→`EPOLLHUP`/`EV_ERROR`→`EPOLLERR`；超时负值阻塞零轮询；事件位沿用 epoll 数值使调用方跨端同常量）；`platform` darwin `--all-targets` 交叉编译绿、darwin clippy `-D warnings` 绿、Linux 59 测零回归；kqueue 模块 4 测镜像 epoll 待三端 runner 实跑。**剩余**：Windows `WSAPoll` 走 socketpair 而非匿名管道——随 BW-15-05 三端 runner 落地（kqueue 实跑亦随三端 runner）。
 - [x] **BW-15-01-02 封装单调时钟**。**验收** 单调性及 Tick 单位一致。
   - 证据：crates/platform clock.rs 测试（monotonic 不回退、微秒单位、起点近零）。
-- [ ] **BW-15-01-03 封装进程控制及退出码**。**验收** 三端可正常关服并回收子进程。（Linux 腿注记 2026-11-26：bw15-platform `4a40422`→main `595be79`，crates/platform/tests/process_exit_baseline.rs 1 测绿——子进程状态码/spawn 262µs/wait 7.9ms/轮询收割 1.02ms/信号等待 247µs/一次收割 16 存活；三端行保持开待其余平台腿）
+- [ ] **BW-15-01-03 封装进程控制及退出码**。**验收** 三端可正常关服并回收子进程。
   - 证据（部分，未勾）：`crates/platform/src/process.rs`（d25d90a）——`Child`（`fork`+`execvp` PATH 搜索、子进程 exec 失败 `_exit(127)`、`wait` 阻塞重采/`try_wait` WNOHANG 非阻塞/`signal` kill、二采 `ECHILD` 报错）+ `ExitStatus`（`WIFEXITED`/`WEXITSTATUS`/`WIFSIGNALED`/`WTERMSIG` 解码、`success` 即 code 0）；Linux 实测 7 测：exit 42 采回、零退出成功、SIGTERM 终止、存活期 `try_wait` None 再采、exec 失败回 127、空 argv 拒、二采 ECHILD。**剩余**：Windows `CreateProcess` 后端随 BW-15-03 落地；`server-runtime` 关服接线（信号→kill 子进程→wait 回收）待做。
 - [x] **BW-15-01-04 封装文件锁及原子替换**。**验收** 并发更新夹具通过。（commit d0a9ac4）
   - 证据：`crates/platform/src/file.rs`（d0a9ac4）——`FileLock`（`flock` LOCK_EX 互斥、try 版返回 None 表已持有、Drop 即释放；**锁稳定伴生 `.lock` 文件而非被替换的数据文件**——rename 换 inode，锁被替换文件本身无法串行化更新，此平台事实已编码进模块文档）+ `atomic_replace`（同目录临时文件写全→`fsync`→`rename(2)` 原子换入，失败自动 unlink 残留）；**验收并发更新夹具实测过**：2 线程×50 锁-读-改-写-原子替换，计数恰为 100 零丢失（`file::tests::concurrent_update_fixture_loses_nothing`，`cargo test -p platform --lib` 64 测全绿）。**Windows `LockFileEx`/`ReplaceFile` 后端归 BW-15-05 三端 runner 平台移植**（本项验收为并发更新夹具，Linux 已过）。
-- [ ] **BW-15-01-05 封装内存映射与共享库查找**。**验收** 三端加载相同测试资源。（Linux 腿注记 2026-11-26：bw15-platform `294a434`→main `298fd89`，crates/platform/tests/mmap_library_baseline.rs 1 测绿——同资源 mmap 34µs/64KiB+anon 4096+共享库打开 22µs/符号查找 3µs malloc 命中；三端行保持开待其余平台腿）
+- [ ] **BW-15-01-05 封装内存映射与共享库查找**。**验收** 三端加载相同测试资源。
   - 证据（部分，未勾）：`crates/platform/src/mmap.rs`（3359d3b）——`Mmap`（`mmap` PROT_READ|MAP_SHARED 整文件映射、空文件映射空切片、匿名零页映射、`Deref<[u8]>`、Drop `munmap`；mmap 需活 fd、成功后 close 映射仍有效）+ `DynamicLibrary`（`dlopen` RTLD_NOW|LOCAL、`dlsym`、Drop `dlclose`、`dlerror` 消费）；Linux 实测 7 测：文件映射逐字节等于文件、空文件、匿名页全零、缺文件报错、dlopen libc 并 dlsym malloc 非空、缺符号报错、缺库报错。**剩余**：Windows `CreateFileMapping`/`LoadLibrary` 后端随 BW-15-05 落地。
 - [x] **BW-15-01-06 校验路径大小写、编码和系统目录**。**验收** 代表性夹具可寻址。（commit aa6e2ee）
   - 证据：`crates/platform/src/path.rs`（aa6e2ee）——`correct_case_of_path`（参考 `WinFileSystem::correctCaseOfPath`（win_file_system.cpp:782）的 POSIX 对应：`realpath(3)` 在大小写不敏感卷上解析出盘上真实拼写、敏感卷上即恒等、缺失路径原样返回）；`real_path`（canonical 定点、symlink 解析、缺失报 `ENOENT`）；`join`（参考 `getAbsolutePath` 的 base+path（unix_file_system.cpp:466），补缺 `'/'`）；`home_dir`（`$HOME`）/`temp_dir`（`TMPDIR`→`TMP`→`TEMP`→`/tmp`）；编码 `path_bytes`/`path_from_bytes` 字节级往返（POSIX 路径是字节串非必 UTF-8，实测 `0xFF` 字节往返）+ lossy。Linux 实测 7 测：temp 系统目录夹具写读可寻址、HOME 绝对、join 三态（缺分隔/已带/空 base）、realpath 不定点+symlink+缺失三态、correct_case 缺失原样/存在=realpath、非 UTF-8 往返。**Windows `%USERPROFILE%`/`%TEMP%`/`GetFullPathNameW` 后端归 BW-15-03 Windows runner 平台移植**（本项验收为代表性夹具可寻址，Linux 已实测过：`path::tests::temp_dir_holds_an_addressable_fixture`，temp 系统目录夹具写读可寻址）。
@@ -1801,14 +1795,9 @@
 验证原生服务端全角色、客户端、编辑器及产物。处理进程停止、DLL/CPython 查找、路径与驱动，并核对原版 Windows 客户端和编辑器样本。
 
 - [ ] **BW-15-03-01 跑 Windows 服务端全角色**。**验收** 能处理控制事件并关服。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-03-02 验证 DLL 和 CPython 发现**。**验收** 已安装布局中模块可导入。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
-- [ ] **BW-15-03-03 跑 Windows 客户端与编辑器**。**验收** 固定样本与原版对照。（对照基线注记 2026-11-26：对照面本体已在 main——Linux boundless-client 固定地图呈现（896×176 8 帧二跑逐位同+TGA 630,802 B）与 boundless-editor 编辑会话（ed_save (12,0,34)→(25,0,47)+二会话字节同，02bedbb）即样本面；两入口 `cargo check --locked --target x86_64-pc-windows-gnu -p boundless-client -p boundless-editor` 已 PASS（2026-11-26 实测零错误）；Windows 腿仍缺真机 runner（服务端 `mercury`/`std::os::fd` 交叉构建未过属 BW-15-03-01 面），行保持开）
-  - 交叉编译注记（2026-11-26，`454acee` 核验）：本席 `apps/client`/`apps/editor` 双入口 windows-gnu 交叉检 PASS（`cargo check --target x86_64-pc-windows-gnu`，仅预存 blowfish manifest 警告）；server 侧 `mercury` E0432×16 属 BW-15-03-01，不拦两入口。真跑仍待 Windows runner（BW-15-05-01），行保持开。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
+- [ ] **BW-15-03-03 跑 Windows 客户端与编辑器**。**验收** 固定样本与原版对照。
 - [ ] **BW-15-03-04 跑 Windows 工具和发布包**。**验收** 路径编码和启动烟测通过。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-04 macOS
 
@@ -1817,14 +1806,9 @@
 - [ ] **BW-15-04-01 跑 macOS 服务端全角色**。**验收** 能启动、停止并回收。
   - 证据（部分，未勾）：macOS 编译前置已通（afe9973）——`server_runtime::signals` 可移植到 `aarch64-apple-darwin`：等待原语按平台分派（Linux `sigwaitinfo`，macOS `sigwait`——libc crate 只给 BSD 族 `sigwait`，二者同是 POSIX 等待且都可被 `EINTR` 打断，`wait_one` 统一为负错误码）；`signal_number_to_string` 的实时信号臂（`SIGRTMIN`/`SIGRTMAX`，glibc 专属）门控到 Linux，macOS 无实时信号范围；`SIGMAX` 按平台取（Linux `SIGSYS`=31，macOS `SIGUSR2`=31，二者皆最高标准信号，`AtomicU32` 掩码一致）；`SIGNAL_NAMES` 按平台分表（参考表是 Linux 编号；macOS 编号不同：`SIGEMT`=7/`SIGBUS`=10/`SIGSYS`=12/`SIGCHLD`=20/`SIGIO`=23/`SIGINFO`=29/`SIGUSR1`=30/`SIGUSR2`=31，无 `SIGSTKFLT`/`SIGPWR`；服务端用的退出信号 `SIGTERM`/`SIGINT`/`SIGQUIT` 两端同号）。实测 `cargo check -p boundless-server --target aarch64-apple-darwin` 绿（仅剩 resources 预存警告）。**剩余**：macOS 上真机运行（`cargo build`+启动/停止/回收，需 macOS runner）；`--all-targets` 测试编译亦已绿（af0182b）——两处内联 `sigtimedwait`（server_app.rs:980/1211，BSD 无此符号）收进 `consume_pending_signal`（Linux `sigtimedwait` 零超时轮询、非 Linux `sigwait`；信号既已确认 pending 则立即返回），实测 `cargo check -p server-runtime --target aarch64-apple-darwin --all-targets` 无错；mercury 尚有 darwin 缺口（`lib.rs` 对 `event_dispatcher`/`packet_receiver` 的门控被 `interface_table.rs:18`/`request_manager.rs:27`/`network_utils.rs:36` 无条件 import；`endpoint.rs:403` 直用 linux-only `socket::IP_RECVERR`）——服务端最小入口不依赖 mercury 故不拦当前构建，待 Mercury 接入服务端（BW-02）时需先补。
 - [ ] **BW-15-04-02 验证 CPython 与应用资源布局**。**验收** 从应用包可加载。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
-- [ ] **BW-15-04-03 跑 macOS 客户端和编辑器**。**验收** 设备状态和固定地图测试通过。（对照基线注记 2026-11-26：固定地图测试面已在 main——crates/client 软栅格设备（present_with 帧账+checksum+map_display_baseline 2 测 896×176 二跑逐位同）与编辑器 ed_save 面（edit_reload 2 测），02bedbb；三入口 `cargo check --locked --target aarch64-apple-darwin` 实测 PASS；macOS 腿待真机 runner，行保持开）
-  - 交叉编译注记（2026-11-26，`454acee` 核验）：本席 `apps/client`/`apps/editor` 双入口 darwin 交叉检 PASS（`cargo check --target aarch64-apple-darwin`，仅预存 blowfish manifest 警告）；macOS kqueue+信号前置 `59da22c`/`afe9973` 已在 main。真跑仍待 macOS runner，行保持开。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
+- [ ] **BW-15-04-03 跑 macOS 客户端和编辑器**。**验收** 设备状态和固定地图测试通过。
 - [ ] **BW-15-04-04 跑 macOS 工具和发布包**。**验收** 干净安装后可执行。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-04-05 验证与 Linux 和 Windows 互通**。**验收** 跨端登录及实体同步通过。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-05 三端 CI 和混合部署
 
@@ -1835,11 +1819,8 @@
 - [ ] **BW-15-05-02 在三端执行协议、资源与 Python 测试**。**验收** 各端分别留存结果。
 - [ ] **BW-15-05-03 配置 MySQL、XML 与 SQLite 测试矩阵**。**验收** 每种模式产生独立结果。
 - [ ] **BW-15-05-04 配置 PostgreSQL 真实后端矩阵**。**验收** 各端完成登录、写档和重启读档。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-05-05 验证三端客户端连接不同平台服务端**。**验收** 记录每种支持组合。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-05-06 验证混部替换单角色**。**验收** 记录版本和关服顺序。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-06 平台图形和宿主依赖
 
@@ -1849,10 +1830,8 @@
   - 证据：`docs/review/bw15-06-01-graphics-backend-list.md`——四后端五平台：桌面 **Direct3D 9**（`lib/moo`，`bwclient`，`IF(BW_PLATFORM_WINDOWS)` 下链 `d3d9/d3dx9/dxguid/setupapi/psapi`，`moo_dx.cpp`/`render_context.cpp` 设备面；`IF(NOT BW_IS_SERVER)` 剥离服务端依赖）、工具 **OpenGL**（`navgen` 预览，`opengl32` + `<GL/gl.h>`/`HGLRC`）、移动 **cocos2d/OpenGL ES**（Android `-lEGL -lGLESv1_CM`、iOS libs 随树）、web **Awesomium**（`BW_AWESOMIUM_SUPPORT` 门控，`web_app` → `PyAwesomiumProvider`）。平台基线：顶层 `CMakeLists.txt:57-72` 构建门仅 Windows（win32/win64）+ Linux remote-only 服务端，无 macOS 桌面分支——Linux/macOS 桌面**无图形后端**（全树 `wgl|glX|CGL|glViewport` 扫描仅命中 navgen），macOS 侧按 BW-15 开篇约定以原版样本+跨端混跑验收。缺口：`third_party/` 无 `awesomium/`（同 DCC SDK 缺口）；新版渲染栈未建（BW-11），服务端零图形后端由 BW-16-02-02 对齐。
 - [x] **BW-15-06-02 维护 DCC 宿主矩阵**。**验收** 逐插件记录可用宿主。（commit ff504c9）
   - 证据：`docs/review/bw15-06-02-dcc-host-matrix.md`——三插件两宿主：visualexporter/animationexporter → Autodesk 3ds Max（`MFXExport : SceneExport`（mfxexp.hpp:154），`.dle`，Max 库级导出 `LibDescription@1..LibVersion@4`（visualexporter.def/animationexporter.def，expmain.cpp:124-155），Max **2009–2013** 逐版本目标 max2009_exporter…max2013_exporter）；mayavisualexporter → Autodesk Maya（`MLL_EXPORT initializePlugin/uninitializePlugin`（visualmain.cpp:38/131），`.mll`，随分发 visualfileexporterscript.mel，Maya **2009–2014** 逐版本目标）。启用条件=`BW_CMAKE_TARGET=exporters`（`BWConfiguration_exporters.cmake` `EXPORTER_PROJECTS`：默认 Max/Maya 2010-13 + Max 2010-12，win32 追加 2009 组，win64 追加 maya2014，非 vc9 追加 max2013；`BW_EXPORTER`+`_SECURE_SCL=1`）；输出 `game/tools/exporter/3dsmax<ver>{,x64}/`、`maya<ver>{,x64}/`。缺口：`third_party/` 无 `3dsmax/`、`maya/` SDK 目录（外部依赖），插件二进制无法从本树构建——宿主实测（BW-15-06-03/04）需外部 DCC SDK 与宿主安装。
-- [ ] **BW-15-06-03 验收三端客户端与编辑流程**。**验收** 同一地图有可比证据。（Linux 腿注记 2026-11-26：boundless2 `02bedbb`→main（ada3706 去重）——固定地图双入口同图可比证据：apps/client `boundless-client --res docs/review/fixtures/chunk_space/res/space_00010001` 18×3 视图 896×176 软栅格 8 帧 checksum 系列二跑逐位同+TGA 630,802 B（crates/client/tests/map_display_baseline.rs 2 测），apps/editor `boundless-editor` ed_save 移 tree00 (12,0,34)→(25,0,47) 重载验证+二会话字节同（apps/editor/tests/edit_reload.rs 2 测）；Windows/macOS 腿待 runner，行保持开）
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
+- [ ] **BW-15-06-03 验收三端客户端与编辑流程**。**验收** 同一地图有可比证据。
 - [ ] **BW-15-06-04 验证外部导出的跨端读取**。**验收** 各适用消费者可打开。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 ### BW-16 目录分层、依赖方向与模块归属
 
@@ -2237,7 +2216,7 @@ Boundless 新增交付，独立位于 `extensions/vscode/`，内部拆为 `src/`
 - [x] **BW-20-02-06 验证 VS Code 的 Rust 启动调试**。**验收** 能由启动配置运行 CellApp 并命中断点。（commit aa15e2c）
   - 证据：原版结果——引用端角色进程是 C++ `bigworld_app <role>`，VS Code 调试需手配 launch.json 指向其二进制。新版结果——`src/workspace/launchConfig.ts` 的 `rustLaunchConfig(role)` 生成启动配置：`type` 按平台取 `lldb`（Linux/macOS）或 `cppvsdbg`（Windows），`program` 指向 `target/debug/boundless-server`（`apps/server` 的产物，`apps/server/Cargo.toml` [[bin]]），`args=[role]`，`env.BW_RES_PATH=<workspaceFolder>/res`，`stopAtEntry:false`；`extension.ts` 的 `boundless.setupRustDebug` 命令经同一个 `mergeLaunchJson` 并入工作区 `launch.json`，且把 `boundless.cluster.binary` 的默认值从错误的 `target/debug/server` 修正为实际产物名。证据链接——`pnpm test` 149 例全绿且 `pnpm run check` 0 错误（含 `rustLaunchConfig` 形状、Windows 调试器选择、覆盖 program/resPath、与附加配置并存的 4 例）；实跑 `sh tools/verify/rustLaunch.sh`：gdb batch 以 launch 配置同一命令行（`target/debug/boundless-server cellapp`、`BW_RES_PATH` 指向示例 res）启动 CellApp，断点命中 `server_runtime::app::run`（`crates/server-runtime/src/app.rs:46`），回溯顶两帧为 `app::run ← boundless_server::main`，脚本判 PASS。
 - [x] **BW-20-02-07 提供文档 MCP 接入配置**。**验收** 查询返回当前工作区版本文档。
-  - 证据：原版结果——引用端的文档是仓库里的 markdown（VitePress 渲染），编辑器侧没有任何检索入口，开发者只能翻目录或开网页版；引用端不存在 MCP 面。新版结果——`extensions/vscode/src/workspace/docsMcp.ts` 生成 `.vscode/mcp.json` 条目：`type: stdio`、`command` 指向 `boundless-docs-mcp`、`args` 依次为 `--root ${workspaceFolder}`、`--prefix docs`、`--version HEAD`、`--langs zh`，配置了站点地址才追加 `--docs-url`（`9623715_MCP_DEFAULTS` 与 `boundless-docs-mcp` 自己的默认值一致）；`mergeMcpJson` 与 launch.json 同一"只增不改"面——只替换自己写的那一项、用户自己的 server 原样保留，解析不出来的文件整体重写；`extension.ts` 的 `boundless.setupDocsMcp` 命令按工作区文件夹逐个写入 `.vscode/mcp.json`，新增 6 个设置 `boundless.docs.{server,root,version,prefix,langs,url}`。证据链接——`pnpm test` 160 例全绿（含新 `test/docsMcp.test.ts` 11 例）、`pnpm run check` 0 错误；实跑 `node tools/verify/docsMcp.cjs` 11/11 PASS：harness 用扩展自己的 writer 写出真实 `.vscode/mcp.json`，再按该文件里的 command/args 起真二进制（`${workspaceFolder}` 按编辑器变量语义替换）做 MCP stdio 会话——`tools/list` 只列 `search_docs`/`read_doc`；`search_docs "second edition"` 命中仅 v2 才存在的 `guide/second.md` 且 `version` 为配置给的 `HEAD`；`read_doc guide/second.md` 返回 `version=HEAD`、`commit=2b8be3d` 恰等于工作区当前 HEAD、`source=https://docs.boundless.example/guide/second.html`；同一配置把 `boundless.docs.version` 改成 `v1` 后，v2 页面零命中、`guide/entities.md` 回到 v1 文案、链接保持仓库相对 `docs/guide/entities.html`。如实登记——编辑器内的 MCP 客户端加载（自动发现 `.vscode/mcp.json`）未在真实 VS Code 里验证：本机 `/usr/bin/code` 1.144.1 可装但不跑带 GUI 的 MCP 会话，取证止于"按其写出的配置实跑真二进制并逐条核对查询结果"。
+  - 证据：原版结果——引用端的文档是仓库里的 markdown（VitePress 渲染），编辑器侧没有任何检索入口，开发者只能翻目录或开网页版；引用端不存在 MCP 面。新版结果——`extensions/vscode/src/workspace/docsMcp.ts` 生成 `.vscode/mcp.json` 条目：`type: stdio`、`command` 指向 `boundless-docs-mcp`、`args` 依次为 `--root ${workspaceFolder}`、`--prefix docs`、`--version HEAD`、`--langs zh`，配置了站点地址才追加 `--docs-url`（`DOCS_MCP_DEFAULTS` 与 `boundless-docs-mcp` 自己的默认值一致）；`mergeMcpJson` 与 launch.json 同一"只增不改"面——只替换自己写的那一项、用户自己的 server 原样保留，解析不出来的文件整体重写；`extension.ts` 的 `boundless.setupDocsMcp` 命令按工作区文件夹逐个写入 `.vscode/mcp.json`，新增 6 个设置 `boundless.docs.{server,root,version,prefix,langs,url}`。证据链接——`pnpm test` 160 例全绿（含新 `test/docsMcp.test.ts` 11 例）、`pnpm run check` 0 错误；实跑 `node tools/verify/docsMcp.cjs` 11/11 PASS：harness 用扩展自己的 writer 写出真实 `.vscode/mcp.json`，再按该文件里的 command/args 起真二进制（`${workspaceFolder}` 按编辑器变量语义替换）做 MCP stdio 会话——`tools/list` 只列 `search_docs`/`read_doc`；`search_docs "second edition"` 命中仅 v2 才存在的 `guide/second.md` 且 `version` 为配置给的 `HEAD`；`read_doc guide/second.md` 返回 `version=HEAD`、`commit=2b8be3d` 恰等于工作区当前 HEAD、`source=https://docs.boundless.example/guide/second.html`；同一配置把 `boundless.docs.version` 改成 `v1` 后，v2 页面零命中、`guide/entities.md` 回到 v1 文案、链接保持仓库相对 `docs/guide/entities.html`。如实登记——编辑器内的 MCP 客户端加载（自动发现 `.vscode/mcp.json`）未在真实 VS Code 里验证：本机 `/usr/bin/code` 1.144.1 可装但不跑带 GUI 的 MCP 会话，取证止于"按其写出的配置实跑真二进制并逐条核对查询结果"。
 
 
 #### BW-20-03 打包与三端验证
@@ -2836,110 +2815,89 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 缓存解析结果并评估预生成编解码器，衡量启动和序列化开销，锁定定义摘要和产出字节。
 
-- [x] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。（本席 `a041efd`+`9623715`：crates/entitydef/tests/entitydef_baseline.rs 三腿=冷启动 factory_create full_def(3 实体)+fantasydemo_def(5 实体)（诊断零+digest 钉住 oracle 否则不产生计时行）、编解码=两夹具全实体全属性解析默认值 add_to_stream/create_from_stream 20k 轮×每轮逐值恒等断言（11 族：标量 5+STRING/FLOAT64/ARRAY×2/FIXED_DICT×2）、暖启动同进程二次加载 digest 等冷值；记录 TSV docs/review/fixtures/entitydef-baseline/entitydef-baseline.tsv 63 行：cold 0.637/0.615ms、warm 0.448ms、标量 p50 457-474ns、FLOAT64 268ns、STRING 340ns、ARRAY 238/247ns、FIXED_DICT2 字段 817ns/3 字段 1565ns；墙钟只记录不设带；证据页 docs/review/opt-04-01-01-entitydef-baseline.md；entitydef 既有测试未动全绿）
-- [x] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。（本席 `9881c37`：FsResolver::open_section 进程级 parse 缓存（参照 resmgr/data_section_cache.hpp find/add/clear+setSize：thread_local 按全路径键、上限 1024 条溢出即清、clear_section_cache() 面；MemoryResolver 不动、仓内 FsResolver 消费者皆只读夹具）；基线 runner 起手清缓存→startup_*=缓存冷/ warm=缓存热；**比较**=同跑 cold 0.916ms vs warm 0.297ms（暖启动省 0.619ms=读+解析份额；跨记录冷值不作比因负载 40→21 档差已披露）；digest 前后同 18D00DC6 钉 oracle 恒等；entitydef 库测 247+集成全绿、覆盖 entity_description 99.31%/entity_map 99.24%/data_type 98.02%≥98；证据页 opt-04-01-01-entitydef-baseline.md OPT-04-01-02 节+TSV 滚动 canonical 记录）
-- [x] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。（本席 `f428168`：crates/entitydef/tests/entitydef_codec_gen.rs 评估原型=Kind 树载入期编译成闭包树（子经 Rc 共享、值词汇不动；write_int/truncate_integer/check_sequence_capacity 三 crate 私有助手忠复制、由字节恒等面钉住）；字节恒等腿=两夹具全 21 属性 gen 编码逐字节==解释式+两向解码均还原默认值+不支持类目（CLASS/UDO_REF/PYTHON/USER_TYPE）计数断言零；成本腿=每族 encode-only/decode-only 各 2 万轮、sink 构建在钟窗外、解码走预编码+rewind，TSV docs/review/fixtures/entitydef-baseline/codec-gen.tsv 92 行+三连跑方向全稳：标量 encode −3..−9%/decode −4..−6%、STRING −5%/−6%、ARRAY −8..−12%、**FIXED_DICT 两族反而 +0.4..+11%**（每字段 boxed 闭包间接调用吃掉省下的 match）；生成成本 7µs/21 属性无关紧要；**裁定=不采纳入引擎**——闭包树扁平族赢 3-12% 合成族输 4-11%，构建期直线单态 codegen 不可用（定义是运行期数据、参照引擎自身亦解释式分发）、标量 ~10ns 在噪声带不作契约；记录事故=首次 rustfmt 后单跑瞬时失败无 panic 留痕、同二进制 16 连跑全绿；零 src 改动=覆盖门不适用，entitydef 247+评估 2 测绿）
-- [x] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。（本席 `6ce8e4c`：crates/entitydef/tests/entitydef_rerun.rs 复跑 harness 三腿全一致——①摘要=full_def/fantasydemo_def/service_def/entity_index 四树经 factory_create 重载 digest 逐字==docs/review/reference/*_entitydef.json oracle（entity_index 无 alias.xml 容一字告警同 differential；client_integration 走 BW04_CI_RES env 未设则记 skipped，同 differential 口径）；②实体快照=fantasydemo Avatar.def（SHA e35472f0…==采集输入）+采集工具固定输入节，经参照四 pass shouldConsiderData 顺序（entity_description.cpp：base非client/base+client/cell+client/cell非client，每 pass 声明序）复现 entity-Avatar.snapshot.hex 15 字节逐字节恒等（含 INT8 输入 300→0x2c 参照截断）；③数据库行=BASE|CELL|ONLY_PERSISTENT_DATA（持久只认显式 <Persistent> 标签、缺省 false=data_description.cpp:220 readBool）+canBeOnCell 追加 position/direction/spaceID（xml_database.cpp getEntity 行公式）复现 database-Avatar.row.hex 38 字节逐字节恒等；记录 docs/review/fixtures/entitydef-baseline/def-rerun.tsv 14 行（四 digest+双 hex+双字节数+match 旗标）；**验收=产物一致，每次跑都断言**；OPT-04 段全收官）
+- [ ] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。
+- [ ] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。
+- [ ] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。
+- [ ] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。
 
 ### OPT-05-01 录制负载热点和故障基线
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `e028fbf`：crates/server-runtime/src/cellappmgr_baseline.rs 三腿合成钟 harness 在 crate 内 `#[cfg(test)] #[path]` 挂进 cellappmgr.rs（Space.root/BspInternal 私有），①分配=零面积 sliver B+热点 A 经 inform_of_load EMA 12 步（bias 0.05）爬坡，balance 一步收敛 B.ymin=ENTITY_EDGE=4000 钉死每步 EMA/每轮 A/B 范围；②回收两臂=零面积 sliver 首轮 1 CellRemoval+兄弟升 Rect::unbounded()，实面积 cell 因 growing child A 的 chunk ghost margin（Space::load_balance 从 unbounded 重导范围→chunk_bounds 不含 inflate desired→fallback A.range，chunk_limit=A.ymax-500=3500）被钉在 4000 不回收，两面对照记录；③恢复=严格 now-lastHeard>timeout 检测钉 5000ms/4tick，死信广播+BaseAppMgr 报告+双 cell 树erase 后存活 cell 占 unbounded+最后 app 死触发受控关服；ESTIMATED_INITIAL_CELL_LOAD bump 归 create_space creation seam；证据页 docs/review/opt-05-01-01-cellappmgr-baseline.md+TSV 56 行 fixtures/load-hotspot/cellappmgr-baseline.tsv；clippy/fmt 绿，server-runtime 1680 测绿，全仓 6949 passed/0 failed（基线 6948 +1））
-  - 双交付 FLAG（2026-11-26，本席登记）：main 另收平行腿 `e028fbf`（cellappmgr_baseline.rs 三腿合成钟 harness 入 cellappmgr.rs）与本席 `5120dea`+`0fbfa8f`（load/src/hotspot.rs run_hotspot_baseline）同面异实现，待主席择一。
-- [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（commit cd056fc：cellappmgr_tuning.rs 三固定场景对比——①热点爬坡跨 EMA bias 0.02/0.05(出货)/0.1/0.2：达阈 informs 52/21/10/5 严格反序、落点几何全同(4000 entity edge 两 pass)，bias 只换探测延迟不换落点；②反转跨 aggression 两分支：反转臂首 pass 减半 0.5 后 ×1.0718/pass 回升(8 pass 0.8123)、延续臂恒 1.0，closest_limit 单调故两臂落点同(5000=level1)，阻尼=抗振荡面零几何代价；③回收 drain 跨 chunk-limit 开关：关=1 pass 完成(CellRemoval 1+幸存者升 unbounded)、开=线被幸存者 chunk ghost margin 钉在 4000(基线 held 面)，空 retiring cell 按参照 Space::writeEntityBoundsForEdge 报无界边+offload floor(这才让 entity limit 可达世界边)；证据页 docs/review/opt-05-01-02-load-tuning-comparison.md+TSV 27 行 fixtures/load-hotspot/cellappmgr-tuning.tsv；server-runtime 1702 绿、全仓 6950 passed/0 failed）；⚠️ FLAG 平行交付未决 2026-11-26：bw14-script-host `a577c5c`+修 `9563f2e`（balance_baseline.rs 312 行真 CellAppMgr 96 tick 双相位+ScheduleLedger+BalanceTuning seam 七旋钮含 safety_bound/safety_ratio+cellappmgr.rs +122+证据页，lane-only）vs main 落地 bw15 `cd056fc` 面（cellappmgr_tuning.rs 三固定场景对比），异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `cd056fc` 面（cellappmgr_tuning.rs 三固定场景对比，已在树、server-runtime 全绿）为本行交付面；bw14 `a577c5c`+`9563f2e`（balance_baseline.rs）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：择 main `cd056fc` 面（cellappmgr_tuning.rs 三固定场景对比）为本行交付面；本席 lane-only `a577c5c`+修 `9563f2e`（balance_baseline.rs 312 行+BalanceTuning seam 七旋钮）转存档记录，随 lane 并入由主席处置。
-- [x] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。(2026-11-26 lane/bw15-platform fd21b51→main 51bf749+证据 0407552→515351b：复跑三面零失败——①迁移面 cargo test -p server-runtime --lib -- migrat offload teleport 75/75 绿（entity_creator mailbox/ghost 跨 space 传送可见集/offload 两侧恰一 real/控制器恢复/message_redirect 切换中恰一次）；②关服面 -- shutdown mixed 43/43 绿（shutdown 阶段线值对参考 enum/完成队列按序 drain/server_app init 失败也跑 fini/space 空 cell 销毁回收）；③混部面 el7_mixed_deploy --ignored 1/1 绿 5.01s，EL7 真二进制 pid/整机查询+addTCP/add 双版本+TCP 注册 22B+记录帧 45B×4+UDP×3+mldb 三标记+协议版本 10，TSV 与已提交 fixture 逐行 IDENTICAL；④附加 lifecycle_scenario.rs 种子场景 6 测绿（seed 41 复现/entity restore 一致/进程阶段与 task drain/replay tail 终态可复现，无墙钟采样）；本席 main 树复核=上述三面本机重跑数字；坑=EL7_MIXED_OUT 须文件路径传目录 IsADirectory)
-  - main 已收（台账席 1a21d7a）：本席 `fd21b51`→main `51bf749`（逐字节同）+复跑证 `515351b`，本席勾保持；main 行文误标 lane/bw15-platform，实为 lane/bw14-script-host 本席交付。
+- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。
+- [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。
+- [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 
 ### OPT-06-01 登录与资源下载基线
 
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
-- [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。(2026-11-26 lane/bw15-platform 5ec0620→main 4c29980+证据 afee8b2→fcfa88f：crates/load/src/login_baseline.rs 组合既有面记录三族数字——峰值=login hurricane online 序列最大值（seed 固定可复现）；拒绝率=FD 预算拒绝 login_refusal_rate=refused/(admitted+refused) 单列（与「发出后失败」分账，login_success_rate 仍参考 admitted/attempts 语义）；延迟=资源下载分块 tick 地板 ceil(payload/BUNDLE_BYTES)（参考 ServerDownloads::add_to_bundle 每 mini-tick 一 bundle 载荷）+队列驻留字节；**读法警告：离线面是模拟时间无墙钟 RTT，延迟=确定性地板非实测往返**；记录运行=保存夹具 login-hurricane.xml seed 20261123/FD 500×FD_PER_BOT+1/载荷 4096B→attempts 500/admitted 500/refused 177/online_peak 500/refusal_rate 0.26145/download_ticks 4/queue_bytes 4096，夹具 docs/review/fixtures/load/login-baseline.report.json；5 单测钉 ceil 分块/队列字节/峰值拒绝记录/seed 复现/预算拒绝臂；本席 main 树 load --lib 174 绿（含 login_baseline 6）)；⚠️ FLAG 平行交付未决 2026-11-26（bw15 `cca778a` 登记）：bw14 席 `cc648b5`（crates/server-runtime/src/login_baseline.rs 586 行 seed 登录+下载基线账本，lane-only）vs main 落地 bw15 `4c29980`（crates/load/src/login_baseline.rs，经 5ec0620 收编入 main），异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `4c29980` 面（load/login_baseline.rs，5 测绿在树）为本行交付面；bw14 `cc648b5`（server-runtime/login_baseline.rs 586 行）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：择 main `4c29980` 面（load/login_baseline.rs 三族数字）为本行交付面；本席 lane-only `cc648b5`（server-runtime/login_baseline.rs 586 行 seed 洪泛账本）转存档记录。
-- [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。(2026-11-26 lane/bw15-platform 083c598→main 790332b+证据 83f6caa：fleet.rs botsForLogOnRetry_ 排水从每条到期 bot 单独 Vec::remove 改单遍分区（mem::take 遍历 log_on_retry_time()<now 到期者 log_on() 后推回，O(n²)→O(n)，队序/重登序不变固定 seed 派遣序不变）；新测钉 4 到期条队序重登+1 留队；bench login_surge.rs parked 64/512 同刻到期单 tick 排水+Throughput::Elements；A/B 对照 taskset -c 6 钉核交错 6 轮：drain_64 13.93→7.39µs 0.530（1.9×）、drain_512 776→80µs 0.104（9.65×）每轮候选全优无交叉=效应远超噪声；本席 main 树 bench 跑通（drain_512 ~90µs 级）load --lib 175 绿，clippy 净，smoke.rs 三处 expect(&format!) 被遮 lint 顺手清（main 已有此修 auto-merge 消重）)；⚠️ FLAG 平行交付未决 2026-11-26（bw10 `05c581c` 登记）：bw14-script-host `3ced450`（crates/server-runtime/src/login_tuning.rs 115 行+login_baseline.rs 扩展登录排队尾延迟对比，lane-only）vs main 落地 bw15 `790332b` 单遍排水（fleet.rs O(n²)→O(n)+benches/login_surge.rs），异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `790332b` 面（fleet.rs 单遍排水，A/B drain_512 9.65× 零交叉在树）为本行交付面；bw14 `3ced450`（login_tuning.rs）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：择 main `790332b` 面（fleet.rs 单遍排水 9.65×）为本行交付面；本席 lane-only `3ced450`（login_tuning.rs 排队尾延迟对比）转存档记录。
-- [x] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。(2026-11-26 lane/bw15-platform efabd67→main 6ffd9af+bench 6318f61→bdf1327+证据 5c37709→c23987a：data_download.rs 装配 segments.concat()→assemble() 先按总长 with_capacity 一次分配再按值逐段 move 拷入——concat 峰值活数据=2×流长（完整结果+全部段并存）按值消费恒=1×流长，并发下载同刻完成时进程峰值 RSS 结构性减半；新测钉 capacity==6 精确一次分配+空段臂，其余 7 行为测不动（到达序拼接语义不变）；bench download_assembly complete_64/512；A/B 钉核交错 6 轮：complete_64 0.918/complete_512 0.845 轮间交叉=墙钟噪声内无可靠收益，**诚实判读=内存半边结构性 0.5、传输时长半边被 bundle 分块契约钉死（ServerDownloads::add_to_bundle 每 mini-tick 一 bundle，与参考一致，对照结论非优化项）**；本席 main 树 sr lib 1734 绿+bench 跑通，clippy 净)；⚠️ FLAG 平行交付未决 2026-11-26 两路：bw14-script-host `3e4839c`（crates/server-runtime/src/download_tuning.rs 263 行下载时长+内存对比，lane-only）与 bw16-18 `42d6686`+`238aab3`（crates/server-runtime/src/server_download.rs drain 直排+benches/download_drain.rs+legacy_queue.rs+tests/download_drain_alloc.rs+证据页 download-drain-server-side.md+TSV，lane-only）vs main 落地 bw15 `6ffd9af` assemble 预装配（data_download.rs 峰值活数据 2×→1×），三面异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `6ffd9af` 面（data_download.rs 客户端组装，峰值活数据 2×→1× 在树）为本行交付面；bw16-18 `42d6686` 服务器侧排出面（其页自报 drain_256 0.69-0.72×）与 bw14 `3e4839c` 对比面均记为补充/备选 lane-only 归档不删——三者异文件零重叠，如需并入补充面或置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：三路择 main `6ffd9af` 面（data_download.rs 预装配）为本行交付面；本席 lane-only `3e4839c`（download_tuning.rs 263 行）与 bw16-18 `42d6686`+`238aab3`（server_download.rs drain 直排）均转存档记录。
-- [x] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。(2026-11-26 lane/bw15-platform 838a54a→main 2f27440：复跑行零代码改动三条面全绿判一致——①重复登录 duplicate_auth.rs 5/5（同账号二次登录原位改写唯一映射/并发拒不污染/checkout 中拒不计尝试/logoff 后仍单记录/自定义扩展可重复）；②重连 -- relogon relogin 28/28（relogon.rs 9 态机回复码族+baseapp_relogon.rs 13 web/proxy 复用族+log_on_records 2+login_entity 2+headless_client 1，load 重连链 3 测+reconnect.xml 场景加载）；③旧客户端 loginapp.rs 版本面 10/10（三旧版本 BadProtocolVersion 且先于凭据参数拒/supports 严格相等/截断流 MalformedRequest/线上序反自然序回放）；ci/load.sh 4 lane PASS 6/6 场景入带；本席 main 树复核=同组腿本机重跑同数全绿)；⚠️ FLAG 平行交付未决 2026-11-26（bw10 `05c581c` 登记）：bw14-script-host `da80f8e`（crates/server-runtime/src/login_rerun.rs 422 行重复登录+重连复跑面，lane-only）vs main 落地 bw15 `2f27440` 复跑一致性面，异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `2f27440` 面（复跑一致性三面全绿在树）为本行交付面；bw14 `da80f8e`（login_rerun.rs 422 行）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：择 main `2f27440` 面（复跑一致性）为本行交付面；本席 lane-only `da80f8e`（login_rerun.rs 422 行复跑面）转存档记录。
+- [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。
+- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
+- [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
+- [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
 
 ### OPT-07-01 备份和归档基线
 
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
-- [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。19c4d4d（backup_baseline.rs 48 实体种子舰队过真实备份面：带宽逐 tick 1396/1410/1412×4 共 8454 字节 6 tick 清队列、收发队列峰各 48、接管 48/48 恢复且属性全等、归档恢复耗时 8 tick 重持久化 24/24 且逐实体往返核等；4 测 98.31% 行 100% 区域）
-- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。9abf58e（backup_tuning.rs BackupTuning seam(Default=逐位复现由测钉)同种子同负载双跑：slice 8→16+period 8→4，队列 6→3 tick、恢复 8→4 tick，代价=每 tick 带宽峰翻倍(1412→2824)但字节总恒等 8454(方向断言诚实)；same_load 钉同舰队/同持久集/同字节/同恢复；4 测 100% 行）
-- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。4c19ee7（shared_data_baseline.rs+shared_data_tuning.rs 96 变更过真实双 mgr 链(set/del 四 scope+forward/relay 环 4 BaseApp+3 CellApp)：shipped 575 消息(base284/cell219/fwd24/relay48) vs 抑制 no-op 写 444(216/174/17/37)=省 131(−22.8%)，21 次 no-op 放大为全链腿消去(全局 set=5/转发 set=9/cell=3)；终态三权威图逐位相等(same_load 钉)；跨种子形状钉；9 测 baseline 98.58%+tuning 100%）
-- [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。2fbfcf8（takeover_rerun.rs 12 实体种子舰队过真实备份面后源亡接管 restore 12/12 属性全等；16 变更建双 mgr 权威图后按 count+pairs 恢复流形状落盘、全新 mgr 对经真实 recover_shared_data_from_stream 读回=四图逐位等(2/4/2/4 条目)；跨种子形状钉；4 测 99.65% 行 100% 区域，唯一缺行=属性不匹配假臂被断言正确性排除）
-
+- [ ] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。
+- [ ] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。
+- [ ] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。
+- [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。
 
 ### OPT-08-01 密集 AOI 基线
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
-- [x] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。已交付 eee8fde：crates/server-runtime/src/aoi_baseline.rs 全 shipped 栈逐 tick 接线（cross 范围列表 move_entity shuffle ±0.75m 确定步/AoI trigger 跨界喂 witness add_to_aoi→flush→EnterAoI→request_entity_update 回应→CreateEntity/vision trigger 喂 vision_update 1.2rad 锥 28m 每 tick 清晰地形/Witness::update 预算调度 setWitnessCapacity(64000,10)=772B/tick 密集下绑定）。120 实体 10×12 格 4m 间距单观察者：账本=48+16 tick、tick0 创建爆发 289 消息 2704B（120 EnterAoI+120 CreateEntity）、tick1 首见爆发 44 starts、稳态窗(8..48) 4654B ≈116B/tick 预算绑死、总广播 5708 消息 9188B、AoI 跨界 120 进 0 出、seeing churn 77/31；迁移腿=handover 46 可见→目的地静默种子 46→真新 id 重公告 12、重复公告 0(diff 契约)、2 tick 收敛到 native 观察者集合(42)。断言全结构性（爆发一次性/稳态不超预算且恒发/种子无声/start 永不命中已持有 id/收敛 native/全账本逐 tick 复跑恒等）；墙钟探针(seeing 4.0ms/scheduling 392ms over 64 tick)只打印。面发现：目的地 vision trigger 必须由 vision_start_real 新建——预建 trigger 令 restore 的 set_vision(None→Some) 走清空路径、entities_in_vision_range 留空种子盲走；迁移实体 startReal 重建 trigger 正是 range 填充正确的机理。docs/review/opt-08-01-01-dense-aoi-baseline.md。门禁 server-runtime lib 1748 绿/fmt/clippy 净。
-- [x] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。已交付 98725ed：crates/server-runtime/src/aoi_tuning.rs 同负载双比较（OPT-08-01-01 种子/轨迹/120 实体场全 same-load）。①扇区预过滤索引=seeing pass 前按水平角>vision_angle+0.25rad 丢弃目标（水平朝向下 3D 锥角≤水平角⇒保守不过判）：48 tick 走行 5760→2471 行=省 57.1% 内圈、可见集/seeing-start 逐 tick 零失配(48/48 恒等)、探针墙钟 2.645→1.917ms；范围列表已索引距离故收益有界=仅去背向扇区。②Witness 调度扫描=调度器操作面 setWitnessCapacity 64000/128000/256000 bps(772/1572/3172B)：覆盖期预算绑死(爆发 2704B 赤字回扣)4×带宽 3→2 tick；稳态广播量对带宽不敏感(~116B/tick ≪ 772B 预算)——MAX_PRIORITY_DELTA 窗[front,front+5.0) 先于预算清空=稳态限流者是窗宽不是链路；两容量全覆盖(窗饿死人无)单调性断言；per-entity 覆盖从 bundle EntityUpdate id 观测。等值/单调全 assert、墙钟只打印。docs/review/opt-08-01-02-aoi-index-witness-scheduling.md。门禁 server-runtime lib 1750 绿/fmt/clippy 净。
-- [x] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。(2026-11-26 本席 lane/bw14-script-host 5e4181c:space_parallel.rs 复用 BW-08-05-01 decide_offload/collect_offload 实面,120 实体密场按 x=16m 分裂面两侧驻扎,AoI 基线同款 ±0.75m 步表真跨面;台账 crossings=2/offloads=2(逐 crossing 恰一次,落点=p_cell_at 所含侧)/stays=118,check_ms≈0.009-0.012 probe 打印不断言;分支规则 coordinate<position 把分界平面判给右子(x/z 双轴实证,骑面者归左必迁 OffloadTo(FAR));四 Stay 门(未创建/死通道/缺通道项=死/删除挂起)+disabled cell_should_offload 全 Stay;重跑台账恒等;4 测,lib 1754 全绿;review=docs/review/opt-08-01-03-space-parallel.md)
-- [x] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。(2026-11-26 本席 lane/bw14-script-host 616a885:aoi_rerun.rs 复跑密场景两遍逐 tick 审计,TickLedger 增有序 starts/stops/enters/leaves+整份 bundle 发送序;状态正确=视距触发器布点=窗谓词 (sub-range<x≤sub+range) 双轴、可见集=扫描锥真值(update gate 读控制器公开 tick 计数,run tick 用现位置/skip tick 恒等携带集)、start/stop 差分自洽(starts 只打未见 id/stops 只打持有 id/差分复现 visible_entities)、EnterAoI/LeaveAoI 消息=触发器跨越、witness AoI 映=500m 窗、bundle 逐实体序 EnterAoI→CreateEntity→EntityUpdate 更新不先于创建;迁移腿 destination+native 双世界 16 tick 全审,seed 静默 46→46、held 重报=0、终态 visible 42/range 布点/AoI 映三层全等 native;坑=client bundle 是客户端面向 AoI 态唯一重放源,tick 0 120 条 EnterAoI=120 跨越,二次重放会重复计数——两视图须对账不能叠加;2 测,lib 1756 全绿;review=docs/review/opt-08-01-04-aoi-rerun-state.md)
-
+- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。
+- [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。
+- [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。
+- [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。
 
 ### OPT-09-01 分别采集 MySQL 与 PostgreSQL 基线
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
-- [x] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。（opt-09-db-baseline 席 `da4e411`，lane/opt-09-db-baseline，main=`e59ca31`：crates/db-postgres/tests/store_baseline.rs 6 测=512 行确定性语料同一数据集落 MySQL（DDL 对照参考 db_storage_mysql 布局+值类型逐 kind 对）与 PostgreSQL（JSONB 嵌套列 codec 往返）双后端，schema/确定性/嵌套列各单测；TSV docs/review/fixtures/store-baseline/store-baseline.tsv 22 行，证据页 docs/review/opt-09-01-01-store-baseline.md；workspace 新增 `mysql` 依赖（minimal-rust）；本席 main 复测 6 绿。⚠️ 与 bw14-script-host `7024fb1` 平行交付 FLAG 待主席择一）→ **主席裁定 2026-11-26**：择 main `e59ca31` 面（lane/opt-09-db-baseline `da4e411` 收编形，512 行单数据集双后端在树）为本行交付面；bw14 `7024fb1` lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 本席 lane-only 交付存档（2026-11-26 主席裁定择 main `e59ca31` 面，opt-09-db-baseline `da4e411` 收编形）：本席 `7024fb1`（baseline_dataset.sql 双真机采集）转存档记录。
-- [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。（opt-09-db-baseline 席 `da9a135`，lane/opt-09-db-baseline，main=`04f5d37`：crates/db-postgres/tests/store_pool_candidates.rs 3 测=连接池与预编译语句候选对照（参考 `numConnections_` 默认 5 长连会话+每线程一连接+启动期预编译实体 SQL 模板两形），各后端延迟与吞吐逐形报告且回读恒等；TSV docs/review/fixtures/store-pool/pool-candidates.tsv 48 行，证据页 docs/review/opt-09-01-02-store-pool.md；本席 main 复测 3 绿）
-  - 本席 lane-only 交付存档（main 面=opt-09 lane `da9a135`→`04f5d37`）：本席 `9dda748`（pool_merge_eval.rs 三执行形状真 PG 对比）转存档记录。
-- [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。（opt-09-db-baseline 席 `cb65282`，lane/opt-09-db-baseline，main=`8b1fb8a`：crates/db-postgres/tests/store_commit_candidates.rs 4 测=实体写缓冲进 Transaction 按归档周期一 `COMMIT`（参考 sqlite_database.cpp 131-177+db_config 5s 默认）与显式 WRITE_EXPLICIT 两臂提交时长+归档整合恢复时长报告，落库回读逐字段等；TSV docs/review/fixtures/store-commit/commit-candidates.tsv 16 行，证据页 docs/review/opt-09-01-03-store-commit.md；本席 main 复测 4 绿）
-  - 本席 lane-only 交付存档（main 面=opt-09 lane `cb65282`→`8b1fb8a`）：本席 `01d391c`（archive_batch_eval.rs 三写形真 PG 对比）转存档记录。
-- [x] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。（opt-09-db-baseline 席 `7663701`，lane/opt-09-db-baseline，main=`3a7b9d0`：crates/db-postgres/tests/store_recovery.rs 3 测=参考 MySqlBackgroundTask::doBackgroundTask 契约复跑——可重试失败恰一次重试（attempts 2/on_retry 1）、回滚批零幸存行、事务外断连恰一次自动恢复+事务内手动重连；恢复后数据一致计数钉死；TSV docs/review/fixtures/store-recovery/recovery.tsv 21 行，证据页 docs/review/opt-09-01-04-store-recovery.md；本席 main 复测 3 绿）
-  - 本席 lane-only 交付存档（main 面=opt-09 lane `7663701`→`3a7b9d0`）：本席 `f09727b`（rerun_recovery.rs 三腿复跑）转存档记录。
+- [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。
+- [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
+- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
+- [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
 
 ### OPT-10-01 地图加载和查询基线
 
 优化空间流式装载、碰撞走查和导航缓存。比较峰值内存、场景冷启动和查询尾延迟，核对坐标与碰撞结果。
 
-- [x] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。(2026-11-26 本席 lane/bw14-script-host 37ec32a:crates/chunk/tests/map_load_baseline.rs 对原版夹具空间(docs/review/fixtures/chunk_space 18×2 网格)走全套流式面=解析 mapping→gather_chunks 枚举 37 候选→load_and_bind 绑 6 个 .chunk→focus→双半板地形 slab 过 focussed add_obstacle 门,整段冷启动计数分配器(OPT-01-01-01 同款 thread-local)+VmRSS 包夹;保存:冷启 1.6-2.5ms/2025 allocs/163790 bytes/rss Δ≈428kB,find_chunk_from_point 100 探针 p50 0.53µs/p99 1.7µs,collide findDropPoint 形 100 射线(50m→-10m 止于 10m 板) p50 1.8µs/p99 18.7µs;结构账断言且重跑恒等:绑集=6 文件、逐探针命中属主 chunk、逐射线 40m 处止板(±1e-3)、绑序/答案/距离/分配数全复现(2025/163790 双跑);墙钟与内存 probe 打印不断言;chunk 188 测全绿;review=docs/review/opt-10-01-01-map-load-baseline.md)
-  - main 已收（台账席，2026-11-26）：本席 `37ec32a`→main `5d88b28`（逐字节镜像，patch-id 同），本席勾保持。
-- [x] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。（2026-11-26 lane/bw14-script-host 7fc6d76：crates/chunk/tests/map_stream_opt.rs 走 shipped scan 卸两格重载全周期，候选=BwResource 段缓存 LRU 同 load_and_bind 解析面 vs 原始读+解析基线；峰值内存=计数分配器 LIVE 高水位 PEAK 单元，报告见 docs/review/opt-10-01-02-map-stream-opt.md——冷缓存填付 write_to_string 尺寸化 +469 allocs 更慢，重载 3.77ms/759 vs 原始 10.46ms/931，热全空间 1.50ms/1132 vs 冷 2.97ms/2025；结构面断言：缓存段 PartialEq 同树、双侧 bound/reloaded/finds/dists 全等、周期复跑恒等；墙钟探针数据只印不断言，allocs/peak 复跑精确复现；chunk 门禁 190 绿）
-  - main 已收（台账席，2026-11-26）：本席 `7fc6d76`→main `ac2d93d`（逐字节镜像），本席勾保持。
-- [x] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。（2026-11-26 lane/bw14-script-host bfde122：crates/client/tests/query_cache_opt.rs 双腿——导航=六单点集 permissive 链全 outside chunk，缓存面 find_path ReadWriteCache 骑成员 NavigatorCache 逐跳 vs 重算面 navigate_path_points/findFullPath 每调 scratch 缓存，同一批起点；碰撞=find_drop_point 打 BW-10-07-04 clientquery 夹具世界六 RAY 探针×40 重复；报告 docs/review/opt-10-01-03-query-cache-opt.md——缓存填跳 47 allocs 后四跳各 8 allocs（set path 尺寸 [6,5,4,3,2] 弹尽=命中臂逐跳行使），缓存总 79 vs 重算总 281（3.6× 省），复跑账 [47,8,8,8,8] 精确恒等；碰撞尾 p50 1.7-6.8µs/p99 至 26.3µs（GHOLED 格走查跨柱界），40 重复逐探针位级恒等（距离/落点/三角形/miss）；结构断言：逐跳进一格、末跳答终点、重算路线=共享穿越序列+隐藏穿越+裁剪终点（面发现：findPath 末跳换原始 dst 藏终点集穿越 vs findFullPath 保留+裁剪，两面对比共享序列各钉自己终点）、缓存侧分配严格更少；墙钟 probe 只印不断言；client 门禁 868 绿）
-  - main 已收（台账席，2026-11-26）：本席 `bfde122`→main `fafbe51`（逐字节镜像），本席勾保持。
-- [x] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。（2026-11-26 lane/bw14-script-host eb163d4：crates/client/tests/map_rerun_fixtures.rs 双腿复跑——路径=BW-10-07-03 genmap 双 chunk 世界按真相绑序重绑，五条 XPATH 探针对走 find_path ReadWriteCache 缓存步进面，源集侧逐跳钉在真相链上有序子序列（平滑可抽直不可绕），终点=真相解析终点（ACROSS 绕洞/RAMP 上坡/AROUND/SEAM A 侧 [wp0,wp4,wp3]+终点 B wp7/SEAMBA 终点 A wp3），五条复跑恒等；碰撞=chunk_space 夹具图走 OPT-10-01-02 缓存解析面 load_and_bind 绑 6 文件+参考地形 slab 过 focussed 门，100 探针格走客户端 findDropPoint 全部 40m 处止 10m 板±1e-3+格心解析属主 chunk，第二遍位级恒等；面发现两条：远侧跳=walk 面自有 for_destination 目标解析可落在原始 A* 链外邻点（源集侧才是夹具实质故严钉）、TOUR 不入走查（XPATHNONE 钉一次性 A* 面=genmap_load 已复放，walk 面每调只跨一门按构造可合法走完）——见 docs/review/opt-10-01-04-map-rerun-fixtures.md；client 门禁 870 绿）
-  - main 已收（台账席，2026-11-26）：本席 `eb163d4`→main `93a1576`（逐字节镜像），本席勾保持。
-
+- [ ] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。
+- [ ] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。
+- [ ] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。
+- [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
 
 ### OPT-11-01 三端固定镜头基线
 
 优化各端 GPU 上传、渲染批次、资源流与客户端帧调度。比较帧时间和显存，用固定镜头做视觉回归。
 
-- [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。(2026-11-26 lane/bw14-script-host 877e016：crates/client/tests/render_baseline_opt.rs 三端(linux/windows/macos=BW-11-04-07 可比集)各走同一固定镜头=DeviceConfig::default() 640×480 RGBA8 +64 帧 check_device→scene.step→present shipped 设备面；帧时间=每帧 Instant 只印不断言（本机 debug 面 p50 18.8-19.5ms/帧=307200 set_pixel+FNV，逐端逐帧 192 行 FRAME-TIME 落 docs/review/opt-11-01-01-render-baseline.md）；显存=计数分配器 LIVE+PEAK 高水位（OPT-10-01-02 变体）结构账断言：设备创建 2 allocs/1228848 bytes（640×480×4=1228800 背板+48 bytes 计数器 Arc），逐帧 0 allocs/0 bytes（present 原地画+摘要无上载抖动），整程峰值=创建足迹 1228848 恒不涨；固定镜头两证=新设备直接步进到帧序号复现该帧摘要（1/7/31/64）+全账复跑恒等；三端摘要逐帧全等+分配账全等；saved 基线钉 1..=8+64 帧摘要常量+整程内存账常量（光栅/场景/设备内存任一变化即触发，OPT-11-01-04 复跑同钉）；client 门禁 872 绿）
-- [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。(2026-11-26 lane/bw14-script-host 5313db6：crates/client/tests/render_batch_opt.rs 双面上传评估——shipped 面=TestScene::draw 逐像素 set_pixel（640×480 每帧 307200 次写）vs 批量候选=同像素数学走 shipped 批原语（整幅 fill 背景+标记列块逐行 slice fill，每帧 481 次写=1+480）；三端(linux/windows/macos)各 64 帧画+摘要分开计时对比（FRAME-TIME 逐帧 192 行+BATCH-TAIL 落 docs/review/opt-11-01-02-render-batch-opt.md）：批量面画半 p50 1.97-2.10ms vs shipped 15.05-17.36ms=7-8× 省，帧时间整体 ~20ms→~6.6ms，摘要半与面无关（同像素同 FNV，两端面在每端内一致本身即可比性验证）；结构断言：逐帧全像素向量相等（64 帧×3 端）+摘要相等+Device::present 真设备面摘要步走=计时面所骑 shipped walk+双面零分配+连续帧摘要必异（固定镜头下动画真实）+三端账逐帧全等+复跑恒等；墙钟 probe 只印不断言；评估结论=整段画半收益全在写形状 307200→481，批量候选不换契约（像素恒等）不加内存（仍零分配），OPT-11-01-01 saved 摘要钉两面都须答；client 门禁 874 绿）
-- [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。(2026-11-26 lane/bw14-script-host 5535b86：crates/client/tests/render_stream_sched_opt.rs 基线固定镜头(640×480, 64 帧)走 shipped 帧调度面 FrameLoop::run_frame（Tick→UpdateAnimations→Draw 逐帧 canonical+hooks 按相序断言，64 帧×3 端），六个排程切图帧(8/16/24/32/40/48)走 shipped load_and_bind 把参考夹具图 37 候选按扫描序分六批流进活空间；单 tracked 区跨全程=逐帧 allocs 增量+live 轨迹连续；切图报告（结构断言）：切图帧恰落在排程帧、并集=probe 全集 6 chunk、逐切图帧 allocs 954/32/32/32/32/128 严格大于全部稳帧(≤9)——分配账即切图/长帧的结构识别；内存=总 1729 allocs/峰值 1281573/终 live 1280327（流进的空间骑在设备 1228848 基线上），复跑恒等；长帧报告（probe 只印不断言）：本调试 runner 墙钟尾被 OS 抖动主导（最慢帧是稳帧 allocs=8 达 27-76ms 非切图帧），逐帧 192 行+切图行+每端 top-5 落 docs/review/opt-11-01-03-render-stream-sched-opt.md；夹具发现=第六绑 chunk 是分隔块 001x000x/sep/00110000o（标识符是路径非格胞，格胞中心解析只盖四个 hex 外块）；收尾四外块 find_chunk_from_point 各自格胞中心归位；client 门禁 876 绿）
-- [x] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。(2026-11-26 lane/bw14-script-host 96d8f67：crates/client/tests/render_visual_rerun.rs 三端复跑 OPT-11-01-01 saved 基线固定镜头（640×480, 64 帧）：钉帧 1..=8+64 摘要逐帧对上 saved 记录（首走+复走双验）；容差=复走间钉帧逐像素 differing_pixels=0 断言位级相等（确定性面容差下限=位，不设预算）——连 OPT-11-01-02 批量候选面也同满足：64 帧逐帧答 walked 摘要+钉帧批量像素 vs shipped 背板差 0；内存账复跑=saved 数字（走查区内 2 allocs/峰值 1228848，帧仍不抬高）；截图面（ScreenCopy::capture→TGA，BW-11-04-07 通道）钉帧 1/8/64 逐帧捕获=18 字节头+1228800 帧体，三端逐帧字节相等+第二遍复跑字节恒等（视觉回归产物自身复现）；OPT-11-01 簇收官——基线/上传批次/流与调度/视觉回归四面互相咬合（saved 摘要钉三行共答）；client 门禁 878 绿）
-
+- [ ] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。
+- [ ] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。
+- [ ] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。
+- [ ] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。
 
 ### OPT-12-01 各观测通道开销
 
 降低日志、Watcher、Profiler 的观测成本。验证背压、关闭观测后的开销及新旧工具查询兼容。
 
-- [x] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。(661e12a)
-- [x] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。(9a74213)
-- [x] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。(f4fce4f)
-
+- [ ] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。
+- [ ] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。
+- [ ] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。
 
 ### OPT-13-01 冷构建、增量与编辑器加载
 
 优化依赖缓存、并行转换和编辑器加载。比较冷构建、增量构建与大地图编辑时间，校验可复现产物。
 
-- [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。(1fd4739)
-- [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。(663dc8c)
-- [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。(`827ed8e`)
-- [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。(2026-11-26 补勾（交付 b981ae7 已在树，勾行遗漏）：crates/asset-pipeline/tests/asset_hash_format.rs 四测复跑 4/4 绿——hash64 五向量钉原版 bw_hash64.cpp FNV-1a 含 LE-integer+combine 契约（combined 0x85562B3F62384861）；SpaceConverter 真 space 两次独立转换逐字节+摘要全等（213B/3 sections，原版读者树读回 models/box.model|models/spikes.model）；DependencyList 精确哈希 4 输入 1 输出（primary 0x3A31A0D27AFBDAAB/full 0x39F4CDF311678C81）；res_packer 夹具两跑逐字节全等（177B×2）+原版 EL7 产物 bw.packed 经本包读者树读回全等（tree_equal=true）；墙钟 ASSET-FMT 只印不断言；docs/review/opt-13-01-04-asset-hash-format.md 补档）
-
+- [ ] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。
+- [ ] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。
+- [ ] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。
+- [ ] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。
 
 ### OPT-14-01 发布包尺寸及首次运行
 
@@ -2953,44 +2911,34 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（Linux 腿已在 main：bw15-platform 56c2673→f6107e8，platform io_timer_baseline.rs 1 测：写 30.33µs/读 9.04µs/replace 55.81µs/定时器分辨率 1µs/wakeup 0.95µs；bw14-script-host 另起平行实现 7081674→未进 main，patch-id 与 main 版不同——主席择一；Windows/macOS 腿未齐故行保持开）→ **主席裁定 2026-11-26**：Linux 腿择 main `f6107e8` 面为准；bw14 `7081674` 平行实现 lane-only 归档不删；行仍开待 Windows/macOS 腿，全腿到齐后按行验收勾。
-  - 主席裁定 2026-11-26（main 行内）：Linux 腿择 main `f6107e8` 面（bw15 `56c2673`）为准，行保持开待 Windows/macOS 腿；本席 lane-only `7081674`（13 probe+tests/baseline 目录）转存档记录，随 lane 并入由主席处置。
-  - 注记（2026-11-26，台账席）：Linux 腿已落——bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿。行保持开——「各平台」待 Windows/macOS 腿（三端 runner，BW-15-05-01）后补测再勾。
-- [x] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。(2026-11-26 lane/bw14-script-host 2f77126→main 25e40c7：crates/client/tests/render_backend_baseline.rs 按后端登记表采集三问——新树唯一出货像素后端=Device 下软件光栅器（参照侧 D3D9/OpenGL/cocos2d/Awesomium 四后端仅 BW-15-06-01 事实非移植，BACKENDS 留位即插）；设备面结构断言 SoftwareDevice 640×480 adapter=0 307200px RGBA8+帧序 1..=64 单设备对象+status=Ok+leaked()=0；驱动面=执行环境文本（CPU/核/OS/内核 probe 只印不断言）；帧时=固定镜头 check_device→step→present 64 帧逐帧 FRAME-TIME+FRAME-TAIL 报告，min/median/p99/max 记运行值不断言；结构契约逐相邻帧摘要异+帧 1..=8/64 复现 OPT-11-01-01 saved 钉+帧 1/7/31/64 纯帧序号复现+复跑恒等；提交目录 tests/baseline/render-backend-baseline.tsv 十列 linux-x86_64=measured，macos-arm64/windows-x86_64=pending rows 带 BW-15-04/BW-15-03 blocker 不编数字，语法检查拒 pending 带测量/未知后端/重复对/非数字/测量平台缺行；client 861 绿+集成全绿，clippy 净；本机 2 测绿)
-  - main 已收（台账席，2026-11-26）：本席 `2f77126`→main `25e40c7`（cherry-pick，取本席版非 bw15 腿），本席勾保持为交付记录。
-- [x] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。(2026-11-26 lane/bw14-script-host 3761c24→main 117a588：crates/platform/tests/platform_opt_parity.rs——同套协议场景两臂比结果：泛化 sendto/recvfrom 逐数据报 vs 批 sendmmsg/recvmmsg 逐窗口，同一 loopback UDP 对共发送套接字源三元组可比；256 数据报逐报字节+序恒等（内嵌大端序号=自身下标）+源 port/addr 网络序恒等+变长 16..=1200 抓聚合拆裂+批臂 8 send+8 recv vs 泛化 256+256；边沿同答：空批/空收 0/静默非阻塞两臂同 -1+EAGAIN（libc 约定，sendmmsg 注释"-errno"与实态不符如实登记）/8 槽收 5 排队恰 5 槽序字节恒等/单批同 sendto；自揭两发现=drained 错误形与槽宽=批容量（4 槽收 5 留队未丢，独立 C repro）；platform 64 lib+io_timer 1+parity 2+signal_call_sites 全绿，本机 2 测绿)
-  - main 已收（台账席，2026-11-26）：本席 `3761c24`→main `117a588`（cherry-pick，取本席版非 bw15 腿），本席勾保持为交付记录。
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
+- [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
 ### OPT-16-01 采集依赖与增量构建基线
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 d11c3d2(ci/build-baseline.sh)+96009f9(asset-pipeline/tests/dependency_rebuild_baseline.rs) 已 cherry-pick 入本树 c64444b/d4b764e 并复跑绿——build-baseline self-test：install-module/layout/upgrade/uninstall 四 PASS+build-fanout PASS(重编源定位=foundation 19 直接依赖者)+build-cold 196.77s+build-incremental 67.51s/12 crate 重编；dependency_rebuild_baseline 测试绿；fixture tsv 入 docs/review/fixtures/dep-graph/)
-- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 8c37171(asset-pipeline/tests/split_evaluation.rs+fixtures/dep-graph/split-*) 已 cherry-pick 入本树 0ddb5e0 并复跑绿，asset-pipeline 门禁 384 lib+集成含 split_evaluation 2 测全绿)
-- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 870ad04(asset-pipeline/tests/install_path_recheck.rs+fixtures/install-recheck/) 已 cherry-pick 入本树 5e99e3a 并复跑绿——the_load_and_install_paths_stay_compatible PASS+本树连带复跑 install-layout 全 PASS+package-baseline verify 3 平台语法净)
-
+- [ ] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。
+- [ ] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。
+- [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
 
-- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。(2026-11-26 跨席复测勾：他席 main 交付 38b99db(profiler/tests/long_stability_collection.rs+fixtures/long-stability/long-stability.tsv+docs/review/opt-23-01-01-long-stability-collection.md) 已 cherry-pick 入本树 5bb641c 并复跑绿，profiler 门禁 43 lib+集成全绿)
-- [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。(2026-11-26 跨席复测勾：他席 main 交付 2a26627(profiler/tests/buffer_export_evaluation.rs+fixtures/buffer-export/+docs/review/opt-23-01-02-buffer-export.md) 已 cherry-pick 入本树 98bec50 并复跑绿)
-- [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。(2026-11-26 跨席复测勾：他席 main 交付 0ee4b28(profiler/tests/collection_integrity_regression.rs+fixtures/collection-regression/+docs/review/opt-23-01-03-collection-integrity.md) 已 cherry-pick 入本树 28c1da9 并复跑绿)
-
+- [ ] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。
+- [ ] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。
+- [ ] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。
 
 ### OPT-26-01 固定事件回放并采集查询基线
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（opt26-db 席 `4c75e00`，lane/opt-26-db，main=`6973092`：crates/db-postgres/tests/event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账，钉定样本报表（四级窗口+五查询形计数）为 01-04 复算基线；TSV docs/review/fixtures/event-query/event-query.tsv 39 行，证据页 docs/review/opt-26-01-01-event-query-baseline.md；本席 main 复测 6 绿，TSV 复捕墙钟行随负载漂（结构计数行恒等）只记录不设带；⚠️ FLAG 2026-11-26：bw15-platform `8f42e4c` 平行交付（crates/message_logger/tests/qlog_replay_baseline.rs 523 行 20000 条固定事件回放+11 查询面墙钟+样本报表，与 main 6973092 db-postgres 侧 patch-id 不同=真平行非镜像，lane-only 待主席择一））→ **主席裁定 2026-11-26**：择 main `4c75e00` 面（6973092 收编形，event_query_baseline 6 测在树）为本行交付面；bw15 `8f42e4c`（qlog_replay_baseline.rs 523 行）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 本席跨席复测存档（2026-11-26 主席裁定择 `4c75e00` 面，main=`6973092`）：本席 cherry-pick `e34dacd`/`013f573`/`c578a23`/`7a1867c` 四行复测全绿（db-postgres 25 套）。
-- [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。（opt26-db 席 `40b58e0`，lane/opt-26-db，main=`027c6c0`：crates/db-postgres/tests/import_batch_candidates.rs 3 测=同 512 行语料五种事务形（每 1/16/64/256 行一提交+整库一事务）各报墙/吞吐/计数分配器峰值且逐形回读恒等；TSV docs/review/fixtures/import-batch/import-batch.tsv 30 行，证据页 docs/review/opt-26-01-02-import-batch.md；本席 main 复测 3 绿（批 64+ 后吞吐平坦 620-640 rows/s，批 1 最慢=每行一提交））
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `40b58e0`（main 已收 `027c6c0`）：导入批大小评估（64 行 commit 裁定+内存平坦）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
-- [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。（opt26-db 席 `bf335b5`，lane/opt-26-db，main=`5df3486`：crates/db-postgres/tests/query_aggregation_candidates.rs 3 测=一全扫建 name→id（512）+level→ids（200 键）两聚合图，同 128 名抽样网格前后对照——基线 name 查询 ~14× 键控 get，聚合后网格解析走图不走扫；TSV docs/review/fixtures/query-aggr/query-aggr.tsv 21 行，证据页 docs/review/opt-26-01-03-query-aggregation.md；本席 main 复测 3 绿（加速比两跑 8350×/4746×=负载敏感记录行，128 网格断言恒等））
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `bf335b5`（main 已收 `5df3486`）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
-- [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。（opt26-db 席 `b34554a`，lane/opt-26-db，main=`1590095`：crates/db-postgres/tests/sample_report_rerun.rs 3 测=同固定事件流重放后从**存储语料**复算样本报表，对照盘上 docs/review/fixtures/event-query/event-query.tsv 基线（四级窗口+五查询形计数逐项等），再在每项优化（64 行批导入/两聚合图）后各复算一次仍等；证据页 docs/review/opt-26-01-04-sample-report-rerun.md；本席 main 复测 3 绿）
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `b34554a`（main 已收 `1590095`）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+- [ ] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。
+- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。
+- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。
+- [ ] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。
 
 ## 5. 实施顺序与里程碑
 
@@ -3245,8 +3193,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-13-02-03 移植 res_packer**。**验收** 打包前后资源可等价读回。
   - 证据：`crates/asset-pipeline/src/res_packer.rs`（2387 行 / 22 测；fdce7ff）+ `crates/resources/src/datasection.rs` 增 `del_child_at`（3ac619c）。**结构**：`PackerEnv`（printf+MsgHandler 面：`out` 按序收集、`ERROR: `/`WARNING: ` 前缀、**sub-ERROR 清 error 旗标**——原版 handler 赋值 `errorsOccurred_ = priority >= ERROR` 的怪癖原样保留）；`SourceSection::{open,is_packed,can_pack}`（packed 魔数先、首个非空白 `'<` 判 XML、否则 Bin；派生 `Clone` 供 print 复用，因原版 `XmlPacker::print` 是 const 不消费 `ds_`）；`convert_bytes`/`convert`（`PackedSection::convert` 面，错误消息逐字）；`copy_file`/`file_exists`/`remove_trailing_slash`；`BasePacker` trait + `Claim`（src/dst 空值守卫）；六 packer + `Packers` 注册表（HIGHEST=0/LOWEST=0xFFFF，按**严格大于**插入）；`print_usage` 两块 printf 原文；`parse_args`（`--res/-r` 跳过、`--list/-l` 在 flag 走查中**立即**开且打不开提前退出、`--in/--out/--err/--encrypt/--strip`）；`run`（批列模式 + 兼容模式，返回退出码）。**验收面**：`packed_output_reads_back_equivalent`（XML→packed→`PackedSection` 读回：int/负数/0/大 i64/前导零 `"007"`/bool/float/vector3/文本/canonical base64 blob/嵌套与 matrix 行逐项等价）+ `repacking_packed_output_is_byte_stable`（重打包**逐字节**同——参考经 `asString` 重推每个值）。**--encrypt**：XOR `0xc9`+marker 1；二进制节整体加密（每个节点存自身 raw 块为 `ENCRYPTED_BLOB`，children 块 `[i16 n][n×(i32 dataPos|i16 keyPos)][i32]` 与 `packed::write_node` 同构），`binary_with_encrypt_round_trips` 验证整树可解密。**六 packer**：Xml（LOWEST 兜底，`canPack()||shouldEncrypt` 才认领，print 不消费节，pack 走 convert 去 `metaData`）、Fx（fx/fxh/fxo 三类全跳过：`PACK_SHADER_BINARIES=true`/`PACK_SHADER_SOURCE=false` 仍只认领不产文件）、Image（`--encrypt` 时让位给 XmlPacker；bmp/tga/png/jpg 优先同辈 `.dds`，否则同扩展名拷贝，扩展名不符→"Error: Cannot copy source %s to destination %s.\n"；`.dds` 走字体跳过：同目录 `.font` 的 `creation/sourceFont`+`abs(sourceFontSize)` 拼 `name_size`）、Chunk（clientOnly 过滤服务器实体、去 editorOnly/metaData/navmesh/worldNavmesh 深 2、`.packerTemp` 中转+转换后必删）、CData（`space.settings` 缺→WARNING 且 prepare false；copy 后按 bin/xml 两路删 thumbnail.dds/navmesh/worldNavmesh（受 `clientNavigation/enabled` 门控）+ 每个 `--strip`；保留 `#if 1` 逐个打印存活子）、ModelAnim（model 打包去 metaData、animation/anca 跳过；`.anca` 生成在接缝后退化为拷贝源 `.anca`；打不开模型→"Could not open model file %s\n"）。**CLI 面**：批列 fgets 尾字符吃掉/末行无换行削末字符、`--err` 日志、`"Processing %s..."`+`" %s\n"`、`"\nProcessing complete"`+失败计数三句尾；兼容模式 print（单参）/pack（`"Processing %s to %s..."`+`"...succeeded/failed"`）；未知类型 print 模式**先打印 "Error opening source file: %s\n"（原版 prepare 副作用）再成功返回**；`main` 尾 `return result ? EXIT_SUCCESS : EXIT_FAILURE`。**怪癖保留**：too_many_children 的 `"PackedSetcion"` typo（去掉尾部计数——Rust 错误型无计数）；CDataPacker::print 打出 `"Error: ChunkPacker not initialised properly\n"`（原版串错）。**门禁**：163 asset-pipeline 绿（141 既存+22 新）+ resources 227 绿（+1 `del_child_at`），clippy scoped 仅剩 workspace 两条既存 unused-dep，fmt 净；llvm-cov 0.9.1 `res_packer.rs` 行 92.70%（同 crate 的 offline_processor.rs 92.77% 同档；本 crate 整体 85.75%，未达核心 98% 线——如实登记）。已推 `lane/bw15-platform`（fdce7ff）。
 - [x] **BW-13-02-04 移植 resourcechecker**。**验收** 同一坏资源得到对应诊断。**交付**（2026-11-25，8678b06 + 16eda65 已推 lane/bw15-platform）：`crates/asset-pipeline/src/resource_checker.rs` 移植 `tools/resourcechecker/visual_checker.*` 的 `VisualChecker`。**规则面**：`_bsp.` 命名直接放行且不载规则；规则自 `visual_rules.xml`（cacheRules=true 直开 / false 先 fileExists——两分支同落 openSection，合并为 `cache_rules || file_exists`）；缺规则记 `Unable to find visual_rules.xml file.`（构造期错误，check() 首行 `errors_.clear()` 与原版一致会清掉）；匹配 = 目录路径小写 find 包含 + `stable_sort`（path 长降序、filespec 长降序稳定）+ `PathMatchSpec` 可移植 glob（`*`/`?`/`[seq]`/`[!seq]`，首 `]` 字面量，`{}` 列表无用户未实现已注册）；rulesById + parent 链递归读（宏生 vector/string/int/float/bool + hardPoint 集合）；exportAs ∈ {normal, static, static with nodes} 否则 `Unknown value for exportAs [%s]\n` + 重置 normal。**检查面**：尺寸/三角数（`*indices` 子节 `IndexHeader::read` 计 `nIndices_/3`，负数 wrapping 成 u32）/层级深度（缺 node 节原版解引用空指针即 UB，移植记 0 已注册）/portal 电池（基座矩阵 row0=uAxis、row2=boundary normal、row1=normal×uAxis、平移=normal·d，点从平面空间映射回对象空间；<3 点/非平面（零法线跳过）/朝外（`d − centre·n > 0`，平面法线须指内）/snap 1/2196 容差/距离 1/1024 容差/offset 1/8192 close，printf %f 全 `{:.6}`）/重复节点名/硬点缺失与未知（HP_flash01 与 HP_flash 豁免；`len>3 && substr(0,3)=="HP_"` 照抄）/纹理名空格（renderSet→geometry→primitiveGroup→`material/textureormfm` find_last_of）。**接缝注册**：MessageBox/automatedTest 分支一律走错误记录；`PrimitiveFile::get` 先 `.processed` 后裸名；XML 内容嗅探拒绝（原版空 asBinary 强转 IndexHeader 是 UB）；`snap_vertices` 原版即死字段照抄并注册。**验收即测试**：`portals_are_forbidden_on_normal_visuals`（同一坏视觉在 rules=false 下得 `Must not have any portals`）等 15 测——好视觉全规则零错、too small/too big/三角上下限/层级/朝外/非平面/snap+距离/重复+硬点/纹理/坏 exportAs/缺文件逐项断言原版消息全文。**附带**：`datasection::read_vector3` 改走 openSection 路径行走（原版 readVector3 即 `openSection(tag)`，`boundingBox/min` 两跳；16eda65 附 `read_vector3_walks_slash_paths` 测）；门禁 asset-pipeline 177 + resources 228 测绿，clippy 仅余两既存 workspace unused-dep，fmt 清，llvm-cov resource_checker.rs 行 96.49%（crate 整体 85.60%，工具 crate 口径照旧）。**坑**：原版 portal 点存平面空间 (u,v,0) 经基座矩阵映射回对象空间，测试夹具必须给平面坐标再由 winding 定平面法线朝内（朝外即触发 facing 错误）；`BinSection::save_bytes` 输出含非 UTF-8 magic 字节，夹具写盘必须走原始字节而非 `from_utf8_lossy`（会替换 0xa1 致容器解析空）。
-- [x] **BW-13-02-05 回归 NavGen 入口**。**验收** 可调用 BW-10 的导航生成。**跨席复测勾**（main 交付为准，2026-11-26，本席）：main `79f47c4`（`crates/asset-pipeline/src/navmesh_processor.rs` 2738 行/55 测，LockedChunks 引用计数/ChunkProcessorManagerFace 锁块怪癖/NavmeshProcessor 逐 girth 顶检→flood→as_binary 追加/NavmeshCache 全端口）依赖面 `977f555`（waypoint-gen workflow.rs 914 行：readTGA/extendThroughUnboundPortals/determineEdgesAdjacentToOtherChunks/compileGirthsList/GirthWorkflow）+`d26cb55`（tga temp dir 隔离），本席 cherry-pick `3ddf7b8`+`b868516`+`b91f983`。**缝冲突自纠**（`e5670ac`）：本树 b99cb0e（lane-only，GenChunk/FloodPhysics 缝）与 main 同面（NavmeshProbe/DropPhysics 缝）物理撞名 to_vector3/determine_edges——取 main 版为准，删本树私有重复，navgen_map harness 补 NavmeshProbe/DropPhysics 适配 impl 改骑 workflow 缝，truth log `gen_navgen_map.log` 逐行复现未变（两版行为等价实证）。**复跑证**：waypoint-gen 88 测绿（含 navgen_map truth-log 对照+workflow tests）+asset-pipeline 439 lib+集成 0 failed，fmt/clippy scoped 净（blowfish workspace 预存在非代码）。b99cb0e 余下不撞名面（generate/streamline/calculate_set_membership/as_binary 等）保持开待主席与 main 侧择一。
-
+- [ ] **BW-13-02-05 回归 NavGen 入口**。**验收** 可调用 BW-10 的导航生成。
 
 #### BW-13-03 WorldEditor
 
@@ -3320,11 +3267,6 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **BW-14-02-01 运行 Python simple 示例**。**验收** 与新服务端完成登录。
   - 卡点（服务端登录链路未落地，同 BW-14-01-02）：simple client 在参考 `examples/client_integration/python/simple/`（自带 res 树，实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对），其登录依赖新服务端 loginapp 挑战协商（BW-06-01-02）+ baseapp onLogin（BW-07-01），当前 `apps/server` 仅最小入口无登录处理。
-  - 复测（2026-11-26，台账席）：注记引用已过时但卡点事实未变——所引依赖均已交付：BW-06-01-02 挑战协商（`3244af7`）、BW-07-01（BW-07 车道 24/24）、BW-14-01-02（`c68667c`，进程内 harness 全链，边界自注「多进程运行不在本项」）；然 `apps/server/src/main.rs` 本日复核仍 36 行最小入口，`app::run`（BW-15-02-01 `750be59`）只接 Dispatcher+信号矩阵、零 mercury 引用（NetworkInterface 构造留随 BW-02-02/角色簇），无可监听的 loginapp——网络登录面本席侧仍缺。行保持开，待 `apps/server` 网络接线（BW-02-02/角色簇）与可跑客户端宿主（BW-21）落地后复测。
-  - 增量落地（2026-11-26，`44aca1e`(merge origin/lane/bw19-docs)，含 `a43f3f3` 收包面测试适配）：**服务端登录面接线已上 main**——角色循环走 `bwMainT` 全体（`app.rs` 新 `MercuryPass` 合流角色 dispatcher 与 Mercury dispatcher，machined 查询/内部接口配置链/`NetworkInterface::new_on_dispatcher` 构造/关服 drain）；loginapp 外口（`loginapp_interface.rs`，`PORT_LOGIN=20013`+`login_minder` 三入口 login/probe/challengeResponse 按声明序+`LoginInterfaceDispatch` 剥 first-request 尾脚+`probe` 真数据报往返）；login 门序与 `challengeResponse` 应答面（`loginapp_login.rs`，复用 BW-06-01-05 版本闸、challenge 缓存/resent quirk 逐字）；dbapp 出站面（`db_login.rs` `DB_APP_LOG_ON_ELEMENT_ID=8`+`DbAppForward`/`DbReplyHandler`，验收级真闭环测过 `the_dbapp_request_leg_reaches_the_wire_and_its_answer_routes_back`）。**适配点**：收包面 graft（`14d3d8c`）后 `the_network_pass_delivers_a_datagram_through_the_loop` 原发裸 `b"ping"` 被参考形 guard 判 corrupted，已改为带 clear flags 头的真帧 `[0,0,p,i,n,g]`（a43f3f3）；覆盖 loginapp_interface 100%、loginapp_login 98.78%、db_login 98.63%、app.rs 99%+。行保持开——simple client 端到端验收仍待 dbappmgr→loginapp `notifyDBAppAlpha` 活网格出生接线与 dbapp logOn 应答角色（BW-09-01 领地）落位后复测。
-  - 复测五（2026-11-26，lane/bw19-docs `0dfc448`）：**参考客户端真机往返已通两道门（82→72）**——预编译 `simple_python_client` 在参考树 `game/bin/server/el7/examples/simple_python_client`（本机可跑，`-server/-user/-password`，README 配方）；Linux 构建路径必须从 res 解析 `loginapp.pubkey` 文件（内嵌 key 仅 PS3/Xbox360 分支，main.cpp:228-238）——取 `scripts/cluster-smoke/res/loginapp.pubkey` 头插 res overlay 即解（BW-00-02-04 卡点在此实验面消除；配对 `res/server/loginapp.privkey`=参照 loginapp_config.cpp:22 默认读 `server/loginapp.privkey`，将来 dbapp 解密腿用）。真跑序列：本席 loginapp 外口 20013 监听（无 machined 回落绑全接口）→ 真客户端实体定义加载/网络绑定/`LoginHandler: LoginApp@127.0.0.1:20013` 起动 → ①默认配置拒 82=`LOGIN_REJECTED_LOGINS_NOT_ALLOWED`（=参照默认 `BW_OPTION(bool,allowLogin,false)` loginapp_config.cpp:24，移植一致非缺陷）→ ②overlay `<loginApp><allowLogin> true` 后拒 72=`LOGIN_REJECTED_DB_NOT_READY`（=参照 loginapp.cpp:862 isDBReady 门**先于**挑战门 1048——gate 序 82→72 实证）。**余卡点收窄两件**：活内部网格出生接线（dbappmgr→loginapp `notifyDBAppAlpha` 上线；dbappmgr.rs 自注 Mercury traffic not modelled）+ dbapp logOn 应答角色（BW-09-01 lane 领地）——两者落位后 overlay 配方（res 头插 loginapp.pubkey+overlay server/bw.xml 开 allowLogin）即可续跑至挑战协商与真登录。行保持开。
-  - 卡点复测（2026-11-26，bw14-script-host 席）：旧注「服务端登录链路未落地」**已过时**——登录链已落地并真机绿：BW-06-01-02 挑战协商（3244af7，main 祖先）+ BW-07-01 baseapp 装载/ID 分配 + BW-14-01-02/05 进程内登录链（`fantasydemo_login.rs` 5 测：既有账户走机/未知用户建档/错密码拒不碰行/新角色建档回指，`fantasydemo_logout_relogin.rs` 2 测：退出持久化重登读回，本席实测全绿）。**真余卡点两处**：①`apps/server` 仍最小入口（`main.rs` 仅 BWResource/BwConfig 初始化 + `app::run` 信号/关停面），无角色运行时把 loginapp/dbapp/baseapp 登录链接到真实 Mercury 端口（同 BW-15-02-01 卡点；BW-08-01-02 CellApp 创建与注册未勾）；②参考 simple 客户端是 **C++ 壳内嵌 Python**（`main.cpp`/`entity.cpp`/`py_server.cpp` 等，目录名「python」指 Python 脚本化实体而非纯 Python 程序），跑通它需移植该壳或等价客户端驱动，与①同属大面工程，随角色运行时落地。simple 自带 res 树实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对。
-
 - [x] **BW-14-02-02 运行原版 Android 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
   - 宿主缺口（未运行互通测试）：`docs/review/bw14-02-02-03-mobile-interop-host-gap.md`（402c28a）——参考 `examples/client_integration/c_plus_plus/android/`（JNI + `android.app.NativeActivity` + `android_native_app_glue` + `connection_model` 静态库 + `-llog -landroid -lEGL -lGLESv1_CM`，NDK `armeabi-v7a`/`APP_STL=gnustl_static`/`APP_PLATFORM=android-9`）需 Android NDK 工具链 + 真机/模拟器，本机 Linux 无 NDK/设备；即使宿主就绪，互通目标（新服务端登录）亦未落地（同 02-01 卡点）。协议结果未采集；两侧缺口均已登记。
 - [x] **BW-14-02-03 运行原版 iOS 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
@@ -3359,7 +3301,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-14-04-03 布置配置及样例资源**。**验收** 首次启动可定位。（commit 5da86a6）
   - 证据：`ci/install-layout.sh` + `docs/review/bw14-04-installable-artifact-layout.md`（b0a4d3e 起，5da86a6 完成）——`res/server/bw.xml` + `res/scripts/`（21 项样例资源镜像）随包布置（install-layout PASS：配置/资源/二进制/模块/`data/` 齐全）。**工具半**：装后 `process_defs -r <prefix>/res` 首启定位并加载安装资源树（install-cli-res PASS）。**服务器半**：`apps/server/src/main.rs`（5da86a6）按参考 `BIGWORLD_MAIN` 接入 `BWResource`/`BWConfig` 链，装后 `boundless-server <role>` 以 `BW_RES_PATH=<prefix>/res` 首启定位安装配置（install-res-server PASS：无「Could not find」/「No configuration section」，正常启动/停止 exit 0）；`role_lifecycle.rs` 首启定位/未定位双测试钉死观测差（定位静默、未定位记参考失败行）。
 - [ ] **BW-14-04-04 执行干净安装烟测**。**验收** 三端能启动和停止。
-  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**复测登记（2026-11-26，main 吸收 lane/bw16-18 `a05a849`←bw10-terrain `1dba9be`）**：`ci/install-layout.sh` self-test 10/10 PASS 含红/绿双验（他席独立跑过），同脚本装后启停绿；两席同证据链镜像非新交付，行保持开。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
+  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
 - [x] **BW-14-04-05 执行升级与卸载**。**验收** 验证用户数据保留行为。（commit b0a4d3e）
   - 证据：`ci/install-layout.sh`（b0a4d3e）——归档只携带包属树（`bin lib res`），用户数据在 `data/`（**不在归档**）。装后种子 `data/db/user.db`，篡改包属文件 `res/server/bw.xml` 后**升级**解包：包属文件还原为打包字节、`data/db/user.db` 保留（install-upgrade PASS）；**卸载**删除 `bin/ lib/ res/`、`data/db/user.db` 保留（install-uninstall PASS）。self-test 绿色全链路 + 4 条红色臂（启动失败/CLI 失败/坏模块/缺定义资源树均按预期咬合）。
 
@@ -3371,15 +3313,15 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 封装事件轮询和唤醒、单调时钟、信号/控制事件、子进程与退出状态、文件锁、内存映射、动态库和系统目录。对照大小写、路径编码、原子替换、IPv4/IPv6 和断网行为。
 
-- [ ] **BW-15-01-01 封装事件轮询和唤醒**。**验收** 三端可停止空闲循环。（Linux 腿注记 2026-11-26：bw15-platform `774372f`→main `70af995`，crates/platform/tests/idle_loop_stop.rs 1 测绿——空闲循环按需停（trigger 中断 epoll_wait 预算 interrupt1 680µs/1 迭代、preset 迭代、rearm 112/46µs、预算窗 5 迭代）；wakeup.rs 441ff01 既有注记同上；三端行保持开待 Windows/macOS 腿）
+- [ ] **BW-15-01-01 封装事件轮询和唤醒**。**验收** 三端可停止空闲循环。
   - 证据（部分，未勾）：`crates/platform/src/wakeup.rs`（441ff01）——自管道 `Wakeup`（`pipe(2)` 双端 `O_NONBLOCK`、`trigger` 任意线程一字节写入容忍 EAGAIN=已挂起、`consume` 排空重整、Drop 关双端），Linux 实测 5 测：空闲 `epoll_wait`（5s 预算）被另一线程 `trigger` 在 1s 内唤醒、预挂起即回、`consume` 后零超时不再上报、未触发 `consume` 为 no-op、100 轮触发/消费循环稳定；「轮询」半块已由 BW-02-01-02 `platform::poller`+Mercury `EventPoller` 承担（Linux epoll）。**macOS 后端已落（59da22c）**：`crates/platform/src/poller.rs` 拆为 Linux `epoll`/macOS `kqueue` 两后端、`lib.rs` 把 `poller` 门控扩到 macOS——kqueue 与 epoll 同为描述符持久注册集，`create`/`ctl`/`wait` 一对应映射（`kqueue()`；`kevent` EV_ADD/EV_DELETE 按 filter、`CTL_DEL` 先删读再删写、二者其一在册即成功、无册 fd 返 `ENOENT` 同参考 WARNING 分档；`EV_EOF`→`EPOLLHUP`/`EV_ERROR`→`EPOLLERR`；超时负值阻塞零轮询；事件位沿用 epoll 数值使调用方跨端同常量）；`platform` darwin `--all-targets` 交叉编译绿、darwin clippy `-D warnings` 绿、Linux 59 测零回归；kqueue 模块 4 测镜像 epoll 待三端 runner 实跑。**剩余**：Windows `WSAPoll` 走 socketpair 而非匿名管道——随 BW-15-05 三端 runner 落地（kqueue 实跑亦随三端 runner）。
 - [x] **BW-15-01-02 封装单调时钟**。**验收** 单调性及 Tick 单位一致。
   - 证据：crates/platform clock.rs 测试（monotonic 不回退、微秒单位、起点近零）。
-- [ ] **BW-15-01-03 封装进程控制及退出码**。**验收** 三端可正常关服并回收子进程。（Linux 腿注记 2026-11-26：bw15-platform `4a40422`→main `595be79`，crates/platform/tests/process_exit_baseline.rs 1 测绿——子进程状态码/spawn 262µs/wait 7.9ms/轮询收割 1.02ms/信号等待 247µs/一次收割 16 存活；三端行保持开待其余平台腿）
+- [ ] **BW-15-01-03 封装进程控制及退出码**。**验收** 三端可正常关服并回收子进程。
   - 证据（部分，未勾）：`crates/platform/src/process.rs`（d25d90a）——`Child`（`fork`+`execvp` PATH 搜索、子进程 exec 失败 `_exit(127)`、`wait` 阻塞重采/`try_wait` WNOHANG 非阻塞/`signal` kill、二采 `ECHILD` 报错）+ `ExitStatus`（`WIFEXITED`/`WEXITSTATUS`/`WIFSIGNALED`/`WTERMSIG` 解码、`success` 即 code 0）；Linux 实测 7 测：exit 42 采回、零退出成功、SIGTERM 终止、存活期 `try_wait` None 再采、exec 失败回 127、空 argv 拒、二采 ECHILD。**剩余**：Windows `CreateProcess` 后端随 BW-15-03 落地；`server-runtime` 关服接线（信号→kill 子进程→wait 回收）待做。
 - [x] **BW-15-01-04 封装文件锁及原子替换**。**验收** 并发更新夹具通过。（commit d0a9ac4）
   - 证据：`crates/platform/src/file.rs`（d0a9ac4）——`FileLock`（`flock` LOCK_EX 互斥、try 版返回 None 表已持有、Drop 即释放；**锁稳定伴生 `.lock` 文件而非被替换的数据文件**——rename 换 inode，锁被替换文件本身无法串行化更新，此平台事实已编码进模块文档）+ `atomic_replace`（同目录临时文件写全→`fsync`→`rename(2)` 原子换入，失败自动 unlink 残留）；**验收并发更新夹具实测过**：2 线程×50 锁-读-改-写-原子替换，计数恰为 100 零丢失（`file::tests::concurrent_update_fixture_loses_nothing`，`cargo test -p platform --lib` 64 测全绿）。**Windows `LockFileEx`/`ReplaceFile` 后端归 BW-15-05 三端 runner 平台移植**（本项验收为并发更新夹具，Linux 已过）。
-- [ ] **BW-15-01-05 封装内存映射与共享库查找**。**验收** 三端加载相同测试资源。（Linux 腿注记 2026-11-26：bw15-platform `294a434`→main `298fd89`，crates/platform/tests/mmap_library_baseline.rs 1 测绿——同资源 mmap 34µs/64KiB+anon 4096+共享库打开 22µs/符号查找 3µs malloc 命中；三端行保持开待其余平台腿）
+- [ ] **BW-15-01-05 封装内存映射与共享库查找**。**验收** 三端加载相同测试资源。
   - 证据（部分，未勾）：`crates/platform/src/mmap.rs`（3359d3b）——`Mmap`（`mmap` PROT_READ|MAP_SHARED 整文件映射、空文件映射空切片、匿名零页映射、`Deref<[u8]>`、Drop `munmap`；mmap 需活 fd、成功后 close 映射仍有效）+ `DynamicLibrary`（`dlopen` RTLD_NOW|LOCAL、`dlsym`、Drop `dlclose`、`dlerror` 消费）；Linux 实测 7 测：文件映射逐字节等于文件、空文件、匿名页全零、缺文件报错、dlopen libc 并 dlsym malloc 非空、缺符号报错、缺库报错。**剩余**：Windows `CreateFileMapping`/`LoadLibrary` 后端随 BW-15-05 落地。
 - [x] **BW-15-01-06 校验路径大小写、编码和系统目录**。**验收** 代表性夹具可寻址。（commit aa6e2ee）
   - 证据：`crates/platform/src/path.rs`（aa6e2ee）——`correct_case_of_path`（参考 `WinFileSystem::correctCaseOfPath`（win_file_system.cpp:782）的 POSIX 对应：`realpath(3)` 在大小写不敏感卷上解析出盘上真实拼写、敏感卷上即恒等、缺失路径原样返回）；`real_path`（canonical 定点、symlink 解析、缺失报 `ENOENT`）；`join`（参考 `getAbsolutePath` 的 base+path（unix_file_system.cpp:466），补缺 `'/'`）；`home_dir`（`$HOME`）/`temp_dir`（`TMPDIR`→`TMP`→`TEMP`→`/tmp`）；编码 `path_bytes`/`path_from_bytes` 字节级往返（POSIX 路径是字节串非必 UTF-8，实测 `0xFF` 字节往返）+ lossy。Linux 实测 7 测：temp 系统目录夹具写读可寻址、HOME 绝对、join 三态（缺分隔/已带/空 base）、realpath 不定点+symlink+缺失三态、correct_case 缺失原样/存在=realpath、非 UTF-8 往返。**Windows `%USERPROFILE%`/`%TEMP%`/`GetFullPathNameW` 后端归 BW-15-03 Windows runner 平台移植**（本项验收为代表性夹具可寻址，Linux 已实测过：`path::tests::temp_dir_holds_an_addressable_fixture`，temp 系统目录夹具写读可寻址）。
@@ -3407,14 +3349,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 验证原生服务端全角色、客户端、编辑器及产物。处理进程停止、DLL/CPython 查找、路径与驱动，并核对原版 Windows 客户端和编辑器样本。
 
 - [ ] **BW-15-03-01 跑 Windows 服务端全角色**。**验收** 能处理控制事件并关服。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-03-02 验证 DLL 和 CPython 发现**。**验收** 已安装布局中模块可导入。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
-- [ ] **BW-15-03-03 跑 Windows 客户端与编辑器**。**验收** 固定样本与原版对照。（对照基线注记 2026-11-26：对照面本体已在 main——Linux boundless-client 固定地图呈现（896×176 8 帧二跑逐位同+TGA 630,802 B）与 boundless-editor 编辑会话（ed_save (12,0,34)→(25,0,47)+二会话字节同，02bedbb）即样本面；两入口 `cargo check --locked --target x86_64-pc-windows-gnu -p boundless-client -p boundless-editor` 已 PASS（2026-11-26 实测零错误）；Windows 腿仍缺真机 runner（服务端 `mercury`/`std::os::fd` 交叉构建未过属 BW-15-03-01 面），行保持开）
-  - 交叉编译注记（2026-11-26，`454acee` 核验）：本席 `apps/client`/`apps/editor` 双入口 windows-gnu 交叉检 PASS（`cargo check --target x86_64-pc-windows-gnu`，仅预存 blowfish manifest 警告）；server 侧 `mercury` E0432×16 属 BW-15-03-01，不拦两入口。真跑仍待 Windows runner（BW-15-05-01），行保持开。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
+- [ ] **BW-15-03-03 跑 Windows 客户端与编辑器**。**验收** 固定样本与原版对照。
 - [ ] **BW-15-03-04 跑 Windows 工具和发布包**。**验收** 路径编码和启动烟测通过。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-04 macOS
 
@@ -3423,14 +3360,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **BW-15-04-01 跑 macOS 服务端全角色**。**验收** 能启动、停止并回收。
   - 证据（部分，未勾）：macOS 编译前置已通（afe9973）——`server_runtime::signals` 可移植到 `aarch64-apple-darwin`：等待原语按平台分派（Linux `sigwaitinfo`，macOS `sigwait`——libc crate 只给 BSD 族 `sigwait`，二者同是 POSIX 等待且都可被 `EINTR` 打断，`wait_one` 统一为负错误码）；`signal_number_to_string` 的实时信号臂（`SIGRTMIN`/`SIGRTMAX`，glibc 专属）门控到 Linux，macOS 无实时信号范围；`SIGMAX` 按平台取（Linux `SIGSYS`=31，macOS `SIGUSR2`=31，二者皆最高标准信号，`AtomicU32` 掩码一致）；`SIGNAL_NAMES` 按平台分表（参考表是 Linux 编号；macOS 编号不同：`SIGEMT`=7/`SIGBUS`=10/`SIGSYS`=12/`SIGCHLD`=20/`SIGIO`=23/`SIGINFO`=29/`SIGUSR1`=30/`SIGUSR2`=31，无 `SIGSTKFLT`/`SIGPWR`；服务端用的退出信号 `SIGTERM`/`SIGINT`/`SIGQUIT` 两端同号）。实测 `cargo check -p boundless-server --target aarch64-apple-darwin` 绿（仅剩 resources 预存警告）。**剩余**：macOS 上真机运行（`cargo build`+启动/停止/回收，需 macOS runner）；`--all-targets` 测试编译亦已绿（af0182b）——两处内联 `sigtimedwait`（server_app.rs:980/1211，BSD 无此符号）收进 `consume_pending_signal`（Linux `sigtimedwait` 零超时轮询、非 Linux `sigwait`；信号既已确认 pending 则立即返回），实测 `cargo check -p server-runtime --target aarch64-apple-darwin --all-targets` 无错；mercury 尚有 darwin 缺口（`lib.rs` 对 `event_dispatcher`/`packet_receiver` 的门控被 `interface_table.rs:18`/`request_manager.rs:27`/`network_utils.rs:36` 无条件 import；`endpoint.rs:403` 直用 linux-only `socket::IP_RECVERR`）——服务端最小入口不依赖 mercury 故不拦当前构建，待 Mercury 接入服务端（BW-02）时需先补。
 - [ ] **BW-15-04-02 验证 CPython 与应用资源布局**。**验收** 从应用包可加载。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
-- [ ] **BW-15-04-03 跑 macOS 客户端和编辑器**。**验收** 设备状态和固定地图测试通过。（对照基线注记 2026-11-26：固定地图测试面已在 main——crates/client 软栅格设备（present_with 帧账+checksum+map_display_baseline 2 测 896×176 二跑逐位同）与编辑器 ed_save 面（edit_reload 2 测），02bedbb；三入口 `cargo check --locked --target aarch64-apple-darwin` 实测 PASS；macOS 腿待真机 runner，行保持开）
-  - 交叉编译注记（2026-11-26，`454acee` 核验）：本席 `apps/client`/`apps/editor` 双入口 darwin 交叉检 PASS（`cargo check --target aarch64-apple-darwin`，仅预存 blowfish manifest 警告）；macOS kqueue+信号前置 `59da22c`/`afe9973` 已在 main。真跑仍待 macOS runner，行保持开。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
+- [ ] **BW-15-04-03 跑 macOS 客户端和编辑器**。**验收** 设备状态和固定地图测试通过。
 - [ ] **BW-15-04-04 跑 macOS 工具和发布包**。**验收** 干净安装后可执行。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-04-05 验证与 Linux 和 Windows 互通**。**验收** 跨端登录及实体同步通过。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-05 三端 CI 和混合部署
 
@@ -3441,11 +3373,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **BW-15-05-02 在三端执行协议、资源与 Python 测试**。**验收** 各端分别留存结果。
 - [ ] **BW-15-05-03 配置 MySQL、XML 与 SQLite 测试矩阵**。**验收** 每种模式产生独立结果。
 - [ ] **BW-15-05-04 配置 PostgreSQL 真实后端矩阵**。**验收** 各端完成登录、写档和重启读档。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-05-05 验证三端客户端连接不同平台服务端**。**验收** 记录每种支持组合。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-05-06 验证混部替换单角色**。**验收** 记录版本和关服顺序。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-06 平台图形和宿主依赖
 
@@ -3455,10 +3384,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 证据：`docs/review/bw15-06-01-graphics-backend-list.md`——四后端五平台：桌面 **Direct3D 9**（`lib/moo`，`bwclient`，`IF(BW_PLATFORM_WINDOWS)` 下链 `d3d9/d3dx9/dxguid/setupapi/psapi`，`moo_dx.cpp`/`render_context.cpp` 设备面；`IF(NOT BW_IS_SERVER)` 剥离服务端依赖）、工具 **OpenGL**（`navgen` 预览，`opengl32` + `<GL/gl.h>`/`HGLRC`）、移动 **cocos2d/OpenGL ES**（Android `-lEGL -lGLESv1_CM`、iOS libs 随树）、web **Awesomium**（`BW_AWESOMIUM_SUPPORT` 门控，`web_app` → `PyAwesomiumProvider`）。平台基线：顶层 `CMakeLists.txt:57-72` 构建门仅 Windows（win32/win64）+ Linux remote-only 服务端，无 macOS 桌面分支——Linux/macOS 桌面**无图形后端**（全树 `wgl|glX|CGL|glViewport` 扫描仅命中 navgen），macOS 侧按 BW-15 开篇约定以原版样本+跨端混跑验收。缺口：`third_party/` 无 `awesomium/`（同 DCC SDK 缺口）；新版渲染栈未建（BW-11），服务端零图形后端由 BW-16-02-02 对齐。
 - [x] **BW-15-06-02 维护 DCC 宿主矩阵**。**验收** 逐插件记录可用宿主。（commit ff504c9）
   - 证据：`docs/review/bw15-06-02-dcc-host-matrix.md`——三插件两宿主：visualexporter/animationexporter → Autodesk 3ds Max（`MFXExport : SceneExport`（mfxexp.hpp:154），`.dle`，Max 库级导出 `LibDescription@1..LibVersion@4`（visualexporter.def/animationexporter.def，expmain.cpp:124-155），Max **2009–2013** 逐版本目标 max2009_exporter…max2013_exporter）；mayavisualexporter → Autodesk Maya（`MLL_EXPORT initializePlugin/uninitializePlugin`（visualmain.cpp:38/131），`.mll`，随分发 visualfileexporterscript.mel，Maya **2009–2014** 逐版本目标）。启用条件=`BW_CMAKE_TARGET=exporters`（`BWConfiguration_exporters.cmake` `EXPORTER_PROJECTS`：默认 Max/Maya 2010-13 + Max 2010-12，win32 追加 2009 组，win64 追加 maya2014，非 vc9 追加 max2013；`BW_EXPORTER`+`_SECURE_SCL=1`）；输出 `game/tools/exporter/3dsmax<ver>{,x64}/`、`maya<ver>{,x64}/`。缺口：`third_party/` 无 `3dsmax/`、`maya/` SDK 目录（外部依赖），插件二进制无法从本树构建——宿主实测（BW-15-06-03/04）需外部 DCC SDK 与宿主安装。
-- [ ] **BW-15-06-03 验收三端客户端与编辑流程**。**验收** 同一地图有可比证据。（Linux 腿注记 2026-11-26：boundless2 `02bedbb`→main（ada3706 去重）——固定地图双入口同图可比证据：apps/client `boundless-client --res docs/review/fixtures/chunk_space/res/space_00010001` 18×3 视图 896×176 软栅格 8 帧 checksum 系列二跑逐位同+TGA 630,802 B（crates/client/tests/map_display_baseline.rs 2 测），apps/editor `boundless-editor` ed_save 移 tree00 (12,0,34)→(25,0,47) 重载验证+二会话字节同（apps/editor/tests/edit_reload.rs 2 测）；Windows/macOS 腿待 runner，行保持开）
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
+- [ ] **BW-15-06-03 验收三端客户端与编辑流程**。**验收** 同一地图有可比证据。
 - [ ] **BW-15-06-04 验证外部导出的跨端读取**。**验收** 各适用消费者可打开。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 ### BW-16 目录分层、依赖方向与模块归属
 
@@ -3843,7 +3770,7 @@ Boundless 新增交付，独立位于 `extensions/vscode/`，内部拆为 `src/`
 - [x] **BW-20-02-06 验证 VS Code 的 Rust 启动调试**。**验收** 能由启动配置运行 CellApp 并命中断点。（commit aa15e2c）
   - 证据：原版结果——引用端角色进程是 C++ `bigworld_app <role>`，VS Code 调试需手配 launch.json 指向其二进制。新版结果——`src/workspace/launchConfig.ts` 的 `rustLaunchConfig(role)` 生成启动配置：`type` 按平台取 `lldb`（Linux/macOS）或 `cppvsdbg`（Windows），`program` 指向 `target/debug/boundless-server`（`apps/server` 的产物，`apps/server/Cargo.toml` [[bin]]），`args=[role]`，`env.BW_RES_PATH=<workspaceFolder>/res`，`stopAtEntry:false`；`extension.ts` 的 `boundless.setupRustDebug` 命令经同一个 `mergeLaunchJson` 并入工作区 `launch.json`，且把 `boundless.cluster.binary` 的默认值从错误的 `target/debug/server` 修正为实际产物名。证据链接——`pnpm test` 149 例全绿且 `pnpm run check` 0 错误（含 `rustLaunchConfig` 形状、Windows 调试器选择、覆盖 program/resPath、与附加配置并存的 4 例）；实跑 `sh tools/verify/rustLaunch.sh`：gdb batch 以 launch 配置同一命令行（`target/debug/boundless-server cellapp`、`BW_RES_PATH` 指向示例 res）启动 CellApp，断点命中 `server_runtime::app::run`（`crates/server-runtime/src/app.rs:46`），回溯顶两帧为 `app::run ← boundless_server::main`，脚本判 PASS。
 - [x] **BW-20-02-07 提供文档 MCP 接入配置**。**验收** 查询返回当前工作区版本文档。
-  - 证据：原版结果——引用端的文档是仓库里的 markdown（VitePress 渲染），编辑器侧没有任何检索入口，开发者只能翻目录或开网页版；引用端不存在 MCP 面。新版结果——`extensions/vscode/src/workspace/docsMcp.ts` 生成 `.vscode/mcp.json` 条目：`type: stdio`、`command` 指向 `boundless-docs-mcp`、`args` 依次为 `--root ${workspaceFolder}`、`--prefix docs`、`--version HEAD`、`--langs zh`，配置了站点地址才追加 `--docs-url`（`9623715_MCP_DEFAULTS` 与 `boundless-docs-mcp` 自己的默认值一致）；`mergeMcpJson` 与 launch.json 同一"只增不改"面——只替换自己写的那一项、用户自己的 server 原样保留，解析不出来的文件整体重写；`extension.ts` 的 `boundless.setupDocsMcp` 命令按工作区文件夹逐个写入 `.vscode/mcp.json`，新增 6 个设置 `boundless.docs.{server,root,version,prefix,langs,url}`。证据链接——`pnpm test` 160 例全绿（含新 `test/docsMcp.test.ts` 11 例）、`pnpm run check` 0 错误；实跑 `node tools/verify/docsMcp.cjs` 11/11 PASS：harness 用扩展自己的 writer 写出真实 `.vscode/mcp.json`，再按该文件里的 command/args 起真二进制（`${workspaceFolder}` 按编辑器变量语义替换）做 MCP stdio 会话——`tools/list` 只列 `search_docs`/`read_doc`；`search_docs "second edition"` 命中仅 v2 才存在的 `guide/second.md` 且 `version` 为配置给的 `HEAD`；`read_doc guide/second.md` 返回 `version=HEAD`、`commit=2b8be3d` 恰等于工作区当前 HEAD、`source=https://docs.boundless.example/guide/second.html`；同一配置把 `boundless.docs.version` 改成 `v1` 后，v2 页面零命中、`guide/entities.md` 回到 v1 文案、链接保持仓库相对 `docs/guide/entities.html`。如实登记——编辑器内的 MCP 客户端加载（自动发现 `.vscode/mcp.json`）未在真实 VS Code 里验证：本机 `/usr/bin/code` 1.144.1 可装但不跑带 GUI 的 MCP 会话，取证止于"按其写出的配置实跑真二进制并逐条核对查询结果"。
+  - 证据：原版结果——引用端的文档是仓库里的 markdown（VitePress 渲染），编辑器侧没有任何检索入口，开发者只能翻目录或开网页版；引用端不存在 MCP 面。新版结果——`extensions/vscode/src/workspace/docsMcp.ts` 生成 `.vscode/mcp.json` 条目：`type: stdio`、`command` 指向 `boundless-docs-mcp`、`args` 依次为 `--root ${workspaceFolder}`、`--prefix docs`、`--version HEAD`、`--langs zh`，配置了站点地址才追加 `--docs-url`（`DOCS_MCP_DEFAULTS` 与 `boundless-docs-mcp` 自己的默认值一致）；`mergeMcpJson` 与 launch.json 同一"只增不改"面——只替换自己写的那一项、用户自己的 server 原样保留，解析不出来的文件整体重写；`extension.ts` 的 `boundless.setupDocsMcp` 命令按工作区文件夹逐个写入 `.vscode/mcp.json`，新增 6 个设置 `boundless.docs.{server,root,version,prefix,langs,url}`。证据链接——`pnpm test` 160 例全绿（含新 `test/docsMcp.test.ts` 11 例）、`pnpm run check` 0 错误；实跑 `node tools/verify/docsMcp.cjs` 11/11 PASS：harness 用扩展自己的 writer 写出真实 `.vscode/mcp.json`，再按该文件里的 command/args 起真二进制（`${workspaceFolder}` 按编辑器变量语义替换）做 MCP stdio 会话——`tools/list` 只列 `search_docs`/`read_doc`；`search_docs "second edition"` 命中仅 v2 才存在的 `guide/second.md` 且 `version` 为配置给的 `HEAD`；`read_doc guide/second.md` 返回 `version=HEAD`、`commit=2b8be3d` 恰等于工作区当前 HEAD、`source=https://docs.boundless.example/guide/second.html`；同一配置把 `boundless.docs.version` 改成 `v1` 后，v2 页面零命中、`guide/entities.md` 回到 v1 文案、链接保持仓库相对 `docs/guide/entities.html`。如实登记——编辑器内的 MCP 客户端加载（自动发现 `.vscode/mcp.json`）未在真实 VS Code 里验证：本机 `/usr/bin/code` 1.144.1 可装但不跑带 GUI 的 MCP 会话，取证止于"按其写出的配置实跑真二进制并逐条核对查询结果"。
 
 
 #### BW-20-03 打包与三端验证
@@ -4442,110 +4369,89 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 缓存解析结果并评估预生成编解码器，衡量启动和序列化开销，锁定定义摘要和产出字节。
 
-- [x] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。（本席 `a041efd`+`9623715`：crates/entitydef/tests/entitydef_baseline.rs 三腿=冷启动 factory_create full_def(3 实体)+fantasydemo_def(5 实体)（诊断零+digest 钉住 oracle 否则不产生计时行）、编解码=两夹具全实体全属性解析默认值 add_to_stream/create_from_stream 20k 轮×每轮逐值恒等断言（11 族：标量 5+STRING/FLOAT64/ARRAY×2/FIXED_DICT×2）、暖启动同进程二次加载 digest 等冷值；记录 TSV docs/review/fixtures/entitydef-baseline/entitydef-baseline.tsv 63 行：cold 0.637/0.615ms、warm 0.448ms、标量 p50 457-474ns、FLOAT64 268ns、STRING 340ns、ARRAY 238/247ns、FIXED_DICT2 字段 817ns/3 字段 1565ns；墙钟只记录不设带；证据页 docs/review/opt-04-01-01-entitydef-baseline.md；entitydef 既有测试未动全绿）
-- [x] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。（本席 `9881c37`：FsResolver::open_section 进程级 parse 缓存（参照 resmgr/data_section_cache.hpp find/add/clear+setSize：thread_local 按全路径键、上限 1024 条溢出即清、clear_section_cache() 面；MemoryResolver 不动、仓内 FsResolver 消费者皆只读夹具）；基线 runner 起手清缓存→startup_*=缓存冷/ warm=缓存热；**比较**=同跑 cold 0.916ms vs warm 0.297ms（暖启动省 0.619ms=读+解析份额；跨记录冷值不作比因负载 40→21 档差已披露）；digest 前后同 18D00DC6 钉 oracle 恒等；entitydef 库测 247+集成全绿、覆盖 entity_description 99.31%/entity_map 99.24%/data_type 98.02%≥98；证据页 opt-04-01-01-entitydef-baseline.md OPT-04-01-02 节+TSV 滚动 canonical 记录）
-- [x] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。（本席 `f428168`：crates/entitydef/tests/entitydef_codec_gen.rs 评估原型=Kind 树载入期编译成闭包树（子经 Rc 共享、值词汇不动；write_int/truncate_integer/check_sequence_capacity 三 crate 私有助手忠复制、由字节恒等面钉住）；字节恒等腿=两夹具全 21 属性 gen 编码逐字节==解释式+两向解码均还原默认值+不支持类目（CLASS/UDO_REF/PYTHON/USER_TYPE）计数断言零；成本腿=每族 encode-only/decode-only 各 2 万轮、sink 构建在钟窗外、解码走预编码+rewind，TSV docs/review/fixtures/entitydef-baseline/codec-gen.tsv 92 行+三连跑方向全稳：标量 encode −3..−9%/decode −4..−6%、STRING −5%/−6%、ARRAY −8..−12%、**FIXED_DICT 两族反而 +0.4..+11%**（每字段 boxed 闭包间接调用吃掉省下的 match）；生成成本 7µs/21 属性无关紧要；**裁定=不采纳入引擎**——闭包树扁平族赢 3-12% 合成族输 4-11%，构建期直线单态 codegen 不可用（定义是运行期数据、参照引擎自身亦解释式分发）、标量 ~10ns 在噪声带不作契约；记录事故=首次 rustfmt 后单跑瞬时失败无 panic 留痕、同二进制 16 连跑全绿；零 src 改动=覆盖门不适用，entitydef 247+评估 2 测绿）
-- [x] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。（本席 `6ce8e4c`：crates/entitydef/tests/entitydef_rerun.rs 复跑 harness 三腿全一致——①摘要=full_def/fantasydemo_def/service_def/entity_index 四树经 factory_create 重载 digest 逐字==docs/review/reference/*_entitydef.json oracle（entity_index 无 alias.xml 容一字告警同 differential；client_integration 走 BW04_CI_RES env 未设则记 skipped，同 differential 口径）；②实体快照=fantasydemo Avatar.def（SHA e35472f0…==采集输入）+采集工具固定输入节，经参照四 pass shouldConsiderData 顺序（entity_description.cpp：base非client/base+client/cell+client/cell非client，每 pass 声明序）复现 entity-Avatar.snapshot.hex 15 字节逐字节恒等（含 INT8 输入 300→0x2c 参照截断）；③数据库行=BASE|CELL|ONLY_PERSISTENT_DATA（持久只认显式 <Persistent> 标签、缺省 false=data_description.cpp:220 readBool）+canBeOnCell 追加 position/direction/spaceID（xml_database.cpp getEntity 行公式）复现 database-Avatar.row.hex 38 字节逐字节恒等；记录 docs/review/fixtures/entitydef-baseline/def-rerun.tsv 14 行（四 digest+双 hex+双字节数+match 旗标）；**验收=产物一致，每次跑都断言**；OPT-04 段全收官）
+- [ ] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。
+- [ ] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。
+- [ ] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。
+- [ ] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。
 
 ### OPT-05-01 录制负载热点和故障基线
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `e028fbf`：crates/server-runtime/src/cellappmgr_baseline.rs 三腿合成钟 harness 在 crate 内 `#[cfg(test)] #[path]` 挂进 cellappmgr.rs（Space.root/BspInternal 私有），①分配=零面积 sliver B+热点 A 经 inform_of_load EMA 12 步（bias 0.05）爬坡，balance 一步收敛 B.ymin=ENTITY_EDGE=4000 钉死每步 EMA/每轮 A/B 范围；②回收两臂=零面积 sliver 首轮 1 CellRemoval+兄弟升 Rect::unbounded()，实面积 cell 因 growing child A 的 chunk ghost margin（Space::load_balance 从 unbounded 重导范围→chunk_bounds 不含 inflate desired→fallback A.range，chunk_limit=A.ymax-500=3500）被钉在 4000 不回收，两面对照记录；③恢复=严格 now-lastHeard>timeout 检测钉 5000ms/4tick，死信广播+BaseAppMgr 报告+双 cell 树erase 后存活 cell 占 unbounded+最后 app 死触发受控关服；ESTIMATED_INITIAL_CELL_LOAD bump 归 create_space creation seam；证据页 docs/review/opt-05-01-01-cellappmgr-baseline.md+TSV 56 行 fixtures/load-hotspot/cellappmgr-baseline.tsv；clippy/fmt 绿，server-runtime 1680 测绿，全仓 6949 passed/0 failed（基线 6948 +1））
-  - 双交付 FLAG（2026-11-26，本席登记）：main 另收平行腿 `e028fbf`（cellappmgr_baseline.rs 三腿合成钟 harness 入 cellappmgr.rs）与本席 `5120dea`+`0fbfa8f`（load/src/hotspot.rs run_hotspot_baseline）同面异实现，待主席择一。
-- [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（commit cd056fc：cellappmgr_tuning.rs 三固定场景对比——①热点爬坡跨 EMA bias 0.02/0.05(出货)/0.1/0.2：达阈 informs 52/21/10/5 严格反序、落点几何全同(4000 entity edge 两 pass)，bias 只换探测延迟不换落点；②反转跨 aggression 两分支：反转臂首 pass 减半 0.5 后 ×1.0718/pass 回升(8 pass 0.8123)、延续臂恒 1.0，closest_limit 单调故两臂落点同(5000=level1)，阻尼=抗振荡面零几何代价；③回收 drain 跨 chunk-limit 开关：关=1 pass 完成(CellRemoval 1+幸存者升 unbounded)、开=线被幸存者 chunk ghost margin 钉在 4000(基线 held 面)，空 retiring cell 按参照 Space::writeEntityBoundsForEdge 报无界边+offload floor(这才让 entity limit 可达世界边)；证据页 docs/review/opt-05-01-02-load-tuning-comparison.md+TSV 27 行 fixtures/load-hotspot/cellappmgr-tuning.tsv；server-runtime 1702 绿、全仓 6950 passed/0 failed）；⚠️ FLAG 平行交付未决 2026-11-26：bw14-script-host `a577c5c`+修 `9563f2e`（balance_baseline.rs 312 行真 CellAppMgr 96 tick 双相位+ScheduleLedger+BalanceTuning seam 七旋钮含 safety_bound/safety_ratio+cellappmgr.rs +122+证据页，lane-only）vs main 落地 bw15 `cd056fc` 面（cellappmgr_tuning.rs 三固定场景对比），异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `cd056fc` 面（cellappmgr_tuning.rs 三固定场景对比，已在树、server-runtime 全绿）为本行交付面；bw14 `a577c5c`+`9563f2e`（balance_baseline.rs）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：择 main `cd056fc` 面（cellappmgr_tuning.rs 三固定场景对比）为本行交付面；本席 lane-only `a577c5c`+修 `9563f2e`（balance_baseline.rs 312 行+BalanceTuning seam 七旋钮）转存档记录，随 lane 并入由主席处置。
-- [x] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。(2026-11-26 lane/bw15-platform fd21b51→main 51bf749+证据 0407552→515351b：复跑三面零失败——①迁移面 cargo test -p server-runtime --lib -- migrat offload teleport 75/75 绿（entity_creator mailbox/ghost 跨 space 传送可见集/offload 两侧恰一 real/控制器恢复/message_redirect 切换中恰一次）；②关服面 -- shutdown mixed 43/43 绿（shutdown 阶段线值对参考 enum/完成队列按序 drain/server_app init 失败也跑 fini/space 空 cell 销毁回收）；③混部面 el7_mixed_deploy --ignored 1/1 绿 5.01s，EL7 真二进制 pid/整机查询+addTCP/add 双版本+TCP 注册 22B+记录帧 45B×4+UDP×3+mldb 三标记+协议版本 10，TSV 与已提交 fixture 逐行 IDENTICAL；④附加 lifecycle_scenario.rs 种子场景 6 测绿（seed 41 复现/entity restore 一致/进程阶段与 task drain/replay tail 终态可复现，无墙钟采样）；本席 main 树复核=上述三面本机重跑数字；坑=EL7_MIXED_OUT 须文件路径传目录 IsADirectory)
-  - main 已收（台账席 1a21d7a）：本席 `fd21b51`→main `51bf749`（逐字节同）+复跑证 `515351b`，本席勾保持；main 行文误标 lane/bw15-platform，实为 lane/bw14-script-host 本席交付。
+- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。
+- [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。
+- [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 
 ### OPT-06-01 登录与资源下载基线
 
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
-- [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。(2026-11-26 lane/bw15-platform 5ec0620→main 4c29980+证据 afee8b2→fcfa88f：crates/load/src/login_baseline.rs 组合既有面记录三族数字——峰值=login hurricane online 序列最大值（seed 固定可复现）；拒绝率=FD 预算拒绝 login_refusal_rate=refused/(admitted+refused) 单列（与「发出后失败」分账，login_success_rate 仍参考 admitted/attempts 语义）；延迟=资源下载分块 tick 地板 ceil(payload/BUNDLE_BYTES)（参考 ServerDownloads::add_to_bundle 每 mini-tick 一 bundle 载荷）+队列驻留字节；**读法警告：离线面是模拟时间无墙钟 RTT，延迟=确定性地板非实测往返**；记录运行=保存夹具 login-hurricane.xml seed 20261123/FD 500×FD_PER_BOT+1/载荷 4096B→attempts 500/admitted 500/refused 177/online_peak 500/refusal_rate 0.26145/download_ticks 4/queue_bytes 4096，夹具 docs/review/fixtures/load/login-baseline.report.json；5 单测钉 ceil 分块/队列字节/峰值拒绝记录/seed 复现/预算拒绝臂；本席 main 树 load --lib 174 绿（含 login_baseline 6）)；⚠️ FLAG 平行交付未决 2026-11-26（bw15 `cca778a` 登记）：bw14 席 `cc648b5`（crates/server-runtime/src/login_baseline.rs 586 行 seed 登录+下载基线账本，lane-only）vs main 落地 bw15 `4c29980`（crates/load/src/login_baseline.rs，经 5ec0620 收编入 main），异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `4c29980` 面（load/login_baseline.rs，5 测绿在树）为本行交付面；bw14 `cc648b5`（server-runtime/login_baseline.rs 586 行）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：择 main `4c29980` 面（load/login_baseline.rs 三族数字）为本行交付面；本席 lane-only `cc648b5`（server-runtime/login_baseline.rs 586 行 seed 洪泛账本）转存档记录。
-- [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。(2026-11-26 lane/bw15-platform 083c598→main 790332b+证据 83f6caa：fleet.rs botsForLogOnRetry_ 排水从每条到期 bot 单独 Vec::remove 改单遍分区（mem::take 遍历 log_on_retry_time()<now 到期者 log_on() 后推回，O(n²)→O(n)，队序/重登序不变固定 seed 派遣序不变）；新测钉 4 到期条队序重登+1 留队；bench login_surge.rs parked 64/512 同刻到期单 tick 排水+Throughput::Elements；A/B 对照 taskset -c 6 钉核交错 6 轮：drain_64 13.93→7.39µs 0.530（1.9×）、drain_512 776→80µs 0.104（9.65×）每轮候选全优无交叉=效应远超噪声；本席 main 树 bench 跑通（drain_512 ~90µs 级）load --lib 175 绿，clippy 净，smoke.rs 三处 expect(&format!) 被遮 lint 顺手清（main 已有此修 auto-merge 消重）)；⚠️ FLAG 平行交付未决 2026-11-26（bw10 `05c581c` 登记）：bw14-script-host `3ced450`（crates/server-runtime/src/login_tuning.rs 115 行+login_baseline.rs 扩展登录排队尾延迟对比，lane-only）vs main 落地 bw15 `790332b` 单遍排水（fleet.rs O(n²)→O(n)+benches/login_surge.rs），异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `790332b` 面（fleet.rs 单遍排水，A/B drain_512 9.65× 零交叉在树）为本行交付面；bw14 `3ced450`（login_tuning.rs）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：择 main `790332b` 面（fleet.rs 单遍排水 9.65×）为本行交付面；本席 lane-only `3ced450`（login_tuning.rs 排队尾延迟对比）转存档记录。
-- [x] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。(2026-11-26 lane/bw15-platform efabd67→main 6ffd9af+bench 6318f61→bdf1327+证据 5c37709→c23987a：data_download.rs 装配 segments.concat()→assemble() 先按总长 with_capacity 一次分配再按值逐段 move 拷入——concat 峰值活数据=2×流长（完整结果+全部段并存）按值消费恒=1×流长，并发下载同刻完成时进程峰值 RSS 结构性减半；新测钉 capacity==6 精确一次分配+空段臂，其余 7 行为测不动（到达序拼接语义不变）；bench download_assembly complete_64/512；A/B 钉核交错 6 轮：complete_64 0.918/complete_512 0.845 轮间交叉=墙钟噪声内无可靠收益，**诚实判读=内存半边结构性 0.5、传输时长半边被 bundle 分块契约钉死（ServerDownloads::add_to_bundle 每 mini-tick 一 bundle，与参考一致，对照结论非优化项）**；本席 main 树 sr lib 1734 绿+bench 跑通，clippy 净)；⚠️ FLAG 平行交付未决 2026-11-26 两路：bw14-script-host `3e4839c`（crates/server-runtime/src/download_tuning.rs 263 行下载时长+内存对比，lane-only）与 bw16-18 `42d6686`+`238aab3`（crates/server-runtime/src/server_download.rs drain 直排+benches/download_drain.rs+legacy_queue.rs+tests/download_drain_alloc.rs+证据页 download-drain-server-side.md+TSV，lane-only）vs main 落地 bw15 `6ffd9af` assemble 预装配（data_download.rs 峰值活数据 2×→1×），三面异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `6ffd9af` 面（data_download.rs 客户端组装，峰值活数据 2×→1× 在树）为本行交付面；bw16-18 `42d6686` 服务器侧排出面（其页自报 drain_256 0.69-0.72×）与 bw14 `3e4839c` 对比面均记为补充/备选 lane-only 归档不删——三者异文件零重叠，如需并入补充面或置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：三路择 main `6ffd9af` 面（data_download.rs 预装配）为本行交付面；本席 lane-only `3e4839c`（download_tuning.rs 263 行）与 bw16-18 `42d6686`+`238aab3`（server_download.rs drain 直排）均转存档记录。
-- [x] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。(2026-11-26 lane/bw15-platform 838a54a→main 2f27440：复跑行零代码改动三条面全绿判一致——①重复登录 duplicate_auth.rs 5/5（同账号二次登录原位改写唯一映射/并发拒不污染/checkout 中拒不计尝试/logoff 后仍单记录/自定义扩展可重复）；②重连 -- relogon relogin 28/28（relogon.rs 9 态机回复码族+baseapp_relogon.rs 13 web/proxy 复用族+log_on_records 2+login_entity 2+headless_client 1，load 重连链 3 测+reconnect.xml 场景加载）；③旧客户端 loginapp.rs 版本面 10/10（三旧版本 BadProtocolVersion 且先于凭据参数拒/supports 严格相等/截断流 MalformedRequest/线上序反自然序回放）；ci/load.sh 4 lane PASS 6/6 场景入带；本席 main 树复核=同组腿本机重跑同数全绿)；⚠️ FLAG 平行交付未决 2026-11-26（bw10 `05c581c` 登记）：bw14-script-host `da80f8e`（crates/server-runtime/src/login_rerun.rs 422 行重复登录+重连复跑面，lane-only）vs main 落地 bw15 `2f27440` 复跑一致性面，异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `2f27440` 面（复跑一致性三面全绿在树）为本行交付面；bw14 `da80f8e`（login_rerun.rs 422 行）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：择 main `2f27440` 面（复跑一致性）为本行交付面；本席 lane-only `da80f8e`（login_rerun.rs 422 行复跑面）转存档记录。
+- [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。
+- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
+- [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
+- [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
 
 ### OPT-07-01 备份和归档基线
 
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
-- [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。19c4d4d（backup_baseline.rs 48 实体种子舰队过真实备份面：带宽逐 tick 1396/1410/1412×4 共 8454 字节 6 tick 清队列、收发队列峰各 48、接管 48/48 恢复且属性全等、归档恢复耗时 8 tick 重持久化 24/24 且逐实体往返核等；4 测 98.31% 行 100% 区域）
-- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。9abf58e（backup_tuning.rs BackupTuning seam(Default=逐位复现由测钉)同种子同负载双跑：slice 8→16+period 8→4，队列 6→3 tick、恢复 8→4 tick，代价=每 tick 带宽峰翻倍(1412→2824)但字节总恒等 8454(方向断言诚实)；same_load 钉同舰队/同持久集/同字节/同恢复；4 测 100% 行）
-- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。4c19ee7（shared_data_baseline.rs+shared_data_tuning.rs 96 变更过真实双 mgr 链(set/del 四 scope+forward/relay 环 4 BaseApp+3 CellApp)：shipped 575 消息(base284/cell219/fwd24/relay48) vs 抑制 no-op 写 444(216/174/17/37)=省 131(−22.8%)，21 次 no-op 放大为全链腿消去(全局 set=5/转发 set=9/cell=3)；终态三权威图逐位相等(same_load 钉)；跨种子形状钉；9 测 baseline 98.58%+tuning 100%）
-- [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。2fbfcf8（takeover_rerun.rs 12 实体种子舰队过真实备份面后源亡接管 restore 12/12 属性全等；16 变更建双 mgr 权威图后按 count+pairs 恢复流形状落盘、全新 mgr 对经真实 recover_shared_data_from_stream 读回=四图逐位等(2/4/2/4 条目)；跨种子形状钉；4 测 99.65% 行 100% 区域，唯一缺行=属性不匹配假臂被断言正确性排除）
-
+- [ ] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。
+- [ ] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。
+- [ ] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。
+- [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。
 
 ### OPT-08-01 密集 AOI 基线
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
-- [x] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。已交付 eee8fde：crates/server-runtime/src/aoi_baseline.rs 全 shipped 栈逐 tick 接线（cross 范围列表 move_entity shuffle ±0.75m 确定步/AoI trigger 跨界喂 witness add_to_aoi→flush→EnterAoI→request_entity_update 回应→CreateEntity/vision trigger 喂 vision_update 1.2rad 锥 28m 每 tick 清晰地形/Witness::update 预算调度 setWitnessCapacity(64000,10)=772B/tick 密集下绑定）。120 实体 10×12 格 4m 间距单观察者：账本=48+16 tick、tick0 创建爆发 289 消息 2704B（120 EnterAoI+120 CreateEntity）、tick1 首见爆发 44 starts、稳态窗(8..48) 4654B ≈116B/tick 预算绑死、总广播 5708 消息 9188B、AoI 跨界 120 进 0 出、seeing churn 77/31；迁移腿=handover 46 可见→目的地静默种子 46→真新 id 重公告 12、重复公告 0(diff 契约)、2 tick 收敛到 native 观察者集合(42)。断言全结构性（爆发一次性/稳态不超预算且恒发/种子无声/start 永不命中已持有 id/收敛 native/全账本逐 tick 复跑恒等）；墙钟探针(seeing 4.0ms/scheduling 392ms over 64 tick)只打印。面发现：目的地 vision trigger 必须由 vision_start_real 新建——预建 trigger 令 restore 的 set_vision(None→Some) 走清空路径、entities_in_vision_range 留空种子盲走；迁移实体 startReal 重建 trigger 正是 range 填充正确的机理。docs/review/opt-08-01-01-dense-aoi-baseline.md。门禁 server-runtime lib 1748 绿/fmt/clippy 净。
-- [x] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。已交付 98725ed：crates/server-runtime/src/aoi_tuning.rs 同负载双比较（OPT-08-01-01 种子/轨迹/120 实体场全 same-load）。①扇区预过滤索引=seeing pass 前按水平角>vision_angle+0.25rad 丢弃目标（水平朝向下 3D 锥角≤水平角⇒保守不过判）：48 tick 走行 5760→2471 行=省 57.1% 内圈、可见集/seeing-start 逐 tick 零失配(48/48 恒等)、探针墙钟 2.645→1.917ms；范围列表已索引距离故收益有界=仅去背向扇区。②Witness 调度扫描=调度器操作面 setWitnessCapacity 64000/128000/256000 bps(772/1572/3172B)：覆盖期预算绑死(爆发 2704B 赤字回扣)4×带宽 3→2 tick；稳态广播量对带宽不敏感(~116B/tick ≪ 772B 预算)——MAX_PRIORITY_DELTA 窗[front,front+5.0) 先于预算清空=稳态限流者是窗宽不是链路；两容量全覆盖(窗饿死人无)单调性断言；per-entity 覆盖从 bundle EntityUpdate id 观测。等值/单调全 assert、墙钟只打印。docs/review/opt-08-01-02-aoi-index-witness-scheduling.md。门禁 server-runtime lib 1750 绿/fmt/clippy 净。
-- [x] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。(2026-11-26 本席 lane/bw14-script-host 5e4181c:space_parallel.rs 复用 BW-08-05-01 decide_offload/collect_offload 实面,120 实体密场按 x=16m 分裂面两侧驻扎,AoI 基线同款 ±0.75m 步表真跨面;台账 crossings=2/offloads=2(逐 crossing 恰一次,落点=p_cell_at 所含侧)/stays=118,check_ms≈0.009-0.012 probe 打印不断言;分支规则 coordinate<position 把分界平面判给右子(x/z 双轴实证,骑面者归左必迁 OffloadTo(FAR));四 Stay 门(未创建/死通道/缺通道项=死/删除挂起)+disabled cell_should_offload 全 Stay;重跑台账恒等;4 测,lib 1754 全绿;review=docs/review/opt-08-01-03-space-parallel.md)
-- [x] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。(2026-11-26 本席 lane/bw14-script-host 616a885:aoi_rerun.rs 复跑密场景两遍逐 tick 审计,TickLedger 增有序 starts/stops/enters/leaves+整份 bundle 发送序;状态正确=视距触发器布点=窗谓词 (sub-range<x≤sub+range) 双轴、可见集=扫描锥真值(update gate 读控制器公开 tick 计数,run tick 用现位置/skip tick 恒等携带集)、start/stop 差分自洽(starts 只打未见 id/stops 只打持有 id/差分复现 visible_entities)、EnterAoI/LeaveAoI 消息=触发器跨越、witness AoI 映=500m 窗、bundle 逐实体序 EnterAoI→CreateEntity→EntityUpdate 更新不先于创建;迁移腿 destination+native 双世界 16 tick 全审,seed 静默 46→46、held 重报=0、终态 visible 42/range 布点/AoI 映三层全等 native;坑=client bundle 是客户端面向 AoI 态唯一重放源,tick 0 120 条 EnterAoI=120 跨越,二次重放会重复计数——两视图须对账不能叠加;2 测,lib 1756 全绿;review=docs/review/opt-08-01-04-aoi-rerun-state.md)
-
+- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。
+- [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。
+- [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。
+- [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。
 
 ### OPT-09-01 分别采集 MySQL 与 PostgreSQL 基线
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
-- [x] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。（opt-09-db-baseline 席 `da4e411`，lane/opt-09-db-baseline，main=`e59ca31`：crates/db-postgres/tests/store_baseline.rs 6 测=512 行确定性语料同一数据集落 MySQL（DDL 对照参考 db_storage_mysql 布局+值类型逐 kind 对）与 PostgreSQL（JSONB 嵌套列 codec 往返）双后端，schema/确定性/嵌套列各单测；TSV docs/review/fixtures/store-baseline/store-baseline.tsv 22 行，证据页 docs/review/opt-09-01-01-store-baseline.md；workspace 新增 `mysql` 依赖（minimal-rust）；本席 main 复测 6 绿。⚠️ 与 bw14-script-host `7024fb1` 平行交付 FLAG 待主席择一）→ **主席裁定 2026-11-26**：择 main `e59ca31` 面（lane/opt-09-db-baseline `da4e411` 收编形，512 行单数据集双后端在树）为本行交付面；bw14 `7024fb1` lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 本席 lane-only 交付存档（2026-11-26 主席裁定择 main `e59ca31` 面，opt-09-db-baseline `da4e411` 收编形）：本席 `7024fb1`（baseline_dataset.sql 双真机采集）转存档记录。
-- [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。（opt-09-db-baseline 席 `da9a135`，lane/opt-09-db-baseline，main=`04f5d37`：crates/db-postgres/tests/store_pool_candidates.rs 3 测=连接池与预编译语句候选对照（参考 `numConnections_` 默认 5 长连会话+每线程一连接+启动期预编译实体 SQL 模板两形），各后端延迟与吞吐逐形报告且回读恒等；TSV docs/review/fixtures/store-pool/pool-candidates.tsv 48 行，证据页 docs/review/opt-09-01-02-store-pool.md；本席 main 复测 3 绿）
-  - 本席 lane-only 交付存档（main 面=opt-09 lane `da9a135`→`04f5d37`）：本席 `9dda748`（pool_merge_eval.rs 三执行形状真 PG 对比）转存档记录。
-- [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。（opt-09-db-baseline 席 `cb65282`，lane/opt-09-db-baseline，main=`8b1fb8a`：crates/db-postgres/tests/store_commit_candidates.rs 4 测=实体写缓冲进 Transaction 按归档周期一 `COMMIT`（参考 sqlite_database.cpp 131-177+db_config 5s 默认）与显式 WRITE_EXPLICIT 两臂提交时长+归档整合恢复时长报告，落库回读逐字段等；TSV docs/review/fixtures/store-commit/commit-candidates.tsv 16 行，证据页 docs/review/opt-09-01-03-store-commit.md；本席 main 复测 4 绿）
-  - 本席 lane-only 交付存档（main 面=opt-09 lane `cb65282`→`8b1fb8a`）：本席 `01d391c`（archive_batch_eval.rs 三写形真 PG 对比）转存档记录。
-- [x] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。（opt-09-db-baseline 席 `7663701`，lane/opt-09-db-baseline，main=`3a7b9d0`：crates/db-postgres/tests/store_recovery.rs 3 测=参考 MySqlBackgroundTask::doBackgroundTask 契约复跑——可重试失败恰一次重试（attempts 2/on_retry 1）、回滚批零幸存行、事务外断连恰一次自动恢复+事务内手动重连；恢复后数据一致计数钉死；TSV docs/review/fixtures/store-recovery/recovery.tsv 21 行，证据页 docs/review/opt-09-01-04-store-recovery.md；本席 main 复测 3 绿）
-  - 本席 lane-only 交付存档（main 面=opt-09 lane `7663701`→`3a7b9d0`）：本席 `f09727b`（rerun_recovery.rs 三腿复跑）转存档记录。
+- [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。
+- [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
+- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
+- [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
 
 ### OPT-10-01 地图加载和查询基线
 
 优化空间流式装载、碰撞走查和导航缓存。比较峰值内存、场景冷启动和查询尾延迟，核对坐标与碰撞结果。
 
-- [x] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。(2026-11-26 本席 lane/bw14-script-host 37ec32a:crates/chunk/tests/map_load_baseline.rs 对原版夹具空间(docs/review/fixtures/chunk_space 18×2 网格)走全套流式面=解析 mapping→gather_chunks 枚举 37 候选→load_and_bind 绑 6 个 .chunk→focus→双半板地形 slab 过 focussed add_obstacle 门,整段冷启动计数分配器(OPT-01-01-01 同款 thread-local)+VmRSS 包夹;保存:冷启 1.6-2.5ms/2025 allocs/163790 bytes/rss Δ≈428kB,find_chunk_from_point 100 探针 p50 0.53µs/p99 1.7µs,collide findDropPoint 形 100 射线(50m→-10m 止于 10m 板) p50 1.8µs/p99 18.7µs;结构账断言且重跑恒等:绑集=6 文件、逐探针命中属主 chunk、逐射线 40m 处止板(±1e-3)、绑序/答案/距离/分配数全复现(2025/163790 双跑);墙钟与内存 probe 打印不断言;chunk 188 测全绿;review=docs/review/opt-10-01-01-map-load-baseline.md)
-  - main 已收（台账席，2026-11-26）：本席 `37ec32a`→main `5d88b28`（逐字节镜像，patch-id 同），本席勾保持。
-- [x] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。（2026-11-26 lane/bw14-script-host 7fc6d76：crates/chunk/tests/map_stream_opt.rs 走 shipped scan 卸两格重载全周期，候选=BwResource 段缓存 LRU 同 load_and_bind 解析面 vs 原始读+解析基线；峰值内存=计数分配器 LIVE 高水位 PEAK 单元，报告见 docs/review/opt-10-01-02-map-stream-opt.md——冷缓存填付 write_to_string 尺寸化 +469 allocs 更慢，重载 3.77ms/759 vs 原始 10.46ms/931，热全空间 1.50ms/1132 vs 冷 2.97ms/2025；结构面断言：缓存段 PartialEq 同树、双侧 bound/reloaded/finds/dists 全等、周期复跑恒等；墙钟探针数据只印不断言，allocs/peak 复跑精确复现；chunk 门禁 190 绿）
-  - main 已收（台账席，2026-11-26）：本席 `7fc6d76`→main `ac2d93d`（逐字节镜像），本席勾保持。
-- [x] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。（2026-11-26 lane/bw14-script-host bfde122：crates/client/tests/query_cache_opt.rs 双腿——导航=六单点集 permissive 链全 outside chunk，缓存面 find_path ReadWriteCache 骑成员 NavigatorCache 逐跳 vs 重算面 navigate_path_points/findFullPath 每调 scratch 缓存，同一批起点；碰撞=find_drop_point 打 BW-10-07-04 clientquery 夹具世界六 RAY 探针×40 重复；报告 docs/review/opt-10-01-03-query-cache-opt.md——缓存填跳 47 allocs 后四跳各 8 allocs（set path 尺寸 [6,5,4,3,2] 弹尽=命中臂逐跳行使），缓存总 79 vs 重算总 281（3.6× 省），复跑账 [47,8,8,8,8] 精确恒等；碰撞尾 p50 1.7-6.8µs/p99 至 26.3µs（GHOLED 格走查跨柱界），40 重复逐探针位级恒等（距离/落点/三角形/miss）；结构断言：逐跳进一格、末跳答终点、重算路线=共享穿越序列+隐藏穿越+裁剪终点（面发现：findPath 末跳换原始 dst 藏终点集穿越 vs findFullPath 保留+裁剪，两面对比共享序列各钉自己终点）、缓存侧分配严格更少；墙钟 probe 只印不断言；client 门禁 868 绿）
-  - main 已收（台账席，2026-11-26）：本席 `bfde122`→main `fafbe51`（逐字节镜像），本席勾保持。
-- [x] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。（2026-11-26 lane/bw14-script-host eb163d4：crates/client/tests/map_rerun_fixtures.rs 双腿复跑——路径=BW-10-07-03 genmap 双 chunk 世界按真相绑序重绑，五条 XPATH 探针对走 find_path ReadWriteCache 缓存步进面，源集侧逐跳钉在真相链上有序子序列（平滑可抽直不可绕），终点=真相解析终点（ACROSS 绕洞/RAMP 上坡/AROUND/SEAM A 侧 [wp0,wp4,wp3]+终点 B wp7/SEAMBA 终点 A wp3），五条复跑恒等；碰撞=chunk_space 夹具图走 OPT-10-01-02 缓存解析面 load_and_bind 绑 6 文件+参考地形 slab 过 focussed 门，100 探针格走客户端 findDropPoint 全部 40m 处止 10m 板±1e-3+格心解析属主 chunk，第二遍位级恒等；面发现两条：远侧跳=walk 面自有 for_destination 目标解析可落在原始 A* 链外邻点（源集侧才是夹具实质故严钉）、TOUR 不入走查（XPATHNONE 钉一次性 A* 面=genmap_load 已复放，walk 面每调只跨一门按构造可合法走完）——见 docs/review/opt-10-01-04-map-rerun-fixtures.md；client 门禁 870 绿）
-  - main 已收（台账席，2026-11-26）：本席 `eb163d4`→main `93a1576`（逐字节镜像），本席勾保持。
-
+- [ ] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。
+- [ ] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。
+- [ ] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。
+- [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
 
 ### OPT-11-01 三端固定镜头基线
 
 优化各端 GPU 上传、渲染批次、资源流与客户端帧调度。比较帧时间和显存，用固定镜头做视觉回归。
 
-- [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。(2026-11-26 lane/bw14-script-host 877e016：crates/client/tests/render_baseline_opt.rs 三端(linux/windows/macos=BW-11-04-07 可比集)各走同一固定镜头=DeviceConfig::default() 640×480 RGBA8 +64 帧 check_device→scene.step→present shipped 设备面；帧时间=每帧 Instant 只印不断言（本机 debug 面 p50 18.8-19.5ms/帧=307200 set_pixel+FNV，逐端逐帧 192 行 FRAME-TIME 落 docs/review/opt-11-01-01-render-baseline.md）；显存=计数分配器 LIVE+PEAK 高水位（OPT-10-01-02 变体）结构账断言：设备创建 2 allocs/1228848 bytes（640×480×4=1228800 背板+48 bytes 计数器 Arc），逐帧 0 allocs/0 bytes（present 原地画+摘要无上载抖动），整程峰值=创建足迹 1228848 恒不涨；固定镜头两证=新设备直接步进到帧序号复现该帧摘要（1/7/31/64）+全账复跑恒等；三端摘要逐帧全等+分配账全等；saved 基线钉 1..=8+64 帧摘要常量+整程内存账常量（光栅/场景/设备内存任一变化即触发，OPT-11-01-04 复跑同钉）；client 门禁 872 绿）
-- [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。(2026-11-26 lane/bw14-script-host 5313db6：crates/client/tests/render_batch_opt.rs 双面上传评估——shipped 面=TestScene::draw 逐像素 set_pixel（640×480 每帧 307200 次写）vs 批量候选=同像素数学走 shipped 批原语（整幅 fill 背景+标记列块逐行 slice fill，每帧 481 次写=1+480）；三端(linux/windows/macos)各 64 帧画+摘要分开计时对比（FRAME-TIME 逐帧 192 行+BATCH-TAIL 落 docs/review/opt-11-01-02-render-batch-opt.md）：批量面画半 p50 1.97-2.10ms vs shipped 15.05-17.36ms=7-8× 省，帧时间整体 ~20ms→~6.6ms，摘要半与面无关（同像素同 FNV，两端面在每端内一致本身即可比性验证）；结构断言：逐帧全像素向量相等（64 帧×3 端）+摘要相等+Device::present 真设备面摘要步走=计时面所骑 shipped walk+双面零分配+连续帧摘要必异（固定镜头下动画真实）+三端账逐帧全等+复跑恒等；墙钟 probe 只印不断言；评估结论=整段画半收益全在写形状 307200→481，批量候选不换契约（像素恒等）不加内存（仍零分配），OPT-11-01-01 saved 摘要钉两面都须答；client 门禁 874 绿）
-- [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。(2026-11-26 lane/bw14-script-host 5535b86：crates/client/tests/render_stream_sched_opt.rs 基线固定镜头(640×480, 64 帧)走 shipped 帧调度面 FrameLoop::run_frame（Tick→UpdateAnimations→Draw 逐帧 canonical+hooks 按相序断言，64 帧×3 端），六个排程切图帧(8/16/24/32/40/48)走 shipped load_and_bind 把参考夹具图 37 候选按扫描序分六批流进活空间；单 tracked 区跨全程=逐帧 allocs 增量+live 轨迹连续；切图报告（结构断言）：切图帧恰落在排程帧、并集=probe 全集 6 chunk、逐切图帧 allocs 954/32/32/32/32/128 严格大于全部稳帧(≤9)——分配账即切图/长帧的结构识别；内存=总 1729 allocs/峰值 1281573/终 live 1280327（流进的空间骑在设备 1228848 基线上），复跑恒等；长帧报告（probe 只印不断言）：本调试 runner 墙钟尾被 OS 抖动主导（最慢帧是稳帧 allocs=8 达 27-76ms 非切图帧），逐帧 192 行+切图行+每端 top-5 落 docs/review/opt-11-01-03-render-stream-sched-opt.md；夹具发现=第六绑 chunk 是分隔块 001x000x/sep/00110000o（标识符是路径非格胞，格胞中心解析只盖四个 hex 外块）；收尾四外块 find_chunk_from_point 各自格胞中心归位；client 门禁 876 绿）
-- [x] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。(2026-11-26 lane/bw14-script-host 96d8f67：crates/client/tests/render_visual_rerun.rs 三端复跑 OPT-11-01-01 saved 基线固定镜头（640×480, 64 帧）：钉帧 1..=8+64 摘要逐帧对上 saved 记录（首走+复走双验）；容差=复走间钉帧逐像素 differing_pixels=0 断言位级相等（确定性面容差下限=位，不设预算）——连 OPT-11-01-02 批量候选面也同满足：64 帧逐帧答 walked 摘要+钉帧批量像素 vs shipped 背板差 0；内存账复跑=saved 数字（走查区内 2 allocs/峰值 1228848，帧仍不抬高）；截图面（ScreenCopy::capture→TGA，BW-11-04-07 通道）钉帧 1/8/64 逐帧捕获=18 字节头+1228800 帧体，三端逐帧字节相等+第二遍复跑字节恒等（视觉回归产物自身复现）；OPT-11-01 簇收官——基线/上传批次/流与调度/视觉回归四面互相咬合（saved 摘要钉三行共答）；client 门禁 878 绿）
-
+- [ ] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。
+- [ ] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。
+- [ ] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。
+- [ ] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。
 
 ### OPT-12-01 各观测通道开销
 
 降低日志、Watcher、Profiler 的观测成本。验证背压、关闭观测后的开销及新旧工具查询兼容。
 
-- [x] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。(661e12a)
-- [x] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。(9a74213)
-- [x] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。(f4fce4f)
-
+- [ ] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。
+- [ ] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。
+- [ ] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。
 
 ### OPT-13-01 冷构建、增量与编辑器加载
 
 优化依赖缓存、并行转换和编辑器加载。比较冷构建、增量构建与大地图编辑时间，校验可复现产物。
 
-- [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。(1fd4739)
-- [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。(663dc8c)
-- [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。(`827ed8e`)
-- [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。(2026-11-26 补勾（交付 b981ae7 已在树，勾行遗漏）：crates/asset-pipeline/tests/asset_hash_format.rs 四测复跑 4/4 绿——hash64 五向量钉原版 bw_hash64.cpp FNV-1a 含 LE-integer+combine 契约（combined 0x85562B3F62384861）；SpaceConverter 真 space 两次独立转换逐字节+摘要全等（213B/3 sections，原版读者树读回 models/box.model|models/spikes.model）；DependencyList 精确哈希 4 输入 1 输出（primary 0x3A31A0D27AFBDAAB/full 0x39F4CDF311678C81）；res_packer 夹具两跑逐字节全等（177B×2）+原版 EL7 产物 bw.packed 经本包读者树读回全等（tree_equal=true）；墙钟 ASSET-FMT 只印不断言；docs/review/opt-13-01-04-asset-hash-format.md 补档）
-
+- [ ] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。
+- [ ] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。
+- [ ] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。
+- [ ] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。
 
 ### OPT-14-01 发布包尺寸及首次运行
 
@@ -4559,44 +4465,34 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（Linux 腿已在 main：bw15-platform 56c2673→f6107e8，platform io_timer_baseline.rs 1 测：写 30.33µs/读 9.04µs/replace 55.81µs/定时器分辨率 1µs/wakeup 0.95µs；bw14-script-host 另起平行实现 7081674→未进 main，patch-id 与 main 版不同——主席择一；Windows/macOS 腿未齐故行保持开）→ **主席裁定 2026-11-26**：Linux 腿择 main `f6107e8` 面为准；bw14 `7081674` 平行实现 lane-only 归档不删；行仍开待 Windows/macOS 腿，全腿到齐后按行验收勾。
-  - 主席裁定 2026-11-26（main 行内）：Linux 腿择 main `f6107e8` 面（bw15 `56c2673`）为准，行保持开待 Windows/macOS 腿；本席 lane-only `7081674`（13 probe+tests/baseline 目录）转存档记录，随 lane 并入由主席处置。
-  - 注记（2026-11-26，台账席）：Linux 腿已落——bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿。行保持开——「各平台」待 Windows/macOS 腿（三端 runner，BW-15-05-01）后补测再勾。
-- [x] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。(2026-11-26 lane/bw14-script-host 2f77126→main 25e40c7：crates/client/tests/render_backend_baseline.rs 按后端登记表采集三问——新树唯一出货像素后端=Device 下软件光栅器（参照侧 D3D9/OpenGL/cocos2d/Awesomium 四后端仅 BW-15-06-01 事实非移植，BACKENDS 留位即插）；设备面结构断言 SoftwareDevice 640×480 adapter=0 307200px RGBA8+帧序 1..=64 单设备对象+status=Ok+leaked()=0；驱动面=执行环境文本（CPU/核/OS/内核 probe 只印不断言）；帧时=固定镜头 check_device→step→present 64 帧逐帧 FRAME-TIME+FRAME-TAIL 报告，min/median/p99/max 记运行值不断言；结构契约逐相邻帧摘要异+帧 1..=8/64 复现 OPT-11-01-01 saved 钉+帧 1/7/31/64 纯帧序号复现+复跑恒等；提交目录 tests/baseline/render-backend-baseline.tsv 十列 linux-x86_64=measured，macos-arm64/windows-x86_64=pending rows 带 BW-15-04/BW-15-03 blocker 不编数字，语法检查拒 pending 带测量/未知后端/重复对/非数字/测量平台缺行；client 861 绿+集成全绿，clippy 净；本机 2 测绿)
-  - main 已收（台账席，2026-11-26）：本席 `2f77126`→main `25e40c7`（cherry-pick，取本席版非 bw15 腿），本席勾保持为交付记录。
-- [x] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。(2026-11-26 lane/bw14-script-host 3761c24→main 117a588：crates/platform/tests/platform_opt_parity.rs——同套协议场景两臂比结果：泛化 sendto/recvfrom 逐数据报 vs 批 sendmmsg/recvmmsg 逐窗口，同一 loopback UDP 对共发送套接字源三元组可比；256 数据报逐报字节+序恒等（内嵌大端序号=自身下标）+源 port/addr 网络序恒等+变长 16..=1200 抓聚合拆裂+批臂 8 send+8 recv vs 泛化 256+256；边沿同答：空批/空收 0/静默非阻塞两臂同 -1+EAGAIN（libc 约定，sendmmsg 注释"-errno"与实态不符如实登记）/8 槽收 5 排队恰 5 槽序字节恒等/单批同 sendto；自揭两发现=drained 错误形与槽宽=批容量（4 槽收 5 留队未丢，独立 C repro）；platform 64 lib+io_timer 1+parity 2+signal_call_sites 全绿，本机 2 测绿)
-  - main 已收（台账席，2026-11-26）：本席 `3761c24`→main `117a588`（cherry-pick，取本席版非 bw15 腿），本席勾保持为交付记录。
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
+- [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
 ### OPT-16-01 采集依赖与增量构建基线
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 d11c3d2(ci/build-baseline.sh)+96009f9(asset-pipeline/tests/dependency_rebuild_baseline.rs) 已 cherry-pick 入本树 c64444b/d4b764e 并复跑绿——build-baseline self-test：install-module/layout/upgrade/uninstall 四 PASS+build-fanout PASS(重编源定位=foundation 19 直接依赖者)+build-cold 196.77s+build-incremental 67.51s/12 crate 重编；dependency_rebuild_baseline 测试绿；fixture tsv 入 docs/review/fixtures/dep-graph/)
-- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 8c37171(asset-pipeline/tests/split_evaluation.rs+fixtures/dep-graph/split-*) 已 cherry-pick 入本树 0ddb5e0 并复跑绿，asset-pipeline 门禁 384 lib+集成含 split_evaluation 2 测全绿)
-- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 870ad04(asset-pipeline/tests/install_path_recheck.rs+fixtures/install-recheck/) 已 cherry-pick 入本树 5e99e3a 并复跑绿——the_load_and_install_paths_stay_compatible PASS+本树连带复跑 install-layout 全 PASS+package-baseline verify 3 平台语法净)
-
+- [ ] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。
+- [ ] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。
+- [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
 
-- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。(2026-11-26 跨席复测勾：他席 main 交付 38b99db(profiler/tests/long_stability_collection.rs+fixtures/long-stability/long-stability.tsv+docs/review/opt-23-01-01-long-stability-collection.md) 已 cherry-pick 入本树 5bb641c 并复跑绿，profiler 门禁 43 lib+集成全绿)
-- [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。(2026-11-26 跨席复测勾：他席 main 交付 2a26627(profiler/tests/buffer_export_evaluation.rs+fixtures/buffer-export/+docs/review/opt-23-01-02-buffer-export.md) 已 cherry-pick 入本树 98bec50 并复跑绿)
-- [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。(2026-11-26 跨席复测勾：他席 main 交付 0ee4b28(profiler/tests/collection_integrity_regression.rs+fixtures/collection-regression/+docs/review/opt-23-01-03-collection-integrity.md) 已 cherry-pick 入本树 28c1da9 并复跑绿)
-
+- [ ] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。
+- [ ] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。
+- [ ] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。
 
 ### OPT-26-01 固定事件回放并采集查询基线
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（opt26-db 席 `4c75e00`，lane/opt-26-db，main=`6973092`：crates/db-postgres/tests/event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账，钉定样本报表（四级窗口+五查询形计数）为 01-04 复算基线；TSV docs/review/fixtures/event-query/event-query.tsv 39 行，证据页 docs/review/opt-26-01-01-event-query-baseline.md；本席 main 复测 6 绿，TSV 复捕墙钟行随负载漂（结构计数行恒等）只记录不设带；⚠️ FLAG 2026-11-26：bw15-platform `8f42e4c` 平行交付（crates/message_logger/tests/qlog_replay_baseline.rs 523 行 20000 条固定事件回放+11 查询面墙钟+样本报表，与 main 6973092 db-postgres 侧 patch-id 不同=真平行非镜像，lane-only 待主席择一））→ **主席裁定 2026-11-26**：择 main `4c75e00` 面（6973092 收编形，event_query_baseline 6 测在树）为本行交付面；bw15 `8f42e4c`（qlog_replay_baseline.rs 523 行）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 本席跨席复测存档（2026-11-26 主席裁定择 `4c75e00` 面，main=`6973092`）：本席 cherry-pick `e34dacd`/`013f573`/`c578a23`/`7a1867c` 四行复测全绿（db-postgres 25 套）。
-- [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。（opt26-db 席 `40b58e0`，lane/opt-26-db，main=`027c6c0`：crates/db-postgres/tests/import_batch_candidates.rs 3 测=同 512 行语料五种事务形（每 1/16/64/256 行一提交+整库一事务）各报墙/吞吐/计数分配器峰值且逐形回读恒等；TSV docs/review/fixtures/import-batch/import-batch.tsv 30 行，证据页 docs/review/opt-26-01-02-import-batch.md；本席 main 复测 3 绿（批 64+ 后吞吐平坦 620-640 rows/s，批 1 最慢=每行一提交））
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `40b58e0`（main 已收 `027c6c0`）：导入批大小评估（64 行 commit 裁定+内存平坦）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
-- [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。（opt26-db 席 `bf335b5`，lane/opt-26-db，main=`5df3486`：crates/db-postgres/tests/query_aggregation_candidates.rs 3 测=一全扫建 name→id（512）+level→ids（200 键）两聚合图，同 128 名抽样网格前后对照——基线 name 查询 ~14× 键控 get，聚合后网格解析走图不走扫；TSV docs/review/fixtures/query-aggr/query-aggr.tsv 21 行，证据页 docs/review/opt-26-01-03-query-aggregation.md；本席 main 复测 3 绿（加速比两跑 8350×/4746×=负载敏感记录行，128 网格断言恒等））
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `bf335b5`（main 已收 `5df3486`）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
-- [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。（opt26-db 席 `b34554a`，lane/opt-26-db，main=`1590095`：crates/db-postgres/tests/sample_report_rerun.rs 3 测=同固定事件流重放后从**存储语料**复算样本报表，对照盘上 docs/review/fixtures/event-query/event-query.tsv 基线（四级窗口+五查询形计数逐项等），再在每项优化（64 行批导入/两聚合图）后各复算一次仍等；证据页 docs/review/opt-26-01-04-sample-report-rerun.md；本席 main 复测 3 绿）
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `b34554a`（main 已收 `1590095`）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+- [ ] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。
+- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。
+- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。
+- [ ] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。
 
 ## 5. 实施顺序与里程碑
 
@@ -4824,8 +4720,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-13-02-03 移植 res_packer**。**验收** 打包前后资源可等价读回。
   - 证据：`crates/asset-pipeline/src/res_packer.rs`（2387 行 / 22 测；fdce7ff）+ `crates/resources/src/datasection.rs` 增 `del_child_at`（3ac619c）。**结构**：`PackerEnv`（printf+MsgHandler 面：`out` 按序收集、`ERROR: `/`WARNING: ` 前缀、**sub-ERROR 清 error 旗标**——原版 handler 赋值 `errorsOccurred_ = priority >= ERROR` 的怪癖原样保留）；`SourceSection::{open,is_packed,can_pack}`（packed 魔数先、首个非空白 `'<` 判 XML、否则 Bin；派生 `Clone` 供 print 复用，因原版 `XmlPacker::print` 是 const 不消费 `ds_`）；`convert_bytes`/`convert`（`PackedSection::convert` 面，错误消息逐字）；`copy_file`/`file_exists`/`remove_trailing_slash`；`BasePacker` trait + `Claim`（src/dst 空值守卫）；六 packer + `Packers` 注册表（HIGHEST=0/LOWEST=0xFFFF，按**严格大于**插入）；`print_usage` 两块 printf 原文；`parse_args`（`--res/-r` 跳过、`--list/-l` 在 flag 走查中**立即**开且打不开提前退出、`--in/--out/--err/--encrypt/--strip`）；`run`（批列模式 + 兼容模式，返回退出码）。**验收面**：`packed_output_reads_back_equivalent`（XML→packed→`PackedSection` 读回：int/负数/0/大 i64/前导零 `"007"`/bool/float/vector3/文本/canonical base64 blob/嵌套与 matrix 行逐项等价）+ `repacking_packed_output_is_byte_stable`（重打包**逐字节**同——参考经 `asString` 重推每个值）。**--encrypt**：XOR `0xc9`+marker 1；二进制节整体加密（每个节点存自身 raw 块为 `ENCRYPTED_BLOB`，children 块 `[i16 n][n×(i32 dataPos|i16 keyPos)][i32]` 与 `packed::write_node` 同构），`binary_with_encrypt_round_trips` 验证整树可解密。**六 packer**：Xml（LOWEST 兜底，`canPack()||shouldEncrypt` 才认领，print 不消费节，pack 走 convert 去 `metaData`）、Fx（fx/fxh/fxo 三类全跳过：`PACK_SHADER_BINARIES=true`/`PACK_SHADER_SOURCE=false` 仍只认领不产文件）、Image（`--encrypt` 时让位给 XmlPacker；bmp/tga/png/jpg 优先同辈 `.dds`，否则同扩展名拷贝，扩展名不符→"Error: Cannot copy source %s to destination %s.\n"；`.dds` 走字体跳过：同目录 `.font` 的 `creation/sourceFont`+`abs(sourceFontSize)` 拼 `name_size`）、Chunk（clientOnly 过滤服务器实体、去 editorOnly/metaData/navmesh/worldNavmesh 深 2、`.packerTemp` 中转+转换后必删）、CData（`space.settings` 缺→WARNING 且 prepare false；copy 后按 bin/xml 两路删 thumbnail.dds/navmesh/worldNavmesh（受 `clientNavigation/enabled` 门控）+ 每个 `--strip`；保留 `#if 1` 逐个打印存活子）、ModelAnim（model 打包去 metaData、animation/anca 跳过；`.anca` 生成在接缝后退化为拷贝源 `.anca`；打不开模型→"Could not open model file %s\n"）。**CLI 面**：批列 fgets 尾字符吃掉/末行无换行削末字符、`--err` 日志、`"Processing %s..."`+`" %s\n"`、`"\nProcessing complete"`+失败计数三句尾；兼容模式 print（单参）/pack（`"Processing %s to %s..."`+`"...succeeded/failed"`）；未知类型 print 模式**先打印 "Error opening source file: %s\n"（原版 prepare 副作用）再成功返回**；`main` 尾 `return result ? EXIT_SUCCESS : EXIT_FAILURE`。**怪癖保留**：too_many_children 的 `"PackedSetcion"` typo（去掉尾部计数——Rust 错误型无计数）；CDataPacker::print 打出 `"Error: ChunkPacker not initialised properly\n"`（原版串错）。**门禁**：163 asset-pipeline 绿（141 既存+22 新）+ resources 227 绿（+1 `del_child_at`），clippy scoped 仅剩 workspace 两条既存 unused-dep，fmt 净；llvm-cov 0.9.1 `res_packer.rs` 行 92.70%（同 crate 的 offline_processor.rs 92.77% 同档；本 crate 整体 85.75%，未达核心 98% 线——如实登记）。已推 `lane/bw15-platform`（fdce7ff）。
 - [x] **BW-13-02-04 移植 resourcechecker**。**验收** 同一坏资源得到对应诊断。**交付**（2026-11-25，8678b06 + 16eda65 已推 lane/bw15-platform）：`crates/asset-pipeline/src/resource_checker.rs` 移植 `tools/resourcechecker/visual_checker.*` 的 `VisualChecker`。**规则面**：`_bsp.` 命名直接放行且不载规则；规则自 `visual_rules.xml`（cacheRules=true 直开 / false 先 fileExists——两分支同落 openSection，合并为 `cache_rules || file_exists`）；缺规则记 `Unable to find visual_rules.xml file.`（构造期错误，check() 首行 `errors_.clear()` 与原版一致会清掉）；匹配 = 目录路径小写 find 包含 + `stable_sort`（path 长降序、filespec 长降序稳定）+ `PathMatchSpec` 可移植 glob（`*`/`?`/`[seq]`/`[!seq]`，首 `]` 字面量，`{}` 列表无用户未实现已注册）；rulesById + parent 链递归读（宏生 vector/string/int/float/bool + hardPoint 集合）；exportAs ∈ {normal, static, static with nodes} 否则 `Unknown value for exportAs [%s]\n` + 重置 normal。**检查面**：尺寸/三角数（`*indices` 子节 `IndexHeader::read` 计 `nIndices_/3`，负数 wrapping 成 u32）/层级深度（缺 node 节原版解引用空指针即 UB，移植记 0 已注册）/portal 电池（基座矩阵 row0=uAxis、row2=boundary normal、row1=normal×uAxis、平移=normal·d，点从平面空间映射回对象空间；<3 点/非平面（零法线跳过）/朝外（`d − centre·n > 0`，平面法线须指内）/snap 1/2196 容差/距离 1/1024 容差/offset 1/8192 close，printf %f 全 `{:.6}`）/重复节点名/硬点缺失与未知（HP_flash01 与 HP_flash 豁免；`len>3 && substr(0,3)=="HP_"` 照抄）/纹理名空格（renderSet→geometry→primitiveGroup→`material/textureormfm` find_last_of）。**接缝注册**：MessageBox/automatedTest 分支一律走错误记录；`PrimitiveFile::get` 先 `.processed` 后裸名；XML 内容嗅探拒绝（原版空 asBinary 强转 IndexHeader 是 UB）；`snap_vertices` 原版即死字段照抄并注册。**验收即测试**：`portals_are_forbidden_on_normal_visuals`（同一坏视觉在 rules=false 下得 `Must not have any portals`）等 15 测——好视觉全规则零错、too small/too big/三角上下限/层级/朝外/非平面/snap+距离/重复+硬点/纹理/坏 exportAs/缺文件逐项断言原版消息全文。**附带**：`datasection::read_vector3` 改走 openSection 路径行走（原版 readVector3 即 `openSection(tag)`，`boundingBox/min` 两跳；16eda65 附 `read_vector3_walks_slash_paths` 测）；门禁 asset-pipeline 177 + resources 228 测绿，clippy 仅余两既存 workspace unused-dep，fmt 清，llvm-cov resource_checker.rs 行 96.49%（crate 整体 85.60%，工具 crate 口径照旧）。**坑**：原版 portal 点存平面空间 (u,v,0) 经基座矩阵映射回对象空间，测试夹具必须给平面坐标再由 winding 定平面法线朝内（朝外即触发 facing 错误）；`BinSection::save_bytes` 输出含非 UTF-8 magic 字节，夹具写盘必须走原始字节而非 `from_utf8_lossy`（会替换 0xa1 致容器解析空）。
-- [x] **BW-13-02-05 回归 NavGen 入口**。**验收** 可调用 BW-10 的导航生成。**跨席复测勾**（main 交付为准，2026-11-26，本席）：main `79f47c4`（`crates/asset-pipeline/src/navmesh_processor.rs` 2738 行/55 测，LockedChunks 引用计数/ChunkProcessorManagerFace 锁块怪癖/NavmeshProcessor 逐 girth 顶检→flood→as_binary 追加/NavmeshCache 全端口）依赖面 `977f555`（waypoint-gen workflow.rs 914 行：readTGA/extendThroughUnboundPortals/determineEdgesAdjacentToOtherChunks/compileGirthsList/GirthWorkflow）+`d26cb55`（tga temp dir 隔离），本席 cherry-pick `3ddf7b8`+`b868516`+`b91f983`。**缝冲突自纠**（`e5670ac`）：本树 b99cb0e（lane-only，GenChunk/FloodPhysics 缝）与 main 同面（NavmeshProbe/DropPhysics 缝）物理撞名 to_vector3/determine_edges——取 main 版为准，删本树私有重复，navgen_map harness 补 NavmeshProbe/DropPhysics 适配 impl 改骑 workflow 缝，truth log `gen_navgen_map.log` 逐行复现未变（两版行为等价实证）。**复跑证**：waypoint-gen 88 测绿（含 navgen_map truth-log 对照+workflow tests）+asset-pipeline 439 lib+集成 0 failed，fmt/clippy scoped 净（blowfish workspace 预存在非代码）。b99cb0e 余下不撞名面（generate/streamline/calculate_set_membership/as_binary 等）保持开待主席与 main 侧择一。
-
+- [ ] **BW-13-02-05 回归 NavGen 入口**。**验收** 可调用 BW-10 的导航生成。
 
 #### BW-13-03 WorldEditor
 
@@ -4899,11 +4794,6 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **BW-14-02-01 运行 Python simple 示例**。**验收** 与新服务端完成登录。
   - 卡点（服务端登录链路未落地，同 BW-14-01-02）：simple client 在参考 `examples/client_integration/python/simple/`（自带 res 树，实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对），其登录依赖新服务端 loginapp 挑战协商（BW-06-01-02）+ baseapp onLogin（BW-07-01），当前 `apps/server` 仅最小入口无登录处理。
-  - 复测（2026-11-26，台账席）：注记引用已过时但卡点事实未变——所引依赖均已交付：BW-06-01-02 挑战协商（`3244af7`）、BW-07-01（BW-07 车道 24/24）、BW-14-01-02（`c68667c`，进程内 harness 全链，边界自注「多进程运行不在本项」）；然 `apps/server/src/main.rs` 本日复核仍 36 行最小入口，`app::run`（BW-15-02-01 `750be59`）只接 Dispatcher+信号矩阵、零 mercury 引用（NetworkInterface 构造留随 BW-02-02/角色簇），无可监听的 loginapp——网络登录面本席侧仍缺。行保持开，待 `apps/server` 网络接线（BW-02-02/角色簇）与可跑客户端宿主（BW-21）落地后复测。
-  - 增量落地（2026-11-26，`44aca1e`(merge origin/lane/bw19-docs)，含 `a43f3f3` 收包面测试适配）：**服务端登录面接线已上 main**——角色循环走 `bwMainT` 全体（`app.rs` 新 `MercuryPass` 合流角色 dispatcher 与 Mercury dispatcher，machined 查询/内部接口配置链/`NetworkInterface::new_on_dispatcher` 构造/关服 drain）；loginapp 外口（`loginapp_interface.rs`，`PORT_LOGIN=20013`+`login_minder` 三入口 login/probe/challengeResponse 按声明序+`LoginInterfaceDispatch` 剥 first-request 尾脚+`probe` 真数据报往返）；login 门序与 `challengeResponse` 应答面（`loginapp_login.rs`，复用 BW-06-01-05 版本闸、challenge 缓存/resent quirk 逐字）；dbapp 出站面（`db_login.rs` `DB_APP_LOG_ON_ELEMENT_ID=8`+`DbAppForward`/`DbReplyHandler`，验收级真闭环测过 `the_dbapp_request_leg_reaches_the_wire_and_its_answer_routes_back`）。**适配点**：收包面 graft（`14d3d8c`）后 `the_network_pass_delivers_a_datagram_through_the_loop` 原发裸 `b"ping"` 被参考形 guard 判 corrupted，已改为带 clear flags 头的真帧 `[0,0,p,i,n,g]`（a43f3f3）；覆盖 loginapp_interface 100%、loginapp_login 98.78%、db_login 98.63%、app.rs 99%+。行保持开——simple client 端到端验收仍待 dbappmgr→loginapp `notifyDBAppAlpha` 活网格出生接线与 dbapp logOn 应答角色（BW-09-01 领地）落位后复测。
-  - 复测五（2026-11-26，lane/bw19-docs `0dfc448`）：**参考客户端真机往返已通两道门（82→72）**——预编译 `simple_python_client` 在参考树 `game/bin/server/el7/examples/simple_python_client`（本机可跑，`-server/-user/-password`，README 配方）；Linux 构建路径必须从 res 解析 `loginapp.pubkey` 文件（内嵌 key 仅 PS3/Xbox360 分支，main.cpp:228-238）——取 `scripts/cluster-smoke/res/loginapp.pubkey` 头插 res overlay 即解（BW-00-02-04 卡点在此实验面消除；配对 `res/server/loginapp.privkey`=参照 loginapp_config.cpp:22 默认读 `server/loginapp.privkey`，将来 dbapp 解密腿用）。真跑序列：本席 loginapp 外口 20013 监听（无 machined 回落绑全接口）→ 真客户端实体定义加载/网络绑定/`LoginHandler: LoginApp@127.0.0.1:20013` 起动 → ①默认配置拒 82=`LOGIN_REJECTED_LOGINS_NOT_ALLOWED`（=参照默认 `BW_OPTION(bool,allowLogin,false)` loginapp_config.cpp:24，移植一致非缺陷）→ ②overlay `<loginApp><allowLogin> true` 后拒 72=`LOGIN_REJECTED_DB_NOT_READY`（=参照 loginapp.cpp:862 isDBReady 门**先于**挑战门 1048——gate 序 82→72 实证）。**余卡点收窄两件**：活内部网格出生接线（dbappmgr→loginapp `notifyDBAppAlpha` 上线；dbappmgr.rs 自注 Mercury traffic not modelled）+ dbapp logOn 应答角色（BW-09-01 lane 领地）——两者落位后 overlay 配方（res 头插 loginapp.pubkey+overlay server/bw.xml 开 allowLogin）即可续跑至挑战协商与真登录。行保持开。
-  - 卡点复测（2026-11-26，bw14-script-host 席）：旧注「服务端登录链路未落地」**已过时**——登录链已落地并真机绿：BW-06-01-02 挑战协商（3244af7，main 祖先）+ BW-07-01 baseapp 装载/ID 分配 + BW-14-01-02/05 进程内登录链（`fantasydemo_login.rs` 5 测：既有账户走机/未知用户建档/错密码拒不碰行/新角色建档回指，`fantasydemo_logout_relogin.rs` 2 测：退出持久化重登读回，本席实测全绿）。**真余卡点两处**：①`apps/server` 仍最小入口（`main.rs` 仅 BWResource/BwConfig 初始化 + `app::run` 信号/关停面），无角色运行时把 loginapp/dbapp/baseapp 登录链接到真实 Mercury 端口（同 BW-15-02-01 卡点；BW-08-01-02 CellApp 创建与注册未勾）；②参考 simple 客户端是 **C++ 壳内嵌 Python**（`main.cpp`/`entity.cpp`/`py_server.cpp` 等，目录名「python」指 Python 脚本化实体而非纯 Python 程序），跑通它需移植该壳或等价客户端驱动，与①同属大面工程，随角色运行时落地。simple 自带 res 树实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对。
-
 - [x] **BW-14-02-02 运行原版 Android 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
   - 宿主缺口（未运行互通测试）：`docs/review/bw14-02-02-03-mobile-interop-host-gap.md`（402c28a）——参考 `examples/client_integration/c_plus_plus/android/`（JNI + `android.app.NativeActivity` + `android_native_app_glue` + `connection_model` 静态库 + `-llog -landroid -lEGL -lGLESv1_CM`，NDK `armeabi-v7a`/`APP_STL=gnustl_static`/`APP_PLATFORM=android-9`）需 Android NDK 工具链 + 真机/模拟器，本机 Linux 无 NDK/设备；即使宿主就绪，互通目标（新服务端登录）亦未落地（同 02-01 卡点）。协议结果未采集；两侧缺口均已登记。
 - [x] **BW-14-02-03 运行原版 iOS 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
@@ -4938,7 +4828,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-14-04-03 布置配置及样例资源**。**验收** 首次启动可定位。（commit 5da86a6）
   - 证据：`ci/install-layout.sh` + `docs/review/bw14-04-installable-artifact-layout.md`（b0a4d3e 起，5da86a6 完成）——`res/server/bw.xml` + `res/scripts/`（21 项样例资源镜像）随包布置（install-layout PASS：配置/资源/二进制/模块/`data/` 齐全）。**工具半**：装后 `process_defs -r <prefix>/res` 首启定位并加载安装资源树（install-cli-res PASS）。**服务器半**：`apps/server/src/main.rs`（5da86a6）按参考 `BIGWORLD_MAIN` 接入 `BWResource`/`BWConfig` 链，装后 `boundless-server <role>` 以 `BW_RES_PATH=<prefix>/res` 首启定位安装配置（install-res-server PASS：无「Could not find」/「No configuration section」，正常启动/停止 exit 0）；`role_lifecycle.rs` 首启定位/未定位双测试钉死观测差（定位静默、未定位记参考失败行）。
 - [ ] **BW-14-04-04 执行干净安装烟测**。**验收** 三端能启动和停止。
-  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**复测登记（2026-11-26，main 吸收 lane/bw16-18 `a05a849`←bw10-terrain `1dba9be`）**：`ci/install-layout.sh` self-test 10/10 PASS 含红/绿双验（他席独立跑过），同脚本装后启停绿；两席同证据链镜像非新交付，行保持开。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
+  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
 - [x] **BW-14-04-05 执行升级与卸载**。**验收** 验证用户数据保留行为。（commit b0a4d3e）
   - 证据：`ci/install-layout.sh`（b0a4d3e）——归档只携带包属树（`bin lib res`），用户数据在 `data/`（**不在归档**）。装后种子 `data/db/user.db`，篡改包属文件 `res/server/bw.xml` 后**升级**解包：包属文件还原为打包字节、`data/db/user.db` 保留（install-upgrade PASS）；**卸载**删除 `bin/ lib/ res/`、`data/db/user.db` 保留（install-uninstall PASS）。self-test 绿色全链路 + 4 条红色臂（启动失败/CLI 失败/坏模块/缺定义资源树均按预期咬合）。
 
@@ -4950,15 +4840,15 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 封装事件轮询和唤醒、单调时钟、信号/控制事件、子进程与退出状态、文件锁、内存映射、动态库和系统目录。对照大小写、路径编码、原子替换、IPv4/IPv6 和断网行为。
 
-- [ ] **BW-15-01-01 封装事件轮询和唤醒**。**验收** 三端可停止空闲循环。（Linux 腿注记 2026-11-26：bw15-platform `774372f`→main `70af995`，crates/platform/tests/idle_loop_stop.rs 1 测绿——空闲循环按需停（trigger 中断 epoll_wait 预算 interrupt1 680µs/1 迭代、preset 迭代、rearm 112/46µs、预算窗 5 迭代）；wakeup.rs 441ff01 既有注记同上；三端行保持开待 Windows/macOS 腿）
+- [ ] **BW-15-01-01 封装事件轮询和唤醒**。**验收** 三端可停止空闲循环。
   - 证据（部分，未勾）：`crates/platform/src/wakeup.rs`（441ff01）——自管道 `Wakeup`（`pipe(2)` 双端 `O_NONBLOCK`、`trigger` 任意线程一字节写入容忍 EAGAIN=已挂起、`consume` 排空重整、Drop 关双端），Linux 实测 5 测：空闲 `epoll_wait`（5s 预算）被另一线程 `trigger` 在 1s 内唤醒、预挂起即回、`consume` 后零超时不再上报、未触发 `consume` 为 no-op、100 轮触发/消费循环稳定；「轮询」半块已由 BW-02-01-02 `platform::poller`+Mercury `EventPoller` 承担（Linux epoll）。**macOS 后端已落（59da22c）**：`crates/platform/src/poller.rs` 拆为 Linux `epoll`/macOS `kqueue` 两后端、`lib.rs` 把 `poller` 门控扩到 macOS——kqueue 与 epoll 同为描述符持久注册集，`create`/`ctl`/`wait` 一对应映射（`kqueue()`；`kevent` EV_ADD/EV_DELETE 按 filter、`CTL_DEL` 先删读再删写、二者其一在册即成功、无册 fd 返 `ENOENT` 同参考 WARNING 分档；`EV_EOF`→`EPOLLHUP`/`EV_ERROR`→`EPOLLERR`；超时负值阻塞零轮询；事件位沿用 epoll 数值使调用方跨端同常量）；`platform` darwin `--all-targets` 交叉编译绿、darwin clippy `-D warnings` 绿、Linux 59 测零回归；kqueue 模块 4 测镜像 epoll 待三端 runner 实跑。**剩余**：Windows `WSAPoll` 走 socketpair 而非匿名管道——随 BW-15-05 三端 runner 落地（kqueue 实跑亦随三端 runner）。
 - [x] **BW-15-01-02 封装单调时钟**。**验收** 单调性及 Tick 单位一致。
   - 证据：crates/platform clock.rs 测试（monotonic 不回退、微秒单位、起点近零）。
-- [ ] **BW-15-01-03 封装进程控制及退出码**。**验收** 三端可正常关服并回收子进程。（Linux 腿注记 2026-11-26：bw15-platform `4a40422`→main `595be79`，crates/platform/tests/process_exit_baseline.rs 1 测绿——子进程状态码/spawn 262µs/wait 7.9ms/轮询收割 1.02ms/信号等待 247µs/一次收割 16 存活；三端行保持开待其余平台腿）
+- [ ] **BW-15-01-03 封装进程控制及退出码**。**验收** 三端可正常关服并回收子进程。
   - 证据（部分，未勾）：`crates/platform/src/process.rs`（d25d90a）——`Child`（`fork`+`execvp` PATH 搜索、子进程 exec 失败 `_exit(127)`、`wait` 阻塞重采/`try_wait` WNOHANG 非阻塞/`signal` kill、二采 `ECHILD` 报错）+ `ExitStatus`（`WIFEXITED`/`WEXITSTATUS`/`WIFSIGNALED`/`WTERMSIG` 解码、`success` 即 code 0）；Linux 实测 7 测：exit 42 采回、零退出成功、SIGTERM 终止、存活期 `try_wait` None 再采、exec 失败回 127、空 argv 拒、二采 ECHILD。**剩余**：Windows `CreateProcess` 后端随 BW-15-03 落地；`server-runtime` 关服接线（信号→kill 子进程→wait 回收）待做。
 - [x] **BW-15-01-04 封装文件锁及原子替换**。**验收** 并发更新夹具通过。（commit d0a9ac4）
   - 证据：`crates/platform/src/file.rs`（d0a9ac4）——`FileLock`（`flock` LOCK_EX 互斥、try 版返回 None 表已持有、Drop 即释放；**锁稳定伴生 `.lock` 文件而非被替换的数据文件**——rename 换 inode，锁被替换文件本身无法串行化更新，此平台事实已编码进模块文档）+ `atomic_replace`（同目录临时文件写全→`fsync`→`rename(2)` 原子换入，失败自动 unlink 残留）；**验收并发更新夹具实测过**：2 线程×50 锁-读-改-写-原子替换，计数恰为 100 零丢失（`file::tests::concurrent_update_fixture_loses_nothing`，`cargo test -p platform --lib` 64 测全绿）。**Windows `LockFileEx`/`ReplaceFile` 后端归 BW-15-05 三端 runner 平台移植**（本项验收为并发更新夹具，Linux 已过）。
-- [ ] **BW-15-01-05 封装内存映射与共享库查找**。**验收** 三端加载相同测试资源。（Linux 腿注记 2026-11-26：bw15-platform `294a434`→main `298fd89`，crates/platform/tests/mmap_library_baseline.rs 1 测绿——同资源 mmap 34µs/64KiB+anon 4096+共享库打开 22µs/符号查找 3µs malloc 命中；三端行保持开待其余平台腿）
+- [ ] **BW-15-01-05 封装内存映射与共享库查找**。**验收** 三端加载相同测试资源。
   - 证据（部分，未勾）：`crates/platform/src/mmap.rs`（3359d3b）——`Mmap`（`mmap` PROT_READ|MAP_SHARED 整文件映射、空文件映射空切片、匿名零页映射、`Deref<[u8]>`、Drop `munmap`；mmap 需活 fd、成功后 close 映射仍有效）+ `DynamicLibrary`（`dlopen` RTLD_NOW|LOCAL、`dlsym`、Drop `dlclose`、`dlerror` 消费）；Linux 实测 7 测：文件映射逐字节等于文件、空文件、匿名页全零、缺文件报错、dlopen libc 并 dlsym malloc 非空、缺符号报错、缺库报错。**剩余**：Windows `CreateFileMapping`/`LoadLibrary` 后端随 BW-15-05 落地。
 - [x] **BW-15-01-06 校验路径大小写、编码和系统目录**。**验收** 代表性夹具可寻址。（commit aa6e2ee）
   - 证据：`crates/platform/src/path.rs`（aa6e2ee）——`correct_case_of_path`（参考 `WinFileSystem::correctCaseOfPath`（win_file_system.cpp:782）的 POSIX 对应：`realpath(3)` 在大小写不敏感卷上解析出盘上真实拼写、敏感卷上即恒等、缺失路径原样返回）；`real_path`（canonical 定点、symlink 解析、缺失报 `ENOENT`）；`join`（参考 `getAbsolutePath` 的 base+path（unix_file_system.cpp:466），补缺 `'/'`）；`home_dir`（`$HOME`）/`temp_dir`（`TMPDIR`→`TMP`→`TEMP`→`/tmp`）；编码 `path_bytes`/`path_from_bytes` 字节级往返（POSIX 路径是字节串非必 UTF-8，实测 `0xFF` 字节往返）+ lossy。Linux 实测 7 测：temp 系统目录夹具写读可寻址、HOME 绝对、join 三态（缺分隔/已带/空 base）、realpath 不定点+symlink+缺失三态、correct_case 缺失原样/存在=realpath、非 UTF-8 往返。**Windows `%USERPROFILE%`/`%TEMP%`/`GetFullPathNameW` 后端归 BW-15-03 Windows runner 平台移植**（本项验收为代表性夹具可寻址，Linux 已实测过：`path::tests::temp_dir_holds_an_addressable_fixture`，temp 系统目录夹具写读可寻址）。
@@ -4986,14 +4876,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 验证原生服务端全角色、客户端、编辑器及产物。处理进程停止、DLL/CPython 查找、路径与驱动，并核对原版 Windows 客户端和编辑器样本。
 
 - [ ] **BW-15-03-01 跑 Windows 服务端全角色**。**验收** 能处理控制事件并关服。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-03-02 验证 DLL 和 CPython 发现**。**验收** 已安装布局中模块可导入。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
-- [ ] **BW-15-03-03 跑 Windows 客户端与编辑器**。**验收** 固定样本与原版对照。（对照基线注记 2026-11-26：对照面本体已在 main——Linux boundless-client 固定地图呈现（896×176 8 帧二跑逐位同+TGA 630,802 B）与 boundless-editor 编辑会话（ed_save (12,0,34)→(25,0,47)+二会话字节同，02bedbb）即样本面；两入口 `cargo check --locked --target x86_64-pc-windows-gnu -p boundless-client -p boundless-editor` 已 PASS（2026-11-26 实测零错误）；Windows 腿仍缺真机 runner（服务端 `mercury`/`std::os::fd` 交叉构建未过属 BW-15-03-01 面），行保持开）
-  - 交叉编译注记（2026-11-26，`454acee` 核验）：本席 `apps/client`/`apps/editor` 双入口 windows-gnu 交叉检 PASS（`cargo check --target x86_64-pc-windows-gnu`，仅预存 blowfish manifest 警告）；server 侧 `mercury` E0432×16 属 BW-15-03-01，不拦两入口。真跑仍待 Windows runner（BW-15-05-01），行保持开。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
+- [ ] **BW-15-03-03 跑 Windows 客户端与编辑器**。**验收** 固定样本与原版对照。
 - [ ] **BW-15-03-04 跑 Windows 工具和发布包**。**验收** 路径编码和启动烟测通过。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-04 macOS
 
@@ -5002,14 +4887,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **BW-15-04-01 跑 macOS 服务端全角色**。**验收** 能启动、停止并回收。
   - 证据（部分，未勾）：macOS 编译前置已通（afe9973）——`server_runtime::signals` 可移植到 `aarch64-apple-darwin`：等待原语按平台分派（Linux `sigwaitinfo`，macOS `sigwait`——libc crate 只给 BSD 族 `sigwait`，二者同是 POSIX 等待且都可被 `EINTR` 打断，`wait_one` 统一为负错误码）；`signal_number_to_string` 的实时信号臂（`SIGRTMIN`/`SIGRTMAX`，glibc 专属）门控到 Linux，macOS 无实时信号范围；`SIGMAX` 按平台取（Linux `SIGSYS`=31，macOS `SIGUSR2`=31，二者皆最高标准信号，`AtomicU32` 掩码一致）；`SIGNAL_NAMES` 按平台分表（参考表是 Linux 编号；macOS 编号不同：`SIGEMT`=7/`SIGBUS`=10/`SIGSYS`=12/`SIGCHLD`=20/`SIGIO`=23/`SIGINFO`=29/`SIGUSR1`=30/`SIGUSR2`=31，无 `SIGSTKFLT`/`SIGPWR`；服务端用的退出信号 `SIGTERM`/`SIGINT`/`SIGQUIT` 两端同号）。实测 `cargo check -p boundless-server --target aarch64-apple-darwin` 绿（仅剩 resources 预存警告）。**剩余**：macOS 上真机运行（`cargo build`+启动/停止/回收，需 macOS runner）；`--all-targets` 测试编译亦已绿（af0182b）——两处内联 `sigtimedwait`（server_app.rs:980/1211，BSD 无此符号）收进 `consume_pending_signal`（Linux `sigtimedwait` 零超时轮询、非 Linux `sigwait`；信号既已确认 pending 则立即返回），实测 `cargo check -p server-runtime --target aarch64-apple-darwin --all-targets` 无错；mercury 尚有 darwin 缺口（`lib.rs` 对 `event_dispatcher`/`packet_receiver` 的门控被 `interface_table.rs:18`/`request_manager.rs:27`/`network_utils.rs:36` 无条件 import；`endpoint.rs:403` 直用 linux-only `socket::IP_RECVERR`）——服务端最小入口不依赖 mercury 故不拦当前构建，待 Mercury 接入服务端（BW-02）时需先补。
 - [ ] **BW-15-04-02 验证 CPython 与应用资源布局**。**验收** 从应用包可加载。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
-- [ ] **BW-15-04-03 跑 macOS 客户端和编辑器**。**验收** 设备状态和固定地图测试通过。（对照基线注记 2026-11-26：固定地图测试面已在 main——crates/client 软栅格设备（present_with 帧账+checksum+map_display_baseline 2 测 896×176 二跑逐位同）与编辑器 ed_save 面（edit_reload 2 测），02bedbb；三入口 `cargo check --locked --target aarch64-apple-darwin` 实测 PASS；macOS 腿待真机 runner，行保持开）
-  - 交叉编译注记（2026-11-26，`454acee` 核验）：本席 `apps/client`/`apps/editor` 双入口 darwin 交叉检 PASS（`cargo check --target aarch64-apple-darwin`，仅预存 blowfish manifest 警告）；macOS kqueue+信号前置 `59da22c`/`afe9973` 已在 main。真跑仍待 macOS runner，行保持开。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
+- [ ] **BW-15-04-03 跑 macOS 客户端和编辑器**。**验收** 设备状态和固定地图测试通过。
 - [ ] **BW-15-04-04 跑 macOS 工具和发布包**。**验收** 干净安装后可执行。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-04-05 验证与 Linux 和 Windows 互通**。**验收** 跨端登录及实体同步通过。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-05 三端 CI 和混合部署
 
@@ -5020,11 +4900,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **BW-15-05-02 在三端执行协议、资源与 Python 测试**。**验收** 各端分别留存结果。
 - [ ] **BW-15-05-03 配置 MySQL、XML 与 SQLite 测试矩阵**。**验收** 每种模式产生独立结果。
 - [ ] **BW-15-05-04 配置 PostgreSQL 真实后端矩阵**。**验收** 各端完成登录、写档和重启读档。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-05-05 验证三端客户端连接不同平台服务端**。**验收** 记录每种支持组合。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-05-06 验证混部替换单角色**。**验收** 记录版本和关服顺序。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-06 平台图形和宿主依赖
 
@@ -5034,10 +4911,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 证据：`docs/review/bw15-06-01-graphics-backend-list.md`——四后端五平台：桌面 **Direct3D 9**（`lib/moo`，`bwclient`，`IF(BW_PLATFORM_WINDOWS)` 下链 `d3d9/d3dx9/dxguid/setupapi/psapi`，`moo_dx.cpp`/`render_context.cpp` 设备面；`IF(NOT BW_IS_SERVER)` 剥离服务端依赖）、工具 **OpenGL**（`navgen` 预览，`opengl32` + `<GL/gl.h>`/`HGLRC`）、移动 **cocos2d/OpenGL ES**（Android `-lEGL -lGLESv1_CM`、iOS libs 随树）、web **Awesomium**（`BW_AWESOMIUM_SUPPORT` 门控，`web_app` → `PyAwesomiumProvider`）。平台基线：顶层 `CMakeLists.txt:57-72` 构建门仅 Windows（win32/win64）+ Linux remote-only 服务端，无 macOS 桌面分支——Linux/macOS 桌面**无图形后端**（全树 `wgl|glX|CGL|glViewport` 扫描仅命中 navgen），macOS 侧按 BW-15 开篇约定以原版样本+跨端混跑验收。缺口：`third_party/` 无 `awesomium/`（同 DCC SDK 缺口）；新版渲染栈未建（BW-11），服务端零图形后端由 BW-16-02-02 对齐。
 - [x] **BW-15-06-02 维护 DCC 宿主矩阵**。**验收** 逐插件记录可用宿主。（commit ff504c9）
   - 证据：`docs/review/bw15-06-02-dcc-host-matrix.md`——三插件两宿主：visualexporter/animationexporter → Autodesk 3ds Max（`MFXExport : SceneExport`（mfxexp.hpp:154），`.dle`，Max 库级导出 `LibDescription@1..LibVersion@4`（visualexporter.def/animationexporter.def，expmain.cpp:124-155），Max **2009–2013** 逐版本目标 max2009_exporter…max2013_exporter）；mayavisualexporter → Autodesk Maya（`MLL_EXPORT initializePlugin/uninitializePlugin`（visualmain.cpp:38/131），`.mll`，随分发 visualfileexporterscript.mel，Maya **2009–2014** 逐版本目标）。启用条件=`BW_CMAKE_TARGET=exporters`（`BWConfiguration_exporters.cmake` `EXPORTER_PROJECTS`：默认 Max/Maya 2010-13 + Max 2010-12，win32 追加 2009 组，win64 追加 maya2014，非 vc9 追加 max2013；`BW_EXPORTER`+`_SECURE_SCL=1`）；输出 `game/tools/exporter/3dsmax<ver>{,x64}/`、`maya<ver>{,x64}/`。缺口：`third_party/` 无 `3dsmax/`、`maya/` SDK 目录（外部依赖），插件二进制无法从本树构建——宿主实测（BW-15-06-03/04）需外部 DCC SDK 与宿主安装。
-- [ ] **BW-15-06-03 验收三端客户端与编辑流程**。**验收** 同一地图有可比证据。（Linux 腿注记 2026-11-26：boundless2 `02bedbb`→main（ada3706 去重）——固定地图双入口同图可比证据：apps/client `boundless-client --res docs/review/fixtures/chunk_space/res/space_00010001` 18×3 视图 896×176 软栅格 8 帧 checksum 系列二跑逐位同+TGA 630,802 B（crates/client/tests/map_display_baseline.rs 2 测），apps/editor `boundless-editor` ed_save 移 tree00 (12,0,34)→(25,0,47) 重载验证+二会话字节同（apps/editor/tests/edit_reload.rs 2 测）；Windows/macOS 腿待 runner，行保持开）
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
+- [ ] **BW-15-06-03 验收三端客户端与编辑流程**。**验收** 同一地图有可比证据。
 - [ ] **BW-15-06-04 验证外部导出的跨端读取**。**验收** 各适用消费者可打开。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 ### BW-16 目录分层、依赖方向与模块归属
 
@@ -5422,7 +5297,7 @@ Boundless 新增交付，独立位于 `extensions/vscode/`，内部拆为 `src/`
 - [x] **BW-20-02-06 验证 VS Code 的 Rust 启动调试**。**验收** 能由启动配置运行 CellApp 并命中断点。（commit aa15e2c）
   - 证据：原版结果——引用端角色进程是 C++ `bigworld_app <role>`，VS Code 调试需手配 launch.json 指向其二进制。新版结果——`src/workspace/launchConfig.ts` 的 `rustLaunchConfig(role)` 生成启动配置：`type` 按平台取 `lldb`（Linux/macOS）或 `cppvsdbg`（Windows），`program` 指向 `target/debug/boundless-server`（`apps/server` 的产物，`apps/server/Cargo.toml` [[bin]]），`args=[role]`，`env.BW_RES_PATH=<workspaceFolder>/res`，`stopAtEntry:false`；`extension.ts` 的 `boundless.setupRustDebug` 命令经同一个 `mergeLaunchJson` 并入工作区 `launch.json`，且把 `boundless.cluster.binary` 的默认值从错误的 `target/debug/server` 修正为实际产物名。证据链接——`pnpm test` 149 例全绿且 `pnpm run check` 0 错误（含 `rustLaunchConfig` 形状、Windows 调试器选择、覆盖 program/resPath、与附加配置并存的 4 例）；实跑 `sh tools/verify/rustLaunch.sh`：gdb batch 以 launch 配置同一命令行（`target/debug/boundless-server cellapp`、`BW_RES_PATH` 指向示例 res）启动 CellApp，断点命中 `server_runtime::app::run`（`crates/server-runtime/src/app.rs:46`），回溯顶两帧为 `app::run ← boundless_server::main`，脚本判 PASS。
 - [x] **BW-20-02-07 提供文档 MCP 接入配置**。**验收** 查询返回当前工作区版本文档。
-  - 证据：原版结果——引用端的文档是仓库里的 markdown（VitePress 渲染），编辑器侧没有任何检索入口，开发者只能翻目录或开网页版；引用端不存在 MCP 面。新版结果——`extensions/vscode/src/workspace/docsMcp.ts` 生成 `.vscode/mcp.json` 条目：`type: stdio`、`command` 指向 `boundless-docs-mcp`、`args` 依次为 `--root ${workspaceFolder}`、`--prefix docs`、`--version HEAD`、`--langs zh`，配置了站点地址才追加 `--docs-url`（`9623715_MCP_DEFAULTS` 与 `boundless-docs-mcp` 自己的默认值一致）；`mergeMcpJson` 与 launch.json 同一"只增不改"面——只替换自己写的那一项、用户自己的 server 原样保留，解析不出来的文件整体重写；`extension.ts` 的 `boundless.setupDocsMcp` 命令按工作区文件夹逐个写入 `.vscode/mcp.json`，新增 6 个设置 `boundless.docs.{server,root,version,prefix,langs,url}`。证据链接——`pnpm test` 160 例全绿（含新 `test/docsMcp.test.ts` 11 例）、`pnpm run check` 0 错误；实跑 `node tools/verify/docsMcp.cjs` 11/11 PASS：harness 用扩展自己的 writer 写出真实 `.vscode/mcp.json`，再按该文件里的 command/args 起真二进制（`${workspaceFolder}` 按编辑器变量语义替换）做 MCP stdio 会话——`tools/list` 只列 `search_docs`/`read_doc`；`search_docs "second edition"` 命中仅 v2 才存在的 `guide/second.md` 且 `version` 为配置给的 `HEAD`；`read_doc guide/second.md` 返回 `version=HEAD`、`commit=2b8be3d` 恰等于工作区当前 HEAD、`source=https://docs.boundless.example/guide/second.html`；同一配置把 `boundless.docs.version` 改成 `v1` 后，v2 页面零命中、`guide/entities.md` 回到 v1 文案、链接保持仓库相对 `docs/guide/entities.html`。如实登记——编辑器内的 MCP 客户端加载（自动发现 `.vscode/mcp.json`）未在真实 VS Code 里验证：本机 `/usr/bin/code` 1.144.1 可装但不跑带 GUI 的 MCP 会话，取证止于"按其写出的配置实跑真二进制并逐条核对查询结果"。
+  - 证据：原版结果——引用端的文档是仓库里的 markdown（VitePress 渲染），编辑器侧没有任何检索入口，开发者只能翻目录或开网页版；引用端不存在 MCP 面。新版结果——`extensions/vscode/src/workspace/docsMcp.ts` 生成 `.vscode/mcp.json` 条目：`type: stdio`、`command` 指向 `boundless-docs-mcp`、`args` 依次为 `--root ${workspaceFolder}`、`--prefix docs`、`--version HEAD`、`--langs zh`，配置了站点地址才追加 `--docs-url`（`DOCS_MCP_DEFAULTS` 与 `boundless-docs-mcp` 自己的默认值一致）；`mergeMcpJson` 与 launch.json 同一"只增不改"面——只替换自己写的那一项、用户自己的 server 原样保留，解析不出来的文件整体重写；`extension.ts` 的 `boundless.setupDocsMcp` 命令按工作区文件夹逐个写入 `.vscode/mcp.json`，新增 6 个设置 `boundless.docs.{server,root,version,prefix,langs,url}`。证据链接——`pnpm test` 160 例全绿（含新 `test/docsMcp.test.ts` 11 例）、`pnpm run check` 0 错误；实跑 `node tools/verify/docsMcp.cjs` 11/11 PASS：harness 用扩展自己的 writer 写出真实 `.vscode/mcp.json`，再按该文件里的 command/args 起真二进制（`${workspaceFolder}` 按编辑器变量语义替换）做 MCP stdio 会话——`tools/list` 只列 `search_docs`/`read_doc`；`search_docs "second edition"` 命中仅 v2 才存在的 `guide/second.md` 且 `version` 为配置给的 `HEAD`；`read_doc guide/second.md` 返回 `version=HEAD`、`commit=2b8be3d` 恰等于工作区当前 HEAD、`source=https://docs.boundless.example/guide/second.html`；同一配置把 `boundless.docs.version` 改成 `v1` 后，v2 页面零命中、`guide/entities.md` 回到 v1 文案、链接保持仓库相对 `docs/guide/entities.html`。如实登记——编辑器内的 MCP 客户端加载（自动发现 `.vscode/mcp.json`）未在真实 VS Code 里验证：本机 `/usr/bin/code` 1.144.1 可装但不跑带 GUI 的 MCP 会话，取证止于"按其写出的配置实跑真二进制并逐条核对查询结果"。
 
 
 #### BW-20-03 打包与三端验证
@@ -6021,110 +5896,89 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 缓存解析结果并评估预生成编解码器，衡量启动和序列化开销，锁定定义摘要和产出字节。
 
-- [x] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。（本席 `a041efd`+`9623715`：crates/entitydef/tests/entitydef_baseline.rs 三腿=冷启动 factory_create full_def(3 实体)+fantasydemo_def(5 实体)（诊断零+digest 钉住 oracle 否则不产生计时行）、编解码=两夹具全实体全属性解析默认值 add_to_stream/create_from_stream 20k 轮×每轮逐值恒等断言（11 族：标量 5+STRING/FLOAT64/ARRAY×2/FIXED_DICT×2）、暖启动同进程二次加载 digest 等冷值；记录 TSV docs/review/fixtures/entitydef-baseline/entitydef-baseline.tsv 63 行：cold 0.637/0.615ms、warm 0.448ms、标量 p50 457-474ns、FLOAT64 268ns、STRING 340ns、ARRAY 238/247ns、FIXED_DICT2 字段 817ns/3 字段 1565ns；墙钟只记录不设带；证据页 docs/review/opt-04-01-01-entitydef-baseline.md；entitydef 既有测试未动全绿）
-- [x] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。（本席 `9881c37`：FsResolver::open_section 进程级 parse 缓存（参照 resmgr/data_section_cache.hpp find/add/clear+setSize：thread_local 按全路径键、上限 1024 条溢出即清、clear_section_cache() 面；MemoryResolver 不动、仓内 FsResolver 消费者皆只读夹具）；基线 runner 起手清缓存→startup_*=缓存冷/ warm=缓存热；**比较**=同跑 cold 0.916ms vs warm 0.297ms（暖启动省 0.619ms=读+解析份额；跨记录冷值不作比因负载 40→21 档差已披露）；digest 前后同 18D00DC6 钉 oracle 恒等；entitydef 库测 247+集成全绿、覆盖 entity_description 99.31%/entity_map 99.24%/data_type 98.02%≥98；证据页 opt-04-01-01-entitydef-baseline.md OPT-04-01-02 节+TSV 滚动 canonical 记录）
-- [x] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。（本席 `f428168`：crates/entitydef/tests/entitydef_codec_gen.rs 评估原型=Kind 树载入期编译成闭包树（子经 Rc 共享、值词汇不动；write_int/truncate_integer/check_sequence_capacity 三 crate 私有助手忠复制、由字节恒等面钉住）；字节恒等腿=两夹具全 21 属性 gen 编码逐字节==解释式+两向解码均还原默认值+不支持类目（CLASS/UDO_REF/PYTHON/USER_TYPE）计数断言零；成本腿=每族 encode-only/decode-only 各 2 万轮、sink 构建在钟窗外、解码走预编码+rewind，TSV docs/review/fixtures/entitydef-baseline/codec-gen.tsv 92 行+三连跑方向全稳：标量 encode −3..−9%/decode −4..−6%、STRING −5%/−6%、ARRAY −8..−12%、**FIXED_DICT 两族反而 +0.4..+11%**（每字段 boxed 闭包间接调用吃掉省下的 match）；生成成本 7µs/21 属性无关紧要；**裁定=不采纳入引擎**——闭包树扁平族赢 3-12% 合成族输 4-11%，构建期直线单态 codegen 不可用（定义是运行期数据、参照引擎自身亦解释式分发）、标量 ~10ns 在噪声带不作契约；记录事故=首次 rustfmt 后单跑瞬时失败无 panic 留痕、同二进制 16 连跑全绿；零 src 改动=覆盖门不适用，entitydef 247+评估 2 测绿）
-- [x] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。（本席 `6ce8e4c`：crates/entitydef/tests/entitydef_rerun.rs 复跑 harness 三腿全一致——①摘要=full_def/fantasydemo_def/service_def/entity_index 四树经 factory_create 重载 digest 逐字==docs/review/reference/*_entitydef.json oracle（entity_index 无 alias.xml 容一字告警同 differential；client_integration 走 BW04_CI_RES env 未设则记 skipped，同 differential 口径）；②实体快照=fantasydemo Avatar.def（SHA e35472f0…==采集输入）+采集工具固定输入节，经参照四 pass shouldConsiderData 顺序（entity_description.cpp：base非client/base+client/cell+client/cell非client，每 pass 声明序）复现 entity-Avatar.snapshot.hex 15 字节逐字节恒等（含 INT8 输入 300→0x2c 参照截断）；③数据库行=BASE|CELL|ONLY_PERSISTENT_DATA（持久只认显式 <Persistent> 标签、缺省 false=data_description.cpp:220 readBool）+canBeOnCell 追加 position/direction/spaceID（xml_database.cpp getEntity 行公式）复现 database-Avatar.row.hex 38 字节逐字节恒等；记录 docs/review/fixtures/entitydef-baseline/def-rerun.tsv 14 行（四 digest+双 hex+双字节数+match 旗标）；**验收=产物一致，每次跑都断言**；OPT-04 段全收官）
+- [ ] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。
+- [ ] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。
+- [ ] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。
+- [ ] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。
 
 ### OPT-05-01 录制负载热点和故障基线
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `e028fbf`：crates/server-runtime/src/cellappmgr_baseline.rs 三腿合成钟 harness 在 crate 内 `#[cfg(test)] #[path]` 挂进 cellappmgr.rs（Space.root/BspInternal 私有），①分配=零面积 sliver B+热点 A 经 inform_of_load EMA 12 步（bias 0.05）爬坡，balance 一步收敛 B.ymin=ENTITY_EDGE=4000 钉死每步 EMA/每轮 A/B 范围；②回收两臂=零面积 sliver 首轮 1 CellRemoval+兄弟升 Rect::unbounded()，实面积 cell 因 growing child A 的 chunk ghost margin（Space::load_balance 从 unbounded 重导范围→chunk_bounds 不含 inflate desired→fallback A.range，chunk_limit=A.ymax-500=3500）被钉在 4000 不回收，两面对照记录；③恢复=严格 now-lastHeard>timeout 检测钉 5000ms/4tick，死信广播+BaseAppMgr 报告+双 cell 树erase 后存活 cell 占 unbounded+最后 app 死触发受控关服；ESTIMATED_INITIAL_CELL_LOAD bump 归 create_space creation seam；证据页 docs/review/opt-05-01-01-cellappmgr-baseline.md+TSV 56 行 fixtures/load-hotspot/cellappmgr-baseline.tsv；clippy/fmt 绿，server-runtime 1680 测绿，全仓 6949 passed/0 failed（基线 6948 +1））
-  - 双交付 FLAG（2026-11-26，本席登记）：main 另收平行腿 `e028fbf`（cellappmgr_baseline.rs 三腿合成钟 harness 入 cellappmgr.rs）与本席 `5120dea`+`0fbfa8f`（load/src/hotspot.rs run_hotspot_baseline）同面异实现，待主席择一。
-- [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（commit cd056fc：cellappmgr_tuning.rs 三固定场景对比——①热点爬坡跨 EMA bias 0.02/0.05(出货)/0.1/0.2：达阈 informs 52/21/10/5 严格反序、落点几何全同(4000 entity edge 两 pass)，bias 只换探测延迟不换落点；②反转跨 aggression 两分支：反转臂首 pass 减半 0.5 后 ×1.0718/pass 回升(8 pass 0.8123)、延续臂恒 1.0，closest_limit 单调故两臂落点同(5000=level1)，阻尼=抗振荡面零几何代价；③回收 drain 跨 chunk-limit 开关：关=1 pass 完成(CellRemoval 1+幸存者升 unbounded)、开=线被幸存者 chunk ghost margin 钉在 4000(基线 held 面)，空 retiring cell 按参照 Space::writeEntityBoundsForEdge 报无界边+offload floor(这才让 entity limit 可达世界边)；证据页 docs/review/opt-05-01-02-load-tuning-comparison.md+TSV 27 行 fixtures/load-hotspot/cellappmgr-tuning.tsv；server-runtime 1702 绿、全仓 6950 passed/0 failed）；⚠️ FLAG 平行交付未决 2026-11-26：bw14-script-host `a577c5c`+修 `9563f2e`（balance_baseline.rs 312 行真 CellAppMgr 96 tick 双相位+ScheduleLedger+BalanceTuning seam 七旋钮含 safety_bound/safety_ratio+cellappmgr.rs +122+证据页，lane-only）vs main 落地 bw15 `cd056fc` 面（cellappmgr_tuning.rs 三固定场景对比），异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `cd056fc` 面（cellappmgr_tuning.rs 三固定场景对比，已在树、server-runtime 全绿）为本行交付面；bw14 `a577c5c`+`9563f2e`（balance_baseline.rs）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：择 main `cd056fc` 面（cellappmgr_tuning.rs 三固定场景对比）为本行交付面；本席 lane-only `a577c5c`+修 `9563f2e`（balance_baseline.rs 312 行+BalanceTuning seam 七旋钮）转存档记录，随 lane 并入由主席处置。
-- [x] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。(2026-11-26 lane/bw15-platform fd21b51→main 51bf749+证据 0407552→515351b：复跑三面零失败——①迁移面 cargo test -p server-runtime --lib -- migrat offload teleport 75/75 绿（entity_creator mailbox/ghost 跨 space 传送可见集/offload 两侧恰一 real/控制器恢复/message_redirect 切换中恰一次）；②关服面 -- shutdown mixed 43/43 绿（shutdown 阶段线值对参考 enum/完成队列按序 drain/server_app init 失败也跑 fini/space 空 cell 销毁回收）；③混部面 el7_mixed_deploy --ignored 1/1 绿 5.01s，EL7 真二进制 pid/整机查询+addTCP/add 双版本+TCP 注册 22B+记录帧 45B×4+UDP×3+mldb 三标记+协议版本 10，TSV 与已提交 fixture 逐行 IDENTICAL；④附加 lifecycle_scenario.rs 种子场景 6 测绿（seed 41 复现/entity restore 一致/进程阶段与 task drain/replay tail 终态可复现，无墙钟采样）；本席 main 树复核=上述三面本机重跑数字；坑=EL7_MIXED_OUT 须文件路径传目录 IsADirectory)
-  - main 已收（台账席 1a21d7a）：本席 `fd21b51`→main `51bf749`（逐字节同）+复跑证 `515351b`，本席勾保持；main 行文误标 lane/bw15-platform，实为 lane/bw14-script-host 本席交付。
+- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。
+- [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。
+- [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 
 ### OPT-06-01 登录与资源下载基线
 
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
-- [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。(2026-11-26 lane/bw15-platform 5ec0620→main 4c29980+证据 afee8b2→fcfa88f：crates/load/src/login_baseline.rs 组合既有面记录三族数字——峰值=login hurricane online 序列最大值（seed 固定可复现）；拒绝率=FD 预算拒绝 login_refusal_rate=refused/(admitted+refused) 单列（与「发出后失败」分账，login_success_rate 仍参考 admitted/attempts 语义）；延迟=资源下载分块 tick 地板 ceil(payload/BUNDLE_BYTES)（参考 ServerDownloads::add_to_bundle 每 mini-tick 一 bundle 载荷）+队列驻留字节；**读法警告：离线面是模拟时间无墙钟 RTT，延迟=确定性地板非实测往返**；记录运行=保存夹具 login-hurricane.xml seed 20261123/FD 500×FD_PER_BOT+1/载荷 4096B→attempts 500/admitted 500/refused 177/online_peak 500/refusal_rate 0.26145/download_ticks 4/queue_bytes 4096，夹具 docs/review/fixtures/load/login-baseline.report.json；5 单测钉 ceil 分块/队列字节/峰值拒绝记录/seed 复现/预算拒绝臂；本席 main 树 load --lib 174 绿（含 login_baseline 6）)；⚠️ FLAG 平行交付未决 2026-11-26（bw15 `cca778a` 登记）：bw14 席 `cc648b5`（crates/server-runtime/src/login_baseline.rs 586 行 seed 登录+下载基线账本，lane-only）vs main 落地 bw15 `4c29980`（crates/load/src/login_baseline.rs，经 5ec0620 收编入 main），异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `4c29980` 面（load/login_baseline.rs，5 测绿在树）为本行交付面；bw14 `cc648b5`（server-runtime/login_baseline.rs 586 行）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：择 main `4c29980` 面（load/login_baseline.rs 三族数字）为本行交付面；本席 lane-only `cc648b5`（server-runtime/login_baseline.rs 586 行 seed 洪泛账本）转存档记录。
-- [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。(2026-11-26 lane/bw15-platform 083c598→main 790332b+证据 83f6caa：fleet.rs botsForLogOnRetry_ 排水从每条到期 bot 单独 Vec::remove 改单遍分区（mem::take 遍历 log_on_retry_time()<now 到期者 log_on() 后推回，O(n²)→O(n)，队序/重登序不变固定 seed 派遣序不变）；新测钉 4 到期条队序重登+1 留队；bench login_surge.rs parked 64/512 同刻到期单 tick 排水+Throughput::Elements；A/B 对照 taskset -c 6 钉核交错 6 轮：drain_64 13.93→7.39µs 0.530（1.9×）、drain_512 776→80µs 0.104（9.65×）每轮候选全优无交叉=效应远超噪声；本席 main 树 bench 跑通（drain_512 ~90µs 级）load --lib 175 绿，clippy 净，smoke.rs 三处 expect(&format!) 被遮 lint 顺手清（main 已有此修 auto-merge 消重）)；⚠️ FLAG 平行交付未决 2026-11-26（bw10 `05c581c` 登记）：bw14-script-host `3ced450`（crates/server-runtime/src/login_tuning.rs 115 行+login_baseline.rs 扩展登录排队尾延迟对比，lane-only）vs main 落地 bw15 `790332b` 单遍排水（fleet.rs O(n²)→O(n)+benches/login_surge.rs），异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `790332b` 面（fleet.rs 单遍排水，A/B drain_512 9.65× 零交叉在树）为本行交付面；bw14 `3ced450`（login_tuning.rs）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：择 main `790332b` 面（fleet.rs 单遍排水 9.65×）为本行交付面；本席 lane-only `3ced450`（login_tuning.rs 排队尾延迟对比）转存档记录。
-- [x] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。(2026-11-26 lane/bw15-platform efabd67→main 6ffd9af+bench 6318f61→bdf1327+证据 5c37709→c23987a：data_download.rs 装配 segments.concat()→assemble() 先按总长 with_capacity 一次分配再按值逐段 move 拷入——concat 峰值活数据=2×流长（完整结果+全部段并存）按值消费恒=1×流长，并发下载同刻完成时进程峰值 RSS 结构性减半；新测钉 capacity==6 精确一次分配+空段臂，其余 7 行为测不动（到达序拼接语义不变）；bench download_assembly complete_64/512；A/B 钉核交错 6 轮：complete_64 0.918/complete_512 0.845 轮间交叉=墙钟噪声内无可靠收益，**诚实判读=内存半边结构性 0.5、传输时长半边被 bundle 分块契约钉死（ServerDownloads::add_to_bundle 每 mini-tick 一 bundle，与参考一致，对照结论非优化项）**；本席 main 树 sr lib 1734 绿+bench 跑通，clippy 净)；⚠️ FLAG 平行交付未决 2026-11-26 两路：bw14-script-host `3e4839c`（crates/server-runtime/src/download_tuning.rs 263 行下载时长+内存对比，lane-only）与 bw16-18 `42d6686`+`238aab3`（crates/server-runtime/src/server_download.rs drain 直排+benches/download_drain.rs+legacy_queue.rs+tests/download_drain_alloc.rs+证据页 download-drain-server-side.md+TSV，lane-only）vs main 落地 bw15 `6ffd9af` assemble 预装配（data_download.rs 峰值活数据 2×→1×），三面异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `6ffd9af` 面（data_download.rs 客户端组装，峰值活数据 2×→1× 在树）为本行交付面；bw16-18 `42d6686` 服务器侧排出面（其页自报 drain_256 0.69-0.72×）与 bw14 `3e4839c` 对比面均记为补充/备选 lane-only 归档不删——三者异文件零重叠，如需并入补充面或置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：三路择 main `6ffd9af` 面（data_download.rs 预装配）为本行交付面；本席 lane-only `3e4839c`（download_tuning.rs 263 行）与 bw16-18 `42d6686`+`238aab3`（server_download.rs drain 直排）均转存档记录。
-- [x] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。(2026-11-26 lane/bw15-platform 838a54a→main 2f27440：复跑行零代码改动三条面全绿判一致——①重复登录 duplicate_auth.rs 5/5（同账号二次登录原位改写唯一映射/并发拒不污染/checkout 中拒不计尝试/logoff 后仍单记录/自定义扩展可重复）；②重连 -- relogon relogin 28/28（relogon.rs 9 态机回复码族+baseapp_relogon.rs 13 web/proxy 复用族+log_on_records 2+login_entity 2+headless_client 1，load 重连链 3 测+reconnect.xml 场景加载）；③旧客户端 loginapp.rs 版本面 10/10（三旧版本 BadProtocolVersion 且先于凭据参数拒/supports 严格相等/截断流 MalformedRequest/线上序反自然序回放）；ci/load.sh 4 lane PASS 6/6 场景入带；本席 main 树复核=同组腿本机重跑同数全绿)；⚠️ FLAG 平行交付未决 2026-11-26（bw10 `05c581c` 登记）：bw14-script-host `da80f8e`（crates/server-runtime/src/login_rerun.rs 422 行重复登录+重连复跑面，lane-only）vs main 落地 bw15 `2f27440` 复跑一致性面，异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `2f27440` 面（复跑一致性三面全绿在树）为本行交付面；bw14 `da80f8e`（login_rerun.rs 422 行）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：择 main `2f27440` 面（复跑一致性）为本行交付面；本席 lane-only `da80f8e`（login_rerun.rs 422 行复跑面）转存档记录。
+- [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。
+- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
+- [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
+- [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
 
 ### OPT-07-01 备份和归档基线
 
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
-- [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。19c4d4d（backup_baseline.rs 48 实体种子舰队过真实备份面：带宽逐 tick 1396/1410/1412×4 共 8454 字节 6 tick 清队列、收发队列峰各 48、接管 48/48 恢复且属性全等、归档恢复耗时 8 tick 重持久化 24/24 且逐实体往返核等；4 测 98.31% 行 100% 区域）
-- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。9abf58e（backup_tuning.rs BackupTuning seam(Default=逐位复现由测钉)同种子同负载双跑：slice 8→16+period 8→4，队列 6→3 tick、恢复 8→4 tick，代价=每 tick 带宽峰翻倍(1412→2824)但字节总恒等 8454(方向断言诚实)；same_load 钉同舰队/同持久集/同字节/同恢复；4 测 100% 行）
-- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。4c19ee7（shared_data_baseline.rs+shared_data_tuning.rs 96 变更过真实双 mgr 链(set/del 四 scope+forward/relay 环 4 BaseApp+3 CellApp)：shipped 575 消息(base284/cell219/fwd24/relay48) vs 抑制 no-op 写 444(216/174/17/37)=省 131(−22.8%)，21 次 no-op 放大为全链腿消去(全局 set=5/转发 set=9/cell=3)；终态三权威图逐位相等(same_load 钉)；跨种子形状钉；9 测 baseline 98.58%+tuning 100%）
-- [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。2fbfcf8（takeover_rerun.rs 12 实体种子舰队过真实备份面后源亡接管 restore 12/12 属性全等；16 变更建双 mgr 权威图后按 count+pairs 恢复流形状落盘、全新 mgr 对经真实 recover_shared_data_from_stream 读回=四图逐位等(2/4/2/4 条目)；跨种子形状钉；4 测 99.65% 行 100% 区域，唯一缺行=属性不匹配假臂被断言正确性排除）
-
+- [ ] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。
+- [ ] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。
+- [ ] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。
+- [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。
 
 ### OPT-08-01 密集 AOI 基线
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
-- [x] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。已交付 eee8fde：crates/server-runtime/src/aoi_baseline.rs 全 shipped 栈逐 tick 接线（cross 范围列表 move_entity shuffle ±0.75m 确定步/AoI trigger 跨界喂 witness add_to_aoi→flush→EnterAoI→request_entity_update 回应→CreateEntity/vision trigger 喂 vision_update 1.2rad 锥 28m 每 tick 清晰地形/Witness::update 预算调度 setWitnessCapacity(64000,10)=772B/tick 密集下绑定）。120 实体 10×12 格 4m 间距单观察者：账本=48+16 tick、tick0 创建爆发 289 消息 2704B（120 EnterAoI+120 CreateEntity）、tick1 首见爆发 44 starts、稳态窗(8..48) 4654B ≈116B/tick 预算绑死、总广播 5708 消息 9188B、AoI 跨界 120 进 0 出、seeing churn 77/31；迁移腿=handover 46 可见→目的地静默种子 46→真新 id 重公告 12、重复公告 0(diff 契约)、2 tick 收敛到 native 观察者集合(42)。断言全结构性（爆发一次性/稳态不超预算且恒发/种子无声/start 永不命中已持有 id/收敛 native/全账本逐 tick 复跑恒等）；墙钟探针(seeing 4.0ms/scheduling 392ms over 64 tick)只打印。面发现：目的地 vision trigger 必须由 vision_start_real 新建——预建 trigger 令 restore 的 set_vision(None→Some) 走清空路径、entities_in_vision_range 留空种子盲走；迁移实体 startReal 重建 trigger 正是 range 填充正确的机理。docs/review/opt-08-01-01-dense-aoi-baseline.md。门禁 server-runtime lib 1748 绿/fmt/clippy 净。
-- [x] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。已交付 98725ed：crates/server-runtime/src/aoi_tuning.rs 同负载双比较（OPT-08-01-01 种子/轨迹/120 实体场全 same-load）。①扇区预过滤索引=seeing pass 前按水平角>vision_angle+0.25rad 丢弃目标（水平朝向下 3D 锥角≤水平角⇒保守不过判）：48 tick 走行 5760→2471 行=省 57.1% 内圈、可见集/seeing-start 逐 tick 零失配(48/48 恒等)、探针墙钟 2.645→1.917ms；范围列表已索引距离故收益有界=仅去背向扇区。②Witness 调度扫描=调度器操作面 setWitnessCapacity 64000/128000/256000 bps(772/1572/3172B)：覆盖期预算绑死(爆发 2704B 赤字回扣)4×带宽 3→2 tick；稳态广播量对带宽不敏感(~116B/tick ≪ 772B 预算)——MAX_PRIORITY_DELTA 窗[front,front+5.0) 先于预算清空=稳态限流者是窗宽不是链路；两容量全覆盖(窗饿死人无)单调性断言；per-entity 覆盖从 bundle EntityUpdate id 观测。等值/单调全 assert、墙钟只打印。docs/review/opt-08-01-02-aoi-index-witness-scheduling.md。门禁 server-runtime lib 1750 绿/fmt/clippy 净。
-- [x] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。(2026-11-26 本席 lane/bw14-script-host 5e4181c:space_parallel.rs 复用 BW-08-05-01 decide_offload/collect_offload 实面,120 实体密场按 x=16m 分裂面两侧驻扎,AoI 基线同款 ±0.75m 步表真跨面;台账 crossings=2/offloads=2(逐 crossing 恰一次,落点=p_cell_at 所含侧)/stays=118,check_ms≈0.009-0.012 probe 打印不断言;分支规则 coordinate<position 把分界平面判给右子(x/z 双轴实证,骑面者归左必迁 OffloadTo(FAR));四 Stay 门(未创建/死通道/缺通道项=死/删除挂起)+disabled cell_should_offload 全 Stay;重跑台账恒等;4 测,lib 1754 全绿;review=docs/review/opt-08-01-03-space-parallel.md)
-- [x] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。(2026-11-26 本席 lane/bw14-script-host 616a885:aoi_rerun.rs 复跑密场景两遍逐 tick 审计,TickLedger 增有序 starts/stops/enters/leaves+整份 bundle 发送序;状态正确=视距触发器布点=窗谓词 (sub-range<x≤sub+range) 双轴、可见集=扫描锥真值(update gate 读控制器公开 tick 计数,run tick 用现位置/skip tick 恒等携带集)、start/stop 差分自洽(starts 只打未见 id/stops 只打持有 id/差分复现 visible_entities)、EnterAoI/LeaveAoI 消息=触发器跨越、witness AoI 映=500m 窗、bundle 逐实体序 EnterAoI→CreateEntity→EntityUpdate 更新不先于创建;迁移腿 destination+native 双世界 16 tick 全审,seed 静默 46→46、held 重报=0、终态 visible 42/range 布点/AoI 映三层全等 native;坑=client bundle 是客户端面向 AoI 态唯一重放源,tick 0 120 条 EnterAoI=120 跨越,二次重放会重复计数——两视图须对账不能叠加;2 测,lib 1756 全绿;review=docs/review/opt-08-01-04-aoi-rerun-state.md)
-
+- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。
+- [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。
+- [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。
+- [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。
 
 ### OPT-09-01 分别采集 MySQL 与 PostgreSQL 基线
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
-- [x] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。（opt-09-db-baseline 席 `da4e411`，lane/opt-09-db-baseline，main=`e59ca31`：crates/db-postgres/tests/store_baseline.rs 6 测=512 行确定性语料同一数据集落 MySQL（DDL 对照参考 db_storage_mysql 布局+值类型逐 kind 对）与 PostgreSQL（JSONB 嵌套列 codec 往返）双后端，schema/确定性/嵌套列各单测；TSV docs/review/fixtures/store-baseline/store-baseline.tsv 22 行，证据页 docs/review/opt-09-01-01-store-baseline.md；workspace 新增 `mysql` 依赖（minimal-rust）；本席 main 复测 6 绿。⚠️ 与 bw14-script-host `7024fb1` 平行交付 FLAG 待主席择一）→ **主席裁定 2026-11-26**：择 main `e59ca31` 面（lane/opt-09-db-baseline `da4e411` 收编形，512 行单数据集双后端在树）为本行交付面；bw14 `7024fb1` lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 本席 lane-only 交付存档（2026-11-26 主席裁定择 main `e59ca31` 面，opt-09-db-baseline `da4e411` 收编形）：本席 `7024fb1`（baseline_dataset.sql 双真机采集）转存档记录。
-- [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。（opt-09-db-baseline 席 `da9a135`，lane/opt-09-db-baseline，main=`04f5d37`：crates/db-postgres/tests/store_pool_candidates.rs 3 测=连接池与预编译语句候选对照（参考 `numConnections_` 默认 5 长连会话+每线程一连接+启动期预编译实体 SQL 模板两形），各后端延迟与吞吐逐形报告且回读恒等；TSV docs/review/fixtures/store-pool/pool-candidates.tsv 48 行，证据页 docs/review/opt-09-01-02-store-pool.md；本席 main 复测 3 绿）
-  - 本席 lane-only 交付存档（main 面=opt-09 lane `da9a135`→`04f5d37`）：本席 `9dda748`（pool_merge_eval.rs 三执行形状真 PG 对比）转存档记录。
-- [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。（opt-09-db-baseline 席 `cb65282`，lane/opt-09-db-baseline，main=`8b1fb8a`：crates/db-postgres/tests/store_commit_candidates.rs 4 测=实体写缓冲进 Transaction 按归档周期一 `COMMIT`（参考 sqlite_database.cpp 131-177+db_config 5s 默认）与显式 WRITE_EXPLICIT 两臂提交时长+归档整合恢复时长报告，落库回读逐字段等；TSV docs/review/fixtures/store-commit/commit-candidates.tsv 16 行，证据页 docs/review/opt-09-01-03-store-commit.md；本席 main 复测 4 绿）
-  - 本席 lane-only 交付存档（main 面=opt-09 lane `cb65282`→`8b1fb8a`）：本席 `01d391c`（archive_batch_eval.rs 三写形真 PG 对比）转存档记录。
-- [x] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。（opt-09-db-baseline 席 `7663701`，lane/opt-09-db-baseline，main=`3a7b9d0`：crates/db-postgres/tests/store_recovery.rs 3 测=参考 MySqlBackgroundTask::doBackgroundTask 契约复跑——可重试失败恰一次重试（attempts 2/on_retry 1）、回滚批零幸存行、事务外断连恰一次自动恢复+事务内手动重连；恢复后数据一致计数钉死；TSV docs/review/fixtures/store-recovery/recovery.tsv 21 行，证据页 docs/review/opt-09-01-04-store-recovery.md；本席 main 复测 3 绿）
-  - 本席 lane-only 交付存档（main 面=opt-09 lane `7663701`→`3a7b9d0`）：本席 `f09727b`（rerun_recovery.rs 三腿复跑）转存档记录。
+- [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。
+- [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
+- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
+- [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
 
 ### OPT-10-01 地图加载和查询基线
 
 优化空间流式装载、碰撞走查和导航缓存。比较峰值内存、场景冷启动和查询尾延迟，核对坐标与碰撞结果。
 
-- [x] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。(2026-11-26 本席 lane/bw14-script-host 37ec32a:crates/chunk/tests/map_load_baseline.rs 对原版夹具空间(docs/review/fixtures/chunk_space 18×2 网格)走全套流式面=解析 mapping→gather_chunks 枚举 37 候选→load_and_bind 绑 6 个 .chunk→focus→双半板地形 slab 过 focussed add_obstacle 门,整段冷启动计数分配器(OPT-01-01-01 同款 thread-local)+VmRSS 包夹;保存:冷启 1.6-2.5ms/2025 allocs/163790 bytes/rss Δ≈428kB,find_chunk_from_point 100 探针 p50 0.53µs/p99 1.7µs,collide findDropPoint 形 100 射线(50m→-10m 止于 10m 板) p50 1.8µs/p99 18.7µs;结构账断言且重跑恒等:绑集=6 文件、逐探针命中属主 chunk、逐射线 40m 处止板(±1e-3)、绑序/答案/距离/分配数全复现(2025/163790 双跑);墙钟与内存 probe 打印不断言;chunk 188 测全绿;review=docs/review/opt-10-01-01-map-load-baseline.md)
-  - main 已收（台账席，2026-11-26）：本席 `37ec32a`→main `5d88b28`（逐字节镜像，patch-id 同），本席勾保持。
-- [x] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。（2026-11-26 lane/bw14-script-host 7fc6d76：crates/chunk/tests/map_stream_opt.rs 走 shipped scan 卸两格重载全周期，候选=BwResource 段缓存 LRU 同 load_and_bind 解析面 vs 原始读+解析基线；峰值内存=计数分配器 LIVE 高水位 PEAK 单元，报告见 docs/review/opt-10-01-02-map-stream-opt.md——冷缓存填付 write_to_string 尺寸化 +469 allocs 更慢，重载 3.77ms/759 vs 原始 10.46ms/931，热全空间 1.50ms/1132 vs 冷 2.97ms/2025；结构面断言：缓存段 PartialEq 同树、双侧 bound/reloaded/finds/dists 全等、周期复跑恒等；墙钟探针数据只印不断言，allocs/peak 复跑精确复现；chunk 门禁 190 绿）
-  - main 已收（台账席，2026-11-26）：本席 `7fc6d76`→main `ac2d93d`（逐字节镜像），本席勾保持。
-- [x] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。（2026-11-26 lane/bw14-script-host bfde122：crates/client/tests/query_cache_opt.rs 双腿——导航=六单点集 permissive 链全 outside chunk，缓存面 find_path ReadWriteCache 骑成员 NavigatorCache 逐跳 vs 重算面 navigate_path_points/findFullPath 每调 scratch 缓存，同一批起点；碰撞=find_drop_point 打 BW-10-07-04 clientquery 夹具世界六 RAY 探针×40 重复；报告 docs/review/opt-10-01-03-query-cache-opt.md——缓存填跳 47 allocs 后四跳各 8 allocs（set path 尺寸 [6,5,4,3,2] 弹尽=命中臂逐跳行使），缓存总 79 vs 重算总 281（3.6× 省），复跑账 [47,8,8,8,8] 精确恒等；碰撞尾 p50 1.7-6.8µs/p99 至 26.3µs（GHOLED 格走查跨柱界），40 重复逐探针位级恒等（距离/落点/三角形/miss）；结构断言：逐跳进一格、末跳答终点、重算路线=共享穿越序列+隐藏穿越+裁剪终点（面发现：findPath 末跳换原始 dst 藏终点集穿越 vs findFullPath 保留+裁剪，两面对比共享序列各钉自己终点）、缓存侧分配严格更少；墙钟 probe 只印不断言；client 门禁 868 绿）
-  - main 已收（台账席，2026-11-26）：本席 `bfde122`→main `fafbe51`（逐字节镜像），本席勾保持。
-- [x] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。（2026-11-26 lane/bw14-script-host eb163d4：crates/client/tests/map_rerun_fixtures.rs 双腿复跑——路径=BW-10-07-03 genmap 双 chunk 世界按真相绑序重绑，五条 XPATH 探针对走 find_path ReadWriteCache 缓存步进面，源集侧逐跳钉在真相链上有序子序列（平滑可抽直不可绕），终点=真相解析终点（ACROSS 绕洞/RAMP 上坡/AROUND/SEAM A 侧 [wp0,wp4,wp3]+终点 B wp7/SEAMBA 终点 A wp3），五条复跑恒等；碰撞=chunk_space 夹具图走 OPT-10-01-02 缓存解析面 load_and_bind 绑 6 文件+参考地形 slab 过 focussed 门，100 探针格走客户端 findDropPoint 全部 40m 处止 10m 板±1e-3+格心解析属主 chunk，第二遍位级恒等；面发现两条：远侧跳=walk 面自有 for_destination 目标解析可落在原始 A* 链外邻点（源集侧才是夹具实质故严钉）、TOUR 不入走查（XPATHNONE 钉一次性 A* 面=genmap_load 已复放，walk 面每调只跨一门按构造可合法走完）——见 docs/review/opt-10-01-04-map-rerun-fixtures.md；client 门禁 870 绿）
-  - main 已收（台账席，2026-11-26）：本席 `eb163d4`→main `93a1576`（逐字节镜像），本席勾保持。
-
+- [ ] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。
+- [ ] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。
+- [ ] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。
+- [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
 
 ### OPT-11-01 三端固定镜头基线
 
 优化各端 GPU 上传、渲染批次、资源流与客户端帧调度。比较帧时间和显存，用固定镜头做视觉回归。
 
-- [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。(2026-11-26 lane/bw14-script-host 877e016：crates/client/tests/render_baseline_opt.rs 三端(linux/windows/macos=BW-11-04-07 可比集)各走同一固定镜头=DeviceConfig::default() 640×480 RGBA8 +64 帧 check_device→scene.step→present shipped 设备面；帧时间=每帧 Instant 只印不断言（本机 debug 面 p50 18.8-19.5ms/帧=307200 set_pixel+FNV，逐端逐帧 192 行 FRAME-TIME 落 docs/review/opt-11-01-01-render-baseline.md）；显存=计数分配器 LIVE+PEAK 高水位（OPT-10-01-02 变体）结构账断言：设备创建 2 allocs/1228848 bytes（640×480×4=1228800 背板+48 bytes 计数器 Arc），逐帧 0 allocs/0 bytes（present 原地画+摘要无上载抖动），整程峰值=创建足迹 1228848 恒不涨；固定镜头两证=新设备直接步进到帧序号复现该帧摘要（1/7/31/64）+全账复跑恒等；三端摘要逐帧全等+分配账全等；saved 基线钉 1..=8+64 帧摘要常量+整程内存账常量（光栅/场景/设备内存任一变化即触发，OPT-11-01-04 复跑同钉）；client 门禁 872 绿）
-- [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。(2026-11-26 lane/bw14-script-host 5313db6：crates/client/tests/render_batch_opt.rs 双面上传评估——shipped 面=TestScene::draw 逐像素 set_pixel（640×480 每帧 307200 次写）vs 批量候选=同像素数学走 shipped 批原语（整幅 fill 背景+标记列块逐行 slice fill，每帧 481 次写=1+480）；三端(linux/windows/macos)各 64 帧画+摘要分开计时对比（FRAME-TIME 逐帧 192 行+BATCH-TAIL 落 docs/review/opt-11-01-02-render-batch-opt.md）：批量面画半 p50 1.97-2.10ms vs shipped 15.05-17.36ms=7-8× 省，帧时间整体 ~20ms→~6.6ms，摘要半与面无关（同像素同 FNV，两端面在每端内一致本身即可比性验证）；结构断言：逐帧全像素向量相等（64 帧×3 端）+摘要相等+Device::present 真设备面摘要步走=计时面所骑 shipped walk+双面零分配+连续帧摘要必异（固定镜头下动画真实）+三端账逐帧全等+复跑恒等；墙钟 probe 只印不断言；评估结论=整段画半收益全在写形状 307200→481，批量候选不换契约（像素恒等）不加内存（仍零分配），OPT-11-01-01 saved 摘要钉两面都须答；client 门禁 874 绿）
-- [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。(2026-11-26 lane/bw14-script-host 5535b86：crates/client/tests/render_stream_sched_opt.rs 基线固定镜头(640×480, 64 帧)走 shipped 帧调度面 FrameLoop::run_frame（Tick→UpdateAnimations→Draw 逐帧 canonical+hooks 按相序断言，64 帧×3 端），六个排程切图帧(8/16/24/32/40/48)走 shipped load_and_bind 把参考夹具图 37 候选按扫描序分六批流进活空间；单 tracked 区跨全程=逐帧 allocs 增量+live 轨迹连续；切图报告（结构断言）：切图帧恰落在排程帧、并集=probe 全集 6 chunk、逐切图帧 allocs 954/32/32/32/32/128 严格大于全部稳帧(≤9)——分配账即切图/长帧的结构识别；内存=总 1729 allocs/峰值 1281573/终 live 1280327（流进的空间骑在设备 1228848 基线上），复跑恒等；长帧报告（probe 只印不断言）：本调试 runner 墙钟尾被 OS 抖动主导（最慢帧是稳帧 allocs=8 达 27-76ms 非切图帧），逐帧 192 行+切图行+每端 top-5 落 docs/review/opt-11-01-03-render-stream-sched-opt.md；夹具发现=第六绑 chunk 是分隔块 001x000x/sep/00110000o（标识符是路径非格胞，格胞中心解析只盖四个 hex 外块）；收尾四外块 find_chunk_from_point 各自格胞中心归位；client 门禁 876 绿）
-- [x] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。(2026-11-26 lane/bw14-script-host 96d8f67：crates/client/tests/render_visual_rerun.rs 三端复跑 OPT-11-01-01 saved 基线固定镜头（640×480, 64 帧）：钉帧 1..=8+64 摘要逐帧对上 saved 记录（首走+复走双验）；容差=复走间钉帧逐像素 differing_pixels=0 断言位级相等（确定性面容差下限=位，不设预算）——连 OPT-11-01-02 批量候选面也同满足：64 帧逐帧答 walked 摘要+钉帧批量像素 vs shipped 背板差 0；内存账复跑=saved 数字（走查区内 2 allocs/峰值 1228848，帧仍不抬高）；截图面（ScreenCopy::capture→TGA，BW-11-04-07 通道）钉帧 1/8/64 逐帧捕获=18 字节头+1228800 帧体，三端逐帧字节相等+第二遍复跑字节恒等（视觉回归产物自身复现）；OPT-11-01 簇收官——基线/上传批次/流与调度/视觉回归四面互相咬合（saved 摘要钉三行共答）；client 门禁 878 绿）
-
+- [ ] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。
+- [ ] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。
+- [ ] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。
+- [ ] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。
 
 ### OPT-12-01 各观测通道开销
 
 降低日志、Watcher、Profiler 的观测成本。验证背压、关闭观测后的开销及新旧工具查询兼容。
 
-- [x] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。(661e12a)
-- [x] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。(9a74213)
-- [x] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。(f4fce4f)
-
+- [ ] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。
+- [ ] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。
+- [ ] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。
 
 ### OPT-13-01 冷构建、增量与编辑器加载
 
 优化依赖缓存、并行转换和编辑器加载。比较冷构建、增量构建与大地图编辑时间，校验可复现产物。
 
-- [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。(1fd4739)
-- [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。(663dc8c)
-- [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。(`827ed8e`)
-- [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。(2026-11-26 补勾（交付 b981ae7 已在树，勾行遗漏）：crates/asset-pipeline/tests/asset_hash_format.rs 四测复跑 4/4 绿——hash64 五向量钉原版 bw_hash64.cpp FNV-1a 含 LE-integer+combine 契约（combined 0x85562B3F62384861）；SpaceConverter 真 space 两次独立转换逐字节+摘要全等（213B/3 sections，原版读者树读回 models/box.model|models/spikes.model）；DependencyList 精确哈希 4 输入 1 输出（primary 0x3A31A0D27AFBDAAB/full 0x39F4CDF311678C81）；res_packer 夹具两跑逐字节全等（177B×2）+原版 EL7 产物 bw.packed 经本包读者树读回全等（tree_equal=true）；墙钟 ASSET-FMT 只印不断言；docs/review/opt-13-01-04-asset-hash-format.md 补档）
-
+- [ ] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。
+- [ ] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。
+- [ ] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。
+- [ ] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。
 
 ### OPT-14-01 发布包尺寸及首次运行
 
@@ -6138,44 +5992,34 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（Linux 腿已在 main：bw15-platform 56c2673→f6107e8，platform io_timer_baseline.rs 1 测：写 30.33µs/读 9.04µs/replace 55.81µs/定时器分辨率 1µs/wakeup 0.95µs；bw14-script-host 另起平行实现 7081674→未进 main，patch-id 与 main 版不同——主席择一；Windows/macOS 腿未齐故行保持开）→ **主席裁定 2026-11-26**：Linux 腿择 main `f6107e8` 面为准；bw14 `7081674` 平行实现 lane-only 归档不删；行仍开待 Windows/macOS 腿，全腿到齐后按行验收勾。
-  - 主席裁定 2026-11-26（main 行内）：Linux 腿择 main `f6107e8` 面（bw15 `56c2673`）为准，行保持开待 Windows/macOS 腿；本席 lane-only `7081674`（13 probe+tests/baseline 目录）转存档记录，随 lane 并入由主席处置。
-  - 注记（2026-11-26，台账席）：Linux 腿已落——bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿。行保持开——「各平台」待 Windows/macOS 腿（三端 runner，BW-15-05-01）后补测再勾。
-- [x] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。(2026-11-26 lane/bw14-script-host 2f77126→main 25e40c7：crates/client/tests/render_backend_baseline.rs 按后端登记表采集三问——新树唯一出货像素后端=Device 下软件光栅器（参照侧 D3D9/OpenGL/cocos2d/Awesomium 四后端仅 BW-15-06-01 事实非移植，BACKENDS 留位即插）；设备面结构断言 SoftwareDevice 640×480 adapter=0 307200px RGBA8+帧序 1..=64 单设备对象+status=Ok+leaked()=0；驱动面=执行环境文本（CPU/核/OS/内核 probe 只印不断言）；帧时=固定镜头 check_device→step→present 64 帧逐帧 FRAME-TIME+FRAME-TAIL 报告，min/median/p99/max 记运行值不断言；结构契约逐相邻帧摘要异+帧 1..=8/64 复现 OPT-11-01-01 saved 钉+帧 1/7/31/64 纯帧序号复现+复跑恒等；提交目录 tests/baseline/render-backend-baseline.tsv 十列 linux-x86_64=measured，macos-arm64/windows-x86_64=pending rows 带 BW-15-04/BW-15-03 blocker 不编数字，语法检查拒 pending 带测量/未知后端/重复对/非数字/测量平台缺行；client 861 绿+集成全绿，clippy 净；本机 2 测绿)
-  - main 已收（台账席，2026-11-26）：本席 `2f77126`→main `25e40c7`（cherry-pick，取本席版非 bw15 腿），本席勾保持为交付记录。
-- [x] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。(2026-11-26 lane/bw14-script-host 3761c24→main 117a588：crates/platform/tests/platform_opt_parity.rs——同套协议场景两臂比结果：泛化 sendto/recvfrom 逐数据报 vs 批 sendmmsg/recvmmsg 逐窗口，同一 loopback UDP 对共发送套接字源三元组可比；256 数据报逐报字节+序恒等（内嵌大端序号=自身下标）+源 port/addr 网络序恒等+变长 16..=1200 抓聚合拆裂+批臂 8 send+8 recv vs 泛化 256+256；边沿同答：空批/空收 0/静默非阻塞两臂同 -1+EAGAIN（libc 约定，sendmmsg 注释"-errno"与实态不符如实登记）/8 槽收 5 排队恰 5 槽序字节恒等/单批同 sendto；自揭两发现=drained 错误形与槽宽=批容量（4 槽收 5 留队未丢，独立 C repro）；platform 64 lib+io_timer 1+parity 2+signal_call_sites 全绿，本机 2 测绿)
-  - main 已收（台账席，2026-11-26）：本席 `3761c24`→main `117a588`（cherry-pick，取本席版非 bw15 腿），本席勾保持为交付记录。
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
+- [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
 ### OPT-16-01 采集依赖与增量构建基线
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 d11c3d2(ci/build-baseline.sh)+96009f9(asset-pipeline/tests/dependency_rebuild_baseline.rs) 已 cherry-pick 入本树 c64444b/d4b764e 并复跑绿——build-baseline self-test：install-module/layout/upgrade/uninstall 四 PASS+build-fanout PASS(重编源定位=foundation 19 直接依赖者)+build-cold 196.77s+build-incremental 67.51s/12 crate 重编；dependency_rebuild_baseline 测试绿；fixture tsv 入 docs/review/fixtures/dep-graph/)
-- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 8c37171(asset-pipeline/tests/split_evaluation.rs+fixtures/dep-graph/split-*) 已 cherry-pick 入本树 0ddb5e0 并复跑绿，asset-pipeline 门禁 384 lib+集成含 split_evaluation 2 测全绿)
-- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 870ad04(asset-pipeline/tests/install_path_recheck.rs+fixtures/install-recheck/) 已 cherry-pick 入本树 5e99e3a 并复跑绿——the_load_and_install_paths_stay_compatible PASS+本树连带复跑 install-layout 全 PASS+package-baseline verify 3 平台语法净)
-
+- [ ] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。
+- [ ] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。
+- [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
 
-- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。(2026-11-26 跨席复测勾：他席 main 交付 38b99db(profiler/tests/long_stability_collection.rs+fixtures/long-stability/long-stability.tsv+docs/review/opt-23-01-01-long-stability-collection.md) 已 cherry-pick 入本树 5bb641c 并复跑绿，profiler 门禁 43 lib+集成全绿)
-- [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。(2026-11-26 跨席复测勾：他席 main 交付 2a26627(profiler/tests/buffer_export_evaluation.rs+fixtures/buffer-export/+docs/review/opt-23-01-02-buffer-export.md) 已 cherry-pick 入本树 98bec50 并复跑绿)
-- [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。(2026-11-26 跨席复测勾：他席 main 交付 0ee4b28(profiler/tests/collection_integrity_regression.rs+fixtures/collection-regression/+docs/review/opt-23-01-03-collection-integrity.md) 已 cherry-pick 入本树 28c1da9 并复跑绿)
-
+- [ ] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。
+- [ ] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。
+- [ ] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。
 
 ### OPT-26-01 固定事件回放并采集查询基线
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（opt26-db 席 `4c75e00`，lane/opt-26-db，main=`6973092`：crates/db-postgres/tests/event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账，钉定样本报表（四级窗口+五查询形计数）为 01-04 复算基线；TSV docs/review/fixtures/event-query/event-query.tsv 39 行，证据页 docs/review/opt-26-01-01-event-query-baseline.md；本席 main 复测 6 绿，TSV 复捕墙钟行随负载漂（结构计数行恒等）只记录不设带；⚠️ FLAG 2026-11-26：bw15-platform `8f42e4c` 平行交付（crates/message_logger/tests/qlog_replay_baseline.rs 523 行 20000 条固定事件回放+11 查询面墙钟+样本报表，与 main 6973092 db-postgres 侧 patch-id 不同=真平行非镜像，lane-only 待主席择一））→ **主席裁定 2026-11-26**：择 main `4c75e00` 面（6973092 收编形，event_query_baseline 6 测在树）为本行交付面；bw15 `8f42e4c`（qlog_replay_baseline.rs 523 行）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 本席跨席复测存档（2026-11-26 主席裁定择 `4c75e00` 面，main=`6973092`）：本席 cherry-pick `e34dacd`/`013f573`/`c578a23`/`7a1867c` 四行复测全绿（db-postgres 25 套）。
-- [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。（opt26-db 席 `40b58e0`，lane/opt-26-db，main=`027c6c0`：crates/db-postgres/tests/import_batch_candidates.rs 3 测=同 512 行语料五种事务形（每 1/16/64/256 行一提交+整库一事务）各报墙/吞吐/计数分配器峰值且逐形回读恒等；TSV docs/review/fixtures/import-batch/import-batch.tsv 30 行，证据页 docs/review/opt-26-01-02-import-batch.md；本席 main 复测 3 绿（批 64+ 后吞吐平坦 620-640 rows/s，批 1 最慢=每行一提交））
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `40b58e0`（main 已收 `027c6c0`）：导入批大小评估（64 行 commit 裁定+内存平坦）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
-- [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。（opt26-db 席 `bf335b5`，lane/opt-26-db，main=`5df3486`：crates/db-postgres/tests/query_aggregation_candidates.rs 3 测=一全扫建 name→id（512）+level→ids（200 键）两聚合图，同 128 名抽样网格前后对照——基线 name 查询 ~14× 键控 get，聚合后网格解析走图不走扫；TSV docs/review/fixtures/query-aggr/query-aggr.tsv 21 行，证据页 docs/review/opt-26-01-03-query-aggregation.md；本席 main 复测 3 绿（加速比两跑 8350×/4746×=负载敏感记录行，128 网格断言恒等））
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `bf335b5`（main 已收 `5df3486`）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
-- [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。（opt26-db 席 `b34554a`，lane/opt-26-db，main=`1590095`：crates/db-postgres/tests/sample_report_rerun.rs 3 测=同固定事件流重放后从**存储语料**复算样本报表，对照盘上 docs/review/fixtures/event-query/event-query.tsv 基线（四级窗口+五查询形计数逐项等），再在每项优化（64 行批导入/两聚合图）后各复算一次仍等；证据页 docs/review/opt-26-01-04-sample-report-rerun.md；本席 main 复测 3 绿）
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `b34554a`（main 已收 `1590095`）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+- [ ] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。
+- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。
+- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。
+- [ ] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。
 
 ## 5. 实施顺序与里程碑
 
@@ -6403,8 +6247,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-13-02-03 移植 res_packer**。**验收** 打包前后资源可等价读回。
   - 证据：`crates/asset-pipeline/src/res_packer.rs`（2387 行 / 22 测；fdce7ff）+ `crates/resources/src/datasection.rs` 增 `del_child_at`（3ac619c）。**结构**：`PackerEnv`（printf+MsgHandler 面：`out` 按序收集、`ERROR: `/`WARNING: ` 前缀、**sub-ERROR 清 error 旗标**——原版 handler 赋值 `errorsOccurred_ = priority >= ERROR` 的怪癖原样保留）；`SourceSection::{open,is_packed,can_pack}`（packed 魔数先、首个非空白 `'<` 判 XML、否则 Bin；派生 `Clone` 供 print 复用，因原版 `XmlPacker::print` 是 const 不消费 `ds_`）；`convert_bytes`/`convert`（`PackedSection::convert` 面，错误消息逐字）；`copy_file`/`file_exists`/`remove_trailing_slash`；`BasePacker` trait + `Claim`（src/dst 空值守卫）；六 packer + `Packers` 注册表（HIGHEST=0/LOWEST=0xFFFF，按**严格大于**插入）；`print_usage` 两块 printf 原文；`parse_args`（`--res/-r` 跳过、`--list/-l` 在 flag 走查中**立即**开且打不开提前退出、`--in/--out/--err/--encrypt/--strip`）；`run`（批列模式 + 兼容模式，返回退出码）。**验收面**：`packed_output_reads_back_equivalent`（XML→packed→`PackedSection` 读回：int/负数/0/大 i64/前导零 `"007"`/bool/float/vector3/文本/canonical base64 blob/嵌套与 matrix 行逐项等价）+ `repacking_packed_output_is_byte_stable`（重打包**逐字节**同——参考经 `asString` 重推每个值）。**--encrypt**：XOR `0xc9`+marker 1；二进制节整体加密（每个节点存自身 raw 块为 `ENCRYPTED_BLOB`，children 块 `[i16 n][n×(i32 dataPos|i16 keyPos)][i32]` 与 `packed::write_node` 同构），`binary_with_encrypt_round_trips` 验证整树可解密。**六 packer**：Xml（LOWEST 兜底，`canPack()||shouldEncrypt` 才认领，print 不消费节，pack 走 convert 去 `metaData`）、Fx（fx/fxh/fxo 三类全跳过：`PACK_SHADER_BINARIES=true`/`PACK_SHADER_SOURCE=false` 仍只认领不产文件）、Image（`--encrypt` 时让位给 XmlPacker；bmp/tga/png/jpg 优先同辈 `.dds`，否则同扩展名拷贝，扩展名不符→"Error: Cannot copy source %s to destination %s.\n"；`.dds` 走字体跳过：同目录 `.font` 的 `creation/sourceFont`+`abs(sourceFontSize)` 拼 `name_size`）、Chunk（clientOnly 过滤服务器实体、去 editorOnly/metaData/navmesh/worldNavmesh 深 2、`.packerTemp` 中转+转换后必删）、CData（`space.settings` 缺→WARNING 且 prepare false；copy 后按 bin/xml 两路删 thumbnail.dds/navmesh/worldNavmesh（受 `clientNavigation/enabled` 门控）+ 每个 `--strip`；保留 `#if 1` 逐个打印存活子）、ModelAnim（model 打包去 metaData、animation/anca 跳过；`.anca` 生成在接缝后退化为拷贝源 `.anca`；打不开模型→"Could not open model file %s\n"）。**CLI 面**：批列 fgets 尾字符吃掉/末行无换行削末字符、`--err` 日志、`"Processing %s..."`+`" %s\n"`、`"\nProcessing complete"`+失败计数三句尾；兼容模式 print（单参）/pack（`"Processing %s to %s..."`+`"...succeeded/failed"`）；未知类型 print 模式**先打印 "Error opening source file: %s\n"（原版 prepare 副作用）再成功返回**；`main` 尾 `return result ? EXIT_SUCCESS : EXIT_FAILURE`。**怪癖保留**：too_many_children 的 `"PackedSetcion"` typo（去掉尾部计数——Rust 错误型无计数）；CDataPacker::print 打出 `"Error: ChunkPacker not initialised properly\n"`（原版串错）。**门禁**：163 asset-pipeline 绿（141 既存+22 新）+ resources 227 绿（+1 `del_child_at`），clippy scoped 仅剩 workspace 两条既存 unused-dep，fmt 净；llvm-cov 0.9.1 `res_packer.rs` 行 92.70%（同 crate 的 offline_processor.rs 92.77% 同档；本 crate 整体 85.75%，未达核心 98% 线——如实登记）。已推 `lane/bw15-platform`（fdce7ff）。
 - [x] **BW-13-02-04 移植 resourcechecker**。**验收** 同一坏资源得到对应诊断。**交付**（2026-11-25，8678b06 + 16eda65 已推 lane/bw15-platform）：`crates/asset-pipeline/src/resource_checker.rs` 移植 `tools/resourcechecker/visual_checker.*` 的 `VisualChecker`。**规则面**：`_bsp.` 命名直接放行且不载规则；规则自 `visual_rules.xml`（cacheRules=true 直开 / false 先 fileExists——两分支同落 openSection，合并为 `cache_rules || file_exists`）；缺规则记 `Unable to find visual_rules.xml file.`（构造期错误，check() 首行 `errors_.clear()` 与原版一致会清掉）；匹配 = 目录路径小写 find 包含 + `stable_sort`（path 长降序、filespec 长降序稳定）+ `PathMatchSpec` 可移植 glob（`*`/`?`/`[seq]`/`[!seq]`，首 `]` 字面量，`{}` 列表无用户未实现已注册）；rulesById + parent 链递归读（宏生 vector/string/int/float/bool + hardPoint 集合）；exportAs ∈ {normal, static, static with nodes} 否则 `Unknown value for exportAs [%s]\n` + 重置 normal。**检查面**：尺寸/三角数（`*indices` 子节 `IndexHeader::read` 计 `nIndices_/3`，负数 wrapping 成 u32）/层级深度（缺 node 节原版解引用空指针即 UB，移植记 0 已注册）/portal 电池（基座矩阵 row0=uAxis、row2=boundary normal、row1=normal×uAxis、平移=normal·d，点从平面空间映射回对象空间；<3 点/非平面（零法线跳过）/朝外（`d − centre·n > 0`，平面法线须指内）/snap 1/2196 容差/距离 1/1024 容差/offset 1/8192 close，printf %f 全 `{:.6}`）/重复节点名/硬点缺失与未知（HP_flash01 与 HP_flash 豁免；`len>3 && substr(0,3)=="HP_"` 照抄）/纹理名空格（renderSet→geometry→primitiveGroup→`material/textureormfm` find_last_of）。**接缝注册**：MessageBox/automatedTest 分支一律走错误记录；`PrimitiveFile::get` 先 `.processed` 后裸名；XML 内容嗅探拒绝（原版空 asBinary 强转 IndexHeader 是 UB）；`snap_vertices` 原版即死字段照抄并注册。**验收即测试**：`portals_are_forbidden_on_normal_visuals`（同一坏视觉在 rules=false 下得 `Must not have any portals`）等 15 测——好视觉全规则零错、too small/too big/三角上下限/层级/朝外/非平面/snap+距离/重复+硬点/纹理/坏 exportAs/缺文件逐项断言原版消息全文。**附带**：`datasection::read_vector3` 改走 openSection 路径行走（原版 readVector3 即 `openSection(tag)`，`boundingBox/min` 两跳；16eda65 附 `read_vector3_walks_slash_paths` 测）；门禁 asset-pipeline 177 + resources 228 测绿，clippy 仅余两既存 workspace unused-dep，fmt 清，llvm-cov resource_checker.rs 行 96.49%（crate 整体 85.60%，工具 crate 口径照旧）。**坑**：原版 portal 点存平面空间 (u,v,0) 经基座矩阵映射回对象空间，测试夹具必须给平面坐标再由 winding 定平面法线朝内（朝外即触发 facing 错误）；`BinSection::save_bytes` 输出含非 UTF-8 magic 字节，夹具写盘必须走原始字节而非 `from_utf8_lossy`（会替换 0xa1 致容器解析空）。
-- [x] **BW-13-02-05 回归 NavGen 入口**。**验收** 可调用 BW-10 的导航生成。**跨席复测勾**（main 交付为准，2026-11-26，本席）：main `79f47c4`（`crates/asset-pipeline/src/navmesh_processor.rs` 2738 行/55 测，LockedChunks 引用计数/ChunkProcessorManagerFace 锁块怪癖/NavmeshProcessor 逐 girth 顶检→flood→as_binary 追加/NavmeshCache 全端口）依赖面 `977f555`（waypoint-gen workflow.rs 914 行：readTGA/extendThroughUnboundPortals/determineEdgesAdjacentToOtherChunks/compileGirthsList/GirthWorkflow）+`d26cb55`（tga temp dir 隔离），本席 cherry-pick `3ddf7b8`+`b868516`+`b91f983`。**缝冲突自纠**（`e5670ac`）：本树 b99cb0e（lane-only，GenChunk/FloodPhysics 缝）与 main 同面（NavmeshProbe/DropPhysics 缝）物理撞名 to_vector3/determine_edges——取 main 版为准，删本树私有重复，navgen_map harness 补 NavmeshProbe/DropPhysics 适配 impl 改骑 workflow 缝，truth log `gen_navgen_map.log` 逐行复现未变（两版行为等价实证）。**复跑证**：waypoint-gen 88 测绿（含 navgen_map truth-log 对照+workflow tests）+asset-pipeline 439 lib+集成 0 failed，fmt/clippy scoped 净（blowfish workspace 预存在非代码）。b99cb0e 余下不撞名面（generate/streamline/calculate_set_membership/as_binary 等）保持开待主席与 main 侧择一。
-
+- [ ] **BW-13-02-05 回归 NavGen 入口**。**验收** 可调用 BW-10 的导航生成。
 
 #### BW-13-03 WorldEditor
 
@@ -6478,11 +6321,6 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **BW-14-02-01 运行 Python simple 示例**。**验收** 与新服务端完成登录。
   - 卡点（服务端登录链路未落地，同 BW-14-01-02）：simple client 在参考 `examples/client_integration/python/simple/`（自带 res 树，实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对），其登录依赖新服务端 loginapp 挑战协商（BW-06-01-02）+ baseapp onLogin（BW-07-01），当前 `apps/server` 仅最小入口无登录处理。
-  - 复测（2026-11-26，台账席）：注记引用已过时但卡点事实未变——所引依赖均已交付：BW-06-01-02 挑战协商（`3244af7`）、BW-07-01（BW-07 车道 24/24）、BW-14-01-02（`c68667c`，进程内 harness 全链，边界自注「多进程运行不在本项」）；然 `apps/server/src/main.rs` 本日复核仍 36 行最小入口，`app::run`（BW-15-02-01 `750be59`）只接 Dispatcher+信号矩阵、零 mercury 引用（NetworkInterface 构造留随 BW-02-02/角色簇），无可监听的 loginapp——网络登录面本席侧仍缺。行保持开，待 `apps/server` 网络接线（BW-02-02/角色簇）与可跑客户端宿主（BW-21）落地后复测。
-  - 增量落地（2026-11-26，`44aca1e`(merge origin/lane/bw19-docs)，含 `a43f3f3` 收包面测试适配）：**服务端登录面接线已上 main**——角色循环走 `bwMainT` 全体（`app.rs` 新 `MercuryPass` 合流角色 dispatcher 与 Mercury dispatcher，machined 查询/内部接口配置链/`NetworkInterface::new_on_dispatcher` 构造/关服 drain）；loginapp 外口（`loginapp_interface.rs`，`PORT_LOGIN=20013`+`login_minder` 三入口 login/probe/challengeResponse 按声明序+`LoginInterfaceDispatch` 剥 first-request 尾脚+`probe` 真数据报往返）；login 门序与 `challengeResponse` 应答面（`loginapp_login.rs`，复用 BW-06-01-05 版本闸、challenge 缓存/resent quirk 逐字）；dbapp 出站面（`db_login.rs` `DB_APP_LOG_ON_ELEMENT_ID=8`+`DbAppForward`/`DbReplyHandler`，验收级真闭环测过 `the_dbapp_request_leg_reaches_the_wire_and_its_answer_routes_back`）。**适配点**：收包面 graft（`14d3d8c`）后 `the_network_pass_delivers_a_datagram_through_the_loop` 原发裸 `b"ping"` 被参考形 guard 判 corrupted，已改为带 clear flags 头的真帧 `[0,0,p,i,n,g]`（a43f3f3）；覆盖 loginapp_interface 100%、loginapp_login 98.78%、db_login 98.63%、app.rs 99%+。行保持开——simple client 端到端验收仍待 dbappmgr→loginapp `notifyDBAppAlpha` 活网格出生接线与 dbapp logOn 应答角色（BW-09-01 领地）落位后复测。
-  - 复测五（2026-11-26，lane/bw19-docs `0dfc448`）：**参考客户端真机往返已通两道门（82→72）**——预编译 `simple_python_client` 在参考树 `game/bin/server/el7/examples/simple_python_client`（本机可跑，`-server/-user/-password`，README 配方）；Linux 构建路径必须从 res 解析 `loginapp.pubkey` 文件（内嵌 key 仅 PS3/Xbox360 分支，main.cpp:228-238）——取 `scripts/cluster-smoke/res/loginapp.pubkey` 头插 res overlay 即解（BW-00-02-04 卡点在此实验面消除；配对 `res/server/loginapp.privkey`=参照 loginapp_config.cpp:22 默认读 `server/loginapp.privkey`，将来 dbapp 解密腿用）。真跑序列：本席 loginapp 外口 20013 监听（无 machined 回落绑全接口）→ 真客户端实体定义加载/网络绑定/`LoginHandler: LoginApp@127.0.0.1:20013` 起动 → ①默认配置拒 82=`LOGIN_REJECTED_LOGINS_NOT_ALLOWED`（=参照默认 `BW_OPTION(bool,allowLogin,false)` loginapp_config.cpp:24，移植一致非缺陷）→ ②overlay `<loginApp><allowLogin> true` 后拒 72=`LOGIN_REJECTED_DB_NOT_READY`（=参照 loginapp.cpp:862 isDBReady 门**先于**挑战门 1048——gate 序 82→72 实证）。**余卡点收窄两件**：活内部网格出生接线（dbappmgr→loginapp `notifyDBAppAlpha` 上线；dbappmgr.rs 自注 Mercury traffic not modelled）+ dbapp logOn 应答角色（BW-09-01 lane 领地）——两者落位后 overlay 配方（res 头插 loginapp.pubkey+overlay server/bw.xml 开 allowLogin）即可续跑至挑战协商与真登录。行保持开。
-  - 卡点复测（2026-11-26，bw14-script-host 席）：旧注「服务端登录链路未落地」**已过时**——登录链已落地并真机绿：BW-06-01-02 挑战协商（3244af7，main 祖先）+ BW-07-01 baseapp 装载/ID 分配 + BW-14-01-02/05 进程内登录链（`fantasydemo_login.rs` 5 测：既有账户走机/未知用户建档/错密码拒不碰行/新角色建档回指，`fantasydemo_logout_relogin.rs` 2 测：退出持久化重登读回，本席实测全绿）。**真余卡点两处**：①`apps/server` 仍最小入口（`main.rs` 仅 BWResource/BwConfig 初始化 + `app::run` 信号/关停面），无角色运行时把 loginapp/dbapp/baseapp 登录链接到真实 Mercury 端口（同 BW-15-02-01 卡点；BW-08-01-02 CellApp 创建与注册未勾）；②参考 simple 客户端是 **C++ 壳内嵌 Python**（`main.cpp`/`entity.cpp`/`py_server.cpp` 等，目录名「python」指 Python 脚本化实体而非纯 Python 程序），跑通它需移植该壳或等价客户端驱动，与①同属大面工程，随角色运行时落地。simple 自带 res 树实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对。
-
 - [x] **BW-14-02-02 运行原版 Android 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
   - 宿主缺口（未运行互通测试）：`docs/review/bw14-02-02-03-mobile-interop-host-gap.md`（402c28a）——参考 `examples/client_integration/c_plus_plus/android/`（JNI + `android.app.NativeActivity` + `android_native_app_glue` + `connection_model` 静态库 + `-llog -landroid -lEGL -lGLESv1_CM`，NDK `armeabi-v7a`/`APP_STL=gnustl_static`/`APP_PLATFORM=android-9`）需 Android NDK 工具链 + 真机/模拟器，本机 Linux 无 NDK/设备；即使宿主就绪，互通目标（新服务端登录）亦未落地（同 02-01 卡点）。协议结果未采集；两侧缺口均已登记。
 - [x] **BW-14-02-03 运行原版 iOS 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
@@ -6517,7 +6355,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-14-04-03 布置配置及样例资源**。**验收** 首次启动可定位。（commit 5da86a6）
   - 证据：`ci/install-layout.sh` + `docs/review/bw14-04-installable-artifact-layout.md`（b0a4d3e 起，5da86a6 完成）——`res/server/bw.xml` + `res/scripts/`（21 项样例资源镜像）随包布置（install-layout PASS：配置/资源/二进制/模块/`data/` 齐全）。**工具半**：装后 `process_defs -r <prefix>/res` 首启定位并加载安装资源树（install-cli-res PASS）。**服务器半**：`apps/server/src/main.rs`（5da86a6）按参考 `BIGWORLD_MAIN` 接入 `BWResource`/`BWConfig` 链，装后 `boundless-server <role>` 以 `BW_RES_PATH=<prefix>/res` 首启定位安装配置（install-res-server PASS：无「Could not find」/「No configuration section」，正常启动/停止 exit 0）；`role_lifecycle.rs` 首启定位/未定位双测试钉死观测差（定位静默、未定位记参考失败行）。
 - [ ] **BW-14-04-04 执行干净安装烟测**。**验收** 三端能启动和停止。
-  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**复测登记（2026-11-26，main 吸收 lane/bw16-18 `a05a849`←bw10-terrain `1dba9be`）**：`ci/install-layout.sh` self-test 10/10 PASS 含红/绿双验（他席独立跑过），同脚本装后启停绿；两席同证据链镜像非新交付，行保持开。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
+  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
 - [x] **BW-14-04-05 执行升级与卸载**。**验收** 验证用户数据保留行为。（commit b0a4d3e）
   - 证据：`ci/install-layout.sh`（b0a4d3e）——归档只携带包属树（`bin lib res`），用户数据在 `data/`（**不在归档**）。装后种子 `data/db/user.db`，篡改包属文件 `res/server/bw.xml` 后**升级**解包：包属文件还原为打包字节、`data/db/user.db` 保留（install-upgrade PASS）；**卸载**删除 `bin/ lib/ res/`、`data/db/user.db` 保留（install-uninstall PASS）。self-test 绿色全链路 + 4 条红色臂（启动失败/CLI 失败/坏模块/缺定义资源树均按预期咬合）。
 
@@ -6529,15 +6367,15 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 封装事件轮询和唤醒、单调时钟、信号/控制事件、子进程与退出状态、文件锁、内存映射、动态库和系统目录。对照大小写、路径编码、原子替换、IPv4/IPv6 和断网行为。
 
-- [ ] **BW-15-01-01 封装事件轮询和唤醒**。**验收** 三端可停止空闲循环。（Linux 腿注记 2026-11-26：bw15-platform `774372f`→main `70af995`，crates/platform/tests/idle_loop_stop.rs 1 测绿——空闲循环按需停（trigger 中断 epoll_wait 预算 interrupt1 680µs/1 迭代、preset 迭代、rearm 112/46µs、预算窗 5 迭代）；wakeup.rs 441ff01 既有注记同上；三端行保持开待 Windows/macOS 腿）
+- [ ] **BW-15-01-01 封装事件轮询和唤醒**。**验收** 三端可停止空闲循环。
   - 证据（部分，未勾）：`crates/platform/src/wakeup.rs`（441ff01）——自管道 `Wakeup`（`pipe(2)` 双端 `O_NONBLOCK`、`trigger` 任意线程一字节写入容忍 EAGAIN=已挂起、`consume` 排空重整、Drop 关双端），Linux 实测 5 测：空闲 `epoll_wait`（5s 预算）被另一线程 `trigger` 在 1s 内唤醒、预挂起即回、`consume` 后零超时不再上报、未触发 `consume` 为 no-op、100 轮触发/消费循环稳定；「轮询」半块已由 BW-02-01-02 `platform::poller`+Mercury `EventPoller` 承担（Linux epoll）。**macOS 后端已落（59da22c）**：`crates/platform/src/poller.rs` 拆为 Linux `epoll`/macOS `kqueue` 两后端、`lib.rs` 把 `poller` 门控扩到 macOS——kqueue 与 epoll 同为描述符持久注册集，`create`/`ctl`/`wait` 一对应映射（`kqueue()`；`kevent` EV_ADD/EV_DELETE 按 filter、`CTL_DEL` 先删读再删写、二者其一在册即成功、无册 fd 返 `ENOENT` 同参考 WARNING 分档；`EV_EOF`→`EPOLLHUP`/`EV_ERROR`→`EPOLLERR`；超时负值阻塞零轮询；事件位沿用 epoll 数值使调用方跨端同常量）；`platform` darwin `--all-targets` 交叉编译绿、darwin clippy `-D warnings` 绿、Linux 59 测零回归；kqueue 模块 4 测镜像 epoll 待三端 runner 实跑。**剩余**：Windows `WSAPoll` 走 socketpair 而非匿名管道——随 BW-15-05 三端 runner 落地（kqueue 实跑亦随三端 runner）。
 - [x] **BW-15-01-02 封装单调时钟**。**验收** 单调性及 Tick 单位一致。
   - 证据：crates/platform clock.rs 测试（monotonic 不回退、微秒单位、起点近零）。
-- [ ] **BW-15-01-03 封装进程控制及退出码**。**验收** 三端可正常关服并回收子进程。（Linux 腿注记 2026-11-26：bw15-platform `4a40422`→main `595be79`，crates/platform/tests/process_exit_baseline.rs 1 测绿——子进程状态码/spawn 262µs/wait 7.9ms/轮询收割 1.02ms/信号等待 247µs/一次收割 16 存活；三端行保持开待其余平台腿）
+- [ ] **BW-15-01-03 封装进程控制及退出码**。**验收** 三端可正常关服并回收子进程。
   - 证据（部分，未勾）：`crates/platform/src/process.rs`（d25d90a）——`Child`（`fork`+`execvp` PATH 搜索、子进程 exec 失败 `_exit(127)`、`wait` 阻塞重采/`try_wait` WNOHANG 非阻塞/`signal` kill、二采 `ECHILD` 报错）+ `ExitStatus`（`WIFEXITED`/`WEXITSTATUS`/`WIFSIGNALED`/`WTERMSIG` 解码、`success` 即 code 0）；Linux 实测 7 测：exit 42 采回、零退出成功、SIGTERM 终止、存活期 `try_wait` None 再采、exec 失败回 127、空 argv 拒、二采 ECHILD。**剩余**：Windows `CreateProcess` 后端随 BW-15-03 落地；`server-runtime` 关服接线（信号→kill 子进程→wait 回收）待做。
 - [x] **BW-15-01-04 封装文件锁及原子替换**。**验收** 并发更新夹具通过。（commit d0a9ac4）
   - 证据：`crates/platform/src/file.rs`（d0a9ac4）——`FileLock`（`flock` LOCK_EX 互斥、try 版返回 None 表已持有、Drop 即释放；**锁稳定伴生 `.lock` 文件而非被替换的数据文件**——rename 换 inode，锁被替换文件本身无法串行化更新，此平台事实已编码进模块文档）+ `atomic_replace`（同目录临时文件写全→`fsync`→`rename(2)` 原子换入，失败自动 unlink 残留）；**验收并发更新夹具实测过**：2 线程×50 锁-读-改-写-原子替换，计数恰为 100 零丢失（`file::tests::concurrent_update_fixture_loses_nothing`，`cargo test -p platform --lib` 64 测全绿）。**Windows `LockFileEx`/`ReplaceFile` 后端归 BW-15-05 三端 runner 平台移植**（本项验收为并发更新夹具，Linux 已过）。
-- [ ] **BW-15-01-05 封装内存映射与共享库查找**。**验收** 三端加载相同测试资源。（Linux 腿注记 2026-11-26：bw15-platform `294a434`→main `298fd89`，crates/platform/tests/mmap_library_baseline.rs 1 测绿——同资源 mmap 34µs/64KiB+anon 4096+共享库打开 22µs/符号查找 3µs malloc 命中；三端行保持开待其余平台腿）
+- [ ] **BW-15-01-05 封装内存映射与共享库查找**。**验收** 三端加载相同测试资源。
   - 证据（部分，未勾）：`crates/platform/src/mmap.rs`（3359d3b）——`Mmap`（`mmap` PROT_READ|MAP_SHARED 整文件映射、空文件映射空切片、匿名零页映射、`Deref<[u8]>`、Drop `munmap`；mmap 需活 fd、成功后 close 映射仍有效）+ `DynamicLibrary`（`dlopen` RTLD_NOW|LOCAL、`dlsym`、Drop `dlclose`、`dlerror` 消费）；Linux 实测 7 测：文件映射逐字节等于文件、空文件、匿名页全零、缺文件报错、dlopen libc 并 dlsym malloc 非空、缺符号报错、缺库报错。**剩余**：Windows `CreateFileMapping`/`LoadLibrary` 后端随 BW-15-05 落地。
 - [x] **BW-15-01-06 校验路径大小写、编码和系统目录**。**验收** 代表性夹具可寻址。（commit aa6e2ee）
   - 证据：`crates/platform/src/path.rs`（aa6e2ee）——`correct_case_of_path`（参考 `WinFileSystem::correctCaseOfPath`（win_file_system.cpp:782）的 POSIX 对应：`realpath(3)` 在大小写不敏感卷上解析出盘上真实拼写、敏感卷上即恒等、缺失路径原样返回）；`real_path`（canonical 定点、symlink 解析、缺失报 `ENOENT`）；`join`（参考 `getAbsolutePath` 的 base+path（unix_file_system.cpp:466），补缺 `'/'`）；`home_dir`（`$HOME`）/`temp_dir`（`TMPDIR`→`TMP`→`TEMP`→`/tmp`）；编码 `path_bytes`/`path_from_bytes` 字节级往返（POSIX 路径是字节串非必 UTF-8，实测 `0xFF` 字节往返）+ lossy。Linux 实测 7 测：temp 系统目录夹具写读可寻址、HOME 绝对、join 三态（缺分隔/已带/空 base）、realpath 不定点+symlink+缺失三态、correct_case 缺失原样/存在=realpath、非 UTF-8 往返。**Windows `%USERPROFILE%`/`%TEMP%`/`GetFullPathNameW` 后端归 BW-15-03 Windows runner 平台移植**（本项验收为代表性夹具可寻址，Linux 已实测过：`path::tests::temp_dir_holds_an_addressable_fixture`，temp 系统目录夹具写读可寻址）。
@@ -6565,14 +6403,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 验证原生服务端全角色、客户端、编辑器及产物。处理进程停止、DLL/CPython 查找、路径与驱动，并核对原版 Windows 客户端和编辑器样本。
 
 - [ ] **BW-15-03-01 跑 Windows 服务端全角色**。**验收** 能处理控制事件并关服。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-03-02 验证 DLL 和 CPython 发现**。**验收** 已安装布局中模块可导入。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
-- [ ] **BW-15-03-03 跑 Windows 客户端与编辑器**。**验收** 固定样本与原版对照。（对照基线注记 2026-11-26：对照面本体已在 main——Linux boundless-client 固定地图呈现（896×176 8 帧二跑逐位同+TGA 630,802 B）与 boundless-editor 编辑会话（ed_save (12,0,34)→(25,0,47)+二会话字节同，02bedbb）即样本面；两入口 `cargo check --locked --target x86_64-pc-windows-gnu -p boundless-client -p boundless-editor` 已 PASS（2026-11-26 实测零错误）；Windows 腿仍缺真机 runner（服务端 `mercury`/`std::os::fd` 交叉构建未过属 BW-15-03-01 面），行保持开）
-  - 交叉编译注记（2026-11-26，`454acee` 核验）：本席 `apps/client`/`apps/editor` 双入口 windows-gnu 交叉检 PASS（`cargo check --target x86_64-pc-windows-gnu`，仅预存 blowfish manifest 警告）；server 侧 `mercury` E0432×16 属 BW-15-03-01，不拦两入口。真跑仍待 Windows runner（BW-15-05-01），行保持开。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
+- [ ] **BW-15-03-03 跑 Windows 客户端与编辑器**。**验收** 固定样本与原版对照。
 - [ ] **BW-15-03-04 跑 Windows 工具和发布包**。**验收** 路径编码和启动烟测通过。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-04 macOS
 
@@ -6581,14 +6414,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **BW-15-04-01 跑 macOS 服务端全角色**。**验收** 能启动、停止并回收。
   - 证据（部分，未勾）：macOS 编译前置已通（afe9973）——`server_runtime::signals` 可移植到 `aarch64-apple-darwin`：等待原语按平台分派（Linux `sigwaitinfo`，macOS `sigwait`——libc crate 只给 BSD 族 `sigwait`，二者同是 POSIX 等待且都可被 `EINTR` 打断，`wait_one` 统一为负错误码）；`signal_number_to_string` 的实时信号臂（`SIGRTMIN`/`SIGRTMAX`，glibc 专属）门控到 Linux，macOS 无实时信号范围；`SIGMAX` 按平台取（Linux `SIGSYS`=31，macOS `SIGUSR2`=31，二者皆最高标准信号，`AtomicU32` 掩码一致）；`SIGNAL_NAMES` 按平台分表（参考表是 Linux 编号；macOS 编号不同：`SIGEMT`=7/`SIGBUS`=10/`SIGSYS`=12/`SIGCHLD`=20/`SIGIO`=23/`SIGINFO`=29/`SIGUSR1`=30/`SIGUSR2`=31，无 `SIGSTKFLT`/`SIGPWR`；服务端用的退出信号 `SIGTERM`/`SIGINT`/`SIGQUIT` 两端同号）。实测 `cargo check -p boundless-server --target aarch64-apple-darwin` 绿（仅剩 resources 预存警告）。**剩余**：macOS 上真机运行（`cargo build`+启动/停止/回收，需 macOS runner）；`--all-targets` 测试编译亦已绿（af0182b）——两处内联 `sigtimedwait`（server_app.rs:980/1211，BSD 无此符号）收进 `consume_pending_signal`（Linux `sigtimedwait` 零超时轮询、非 Linux `sigwait`；信号既已确认 pending 则立即返回），实测 `cargo check -p server-runtime --target aarch64-apple-darwin --all-targets` 无错；mercury 尚有 darwin 缺口（`lib.rs` 对 `event_dispatcher`/`packet_receiver` 的门控被 `interface_table.rs:18`/`request_manager.rs:27`/`network_utils.rs:36` 无条件 import；`endpoint.rs:403` 直用 linux-only `socket::IP_RECVERR`）——服务端最小入口不依赖 mercury 故不拦当前构建，待 Mercury 接入服务端（BW-02）时需先补。
 - [ ] **BW-15-04-02 验证 CPython 与应用资源布局**。**验收** 从应用包可加载。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
-- [ ] **BW-15-04-03 跑 macOS 客户端和编辑器**。**验收** 设备状态和固定地图测试通过。（对照基线注记 2026-11-26：固定地图测试面已在 main——crates/client 软栅格设备（present_with 帧账+checksum+map_display_baseline 2 测 896×176 二跑逐位同）与编辑器 ed_save 面（edit_reload 2 测），02bedbb；三入口 `cargo check --locked --target aarch64-apple-darwin` 实测 PASS；macOS 腿待真机 runner，行保持开）
-  - 交叉编译注记（2026-11-26，`454acee` 核验）：本席 `apps/client`/`apps/editor` 双入口 darwin 交叉检 PASS（`cargo check --target aarch64-apple-darwin`，仅预存 blowfish manifest 警告）；macOS kqueue+信号前置 `59da22c`/`afe9973` 已在 main。真跑仍待 macOS runner，行保持开。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
+- [ ] **BW-15-04-03 跑 macOS 客户端和编辑器**。**验收** 设备状态和固定地图测试通过。
 - [ ] **BW-15-04-04 跑 macOS 工具和发布包**。**验收** 干净安装后可执行。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-04-05 验证与 Linux 和 Windows 互通**。**验收** 跨端登录及实体同步通过。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-05 三端 CI 和混合部署
 
@@ -6599,11 +6427,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **BW-15-05-02 在三端执行协议、资源与 Python 测试**。**验收** 各端分别留存结果。
 - [ ] **BW-15-05-03 配置 MySQL、XML 与 SQLite 测试矩阵**。**验收** 每种模式产生独立结果。
 - [ ] **BW-15-05-04 配置 PostgreSQL 真实后端矩阵**。**验收** 各端完成登录、写档和重启读档。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-05-05 验证三端客户端连接不同平台服务端**。**验收** 记录每种支持组合。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-05-06 验证混部替换单角色**。**验收** 记录版本和关服顺序。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-06 平台图形和宿主依赖
 
@@ -6613,10 +6438,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 证据：`docs/review/bw15-06-01-graphics-backend-list.md`——四后端五平台：桌面 **Direct3D 9**（`lib/moo`，`bwclient`，`IF(BW_PLATFORM_WINDOWS)` 下链 `d3d9/d3dx9/dxguid/setupapi/psapi`，`moo_dx.cpp`/`render_context.cpp` 设备面；`IF(NOT BW_IS_SERVER)` 剥离服务端依赖）、工具 **OpenGL**（`navgen` 预览，`opengl32` + `<GL/gl.h>`/`HGLRC`）、移动 **cocos2d/OpenGL ES**（Android `-lEGL -lGLESv1_CM`、iOS libs 随树）、web **Awesomium**（`BW_AWESOMIUM_SUPPORT` 门控，`web_app` → `PyAwesomiumProvider`）。平台基线：顶层 `CMakeLists.txt:57-72` 构建门仅 Windows（win32/win64）+ Linux remote-only 服务端，无 macOS 桌面分支——Linux/macOS 桌面**无图形后端**（全树 `wgl|glX|CGL|glViewport` 扫描仅命中 navgen），macOS 侧按 BW-15 开篇约定以原版样本+跨端混跑验收。缺口：`third_party/` 无 `awesomium/`（同 DCC SDK 缺口）；新版渲染栈未建（BW-11），服务端零图形后端由 BW-16-02-02 对齐。
 - [x] **BW-15-06-02 维护 DCC 宿主矩阵**。**验收** 逐插件记录可用宿主。（commit ff504c9）
   - 证据：`docs/review/bw15-06-02-dcc-host-matrix.md`——三插件两宿主：visualexporter/animationexporter → Autodesk 3ds Max（`MFXExport : SceneExport`（mfxexp.hpp:154），`.dle`，Max 库级导出 `LibDescription@1..LibVersion@4`（visualexporter.def/animationexporter.def，expmain.cpp:124-155），Max **2009–2013** 逐版本目标 max2009_exporter…max2013_exporter）；mayavisualexporter → Autodesk Maya（`MLL_EXPORT initializePlugin/uninitializePlugin`（visualmain.cpp:38/131），`.mll`，随分发 visualfileexporterscript.mel，Maya **2009–2014** 逐版本目标）。启用条件=`BW_CMAKE_TARGET=exporters`（`BWConfiguration_exporters.cmake` `EXPORTER_PROJECTS`：默认 Max/Maya 2010-13 + Max 2010-12，win32 追加 2009 组，win64 追加 maya2014，非 vc9 追加 max2013；`BW_EXPORTER`+`_SECURE_SCL=1`）；输出 `game/tools/exporter/3dsmax<ver>{,x64}/`、`maya<ver>{,x64}/`。缺口：`third_party/` 无 `3dsmax/`、`maya/` SDK 目录（外部依赖），插件二进制无法从本树构建——宿主实测（BW-15-06-03/04）需外部 DCC SDK 与宿主安装。
-- [ ] **BW-15-06-03 验收三端客户端与编辑流程**。**验收** 同一地图有可比证据。（Linux 腿注记 2026-11-26：boundless2 `02bedbb`→main（ada3706 去重）——固定地图双入口同图可比证据：apps/client `boundless-client --res docs/review/fixtures/chunk_space/res/space_00010001` 18×3 视图 896×176 软栅格 8 帧 checksum 系列二跑逐位同+TGA 630,802 B（crates/client/tests/map_display_baseline.rs 2 测），apps/editor `boundless-editor` ed_save 移 tree00 (12,0,34)→(25,0,47) 重载验证+二会话字节同（apps/editor/tests/edit_reload.rs 2 测）；Windows/macOS 腿待 runner，行保持开）
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
+- [ ] **BW-15-06-03 验收三端客户端与编辑流程**。**验收** 同一地图有可比证据。
 - [ ] **BW-15-06-04 验证外部导出的跨端读取**。**验收** 各适用消费者可打开。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 ### BW-16 目录分层、依赖方向与模块归属
 
@@ -7001,7 +6824,7 @@ Boundless 新增交付，独立位于 `extensions/vscode/`，内部拆为 `src/`
 - [x] **BW-20-02-06 验证 VS Code 的 Rust 启动调试**。**验收** 能由启动配置运行 CellApp 并命中断点。（commit aa15e2c）
   - 证据：原版结果——引用端角色进程是 C++ `bigworld_app <role>`，VS Code 调试需手配 launch.json 指向其二进制。新版结果——`src/workspace/launchConfig.ts` 的 `rustLaunchConfig(role)` 生成启动配置：`type` 按平台取 `lldb`（Linux/macOS）或 `cppvsdbg`（Windows），`program` 指向 `target/debug/boundless-server`（`apps/server` 的产物，`apps/server/Cargo.toml` [[bin]]），`args=[role]`，`env.BW_RES_PATH=<workspaceFolder>/res`，`stopAtEntry:false`；`extension.ts` 的 `boundless.setupRustDebug` 命令经同一个 `mergeLaunchJson` 并入工作区 `launch.json`，且把 `boundless.cluster.binary` 的默认值从错误的 `target/debug/server` 修正为实际产物名。证据链接——`pnpm test` 149 例全绿且 `pnpm run check` 0 错误（含 `rustLaunchConfig` 形状、Windows 调试器选择、覆盖 program/resPath、与附加配置并存的 4 例）；实跑 `sh tools/verify/rustLaunch.sh`：gdb batch 以 launch 配置同一命令行（`target/debug/boundless-server cellapp`、`BW_RES_PATH` 指向示例 res）启动 CellApp，断点命中 `server_runtime::app::run`（`crates/server-runtime/src/app.rs:46`），回溯顶两帧为 `app::run ← boundless_server::main`，脚本判 PASS。
 - [x] **BW-20-02-07 提供文档 MCP 接入配置**。**验收** 查询返回当前工作区版本文档。
-  - 证据：原版结果——引用端的文档是仓库里的 markdown（VitePress 渲染），编辑器侧没有任何检索入口，开发者只能翻目录或开网页版；引用端不存在 MCP 面。新版结果——`extensions/vscode/src/workspace/docsMcp.ts` 生成 `.vscode/mcp.json` 条目：`type: stdio`、`command` 指向 `boundless-docs-mcp`、`args` 依次为 `--root ${workspaceFolder}`、`--prefix docs`、`--version HEAD`、`--langs zh`，配置了站点地址才追加 `--docs-url`（`9623715_MCP_DEFAULTS` 与 `boundless-docs-mcp` 自己的默认值一致）；`mergeMcpJson` 与 launch.json 同一"只增不改"面——只替换自己写的那一项、用户自己的 server 原样保留，解析不出来的文件整体重写；`extension.ts` 的 `boundless.setupDocsMcp` 命令按工作区文件夹逐个写入 `.vscode/mcp.json`，新增 6 个设置 `boundless.docs.{server,root,version,prefix,langs,url}`。证据链接——`pnpm test` 160 例全绿（含新 `test/docsMcp.test.ts` 11 例）、`pnpm run check` 0 错误；实跑 `node tools/verify/docsMcp.cjs` 11/11 PASS：harness 用扩展自己的 writer 写出真实 `.vscode/mcp.json`，再按该文件里的 command/args 起真二进制（`${workspaceFolder}` 按编辑器变量语义替换）做 MCP stdio 会话——`tools/list` 只列 `search_docs`/`read_doc`；`search_docs "second edition"` 命中仅 v2 才存在的 `guide/second.md` 且 `version` 为配置给的 `HEAD`；`read_doc guide/second.md` 返回 `version=HEAD`、`commit=2b8be3d` 恰等于工作区当前 HEAD、`source=https://docs.boundless.example/guide/second.html`；同一配置把 `boundless.docs.version` 改成 `v1` 后，v2 页面零命中、`guide/entities.md` 回到 v1 文案、链接保持仓库相对 `docs/guide/entities.html`。如实登记——编辑器内的 MCP 客户端加载（自动发现 `.vscode/mcp.json`）未在真实 VS Code 里验证：本机 `/usr/bin/code` 1.144.1 可装但不跑带 GUI 的 MCP 会话，取证止于"按其写出的配置实跑真二进制并逐条核对查询结果"。
+  - 证据：原版结果——引用端的文档是仓库里的 markdown（VitePress 渲染），编辑器侧没有任何检索入口，开发者只能翻目录或开网页版；引用端不存在 MCP 面。新版结果——`extensions/vscode/src/workspace/docsMcp.ts` 生成 `.vscode/mcp.json` 条目：`type: stdio`、`command` 指向 `boundless-docs-mcp`、`args` 依次为 `--root ${workspaceFolder}`、`--prefix docs`、`--version HEAD`、`--langs zh`，配置了站点地址才追加 `--docs-url`（`DOCS_MCP_DEFAULTS` 与 `boundless-docs-mcp` 自己的默认值一致）；`mergeMcpJson` 与 launch.json 同一"只增不改"面——只替换自己写的那一项、用户自己的 server 原样保留，解析不出来的文件整体重写；`extension.ts` 的 `boundless.setupDocsMcp` 命令按工作区文件夹逐个写入 `.vscode/mcp.json`，新增 6 个设置 `boundless.docs.{server,root,version,prefix,langs,url}`。证据链接——`pnpm test` 160 例全绿（含新 `test/docsMcp.test.ts` 11 例）、`pnpm run check` 0 错误；实跑 `node tools/verify/docsMcp.cjs` 11/11 PASS：harness 用扩展自己的 writer 写出真实 `.vscode/mcp.json`，再按该文件里的 command/args 起真二进制（`${workspaceFolder}` 按编辑器变量语义替换）做 MCP stdio 会话——`tools/list` 只列 `search_docs`/`read_doc`；`search_docs "second edition"` 命中仅 v2 才存在的 `guide/second.md` 且 `version` 为配置给的 `HEAD`；`read_doc guide/second.md` 返回 `version=HEAD`、`commit=2b8be3d` 恰等于工作区当前 HEAD、`source=https://docs.boundless.example/guide/second.html`；同一配置把 `boundless.docs.version` 改成 `v1` 后，v2 页面零命中、`guide/entities.md` 回到 v1 文案、链接保持仓库相对 `docs/guide/entities.html`。如实登记——编辑器内的 MCP 客户端加载（自动发现 `.vscode/mcp.json`）未在真实 VS Code 里验证：本机 `/usr/bin/code` 1.144.1 可装但不跑带 GUI 的 MCP 会话，取证止于"按其写出的配置实跑真二进制并逐条核对查询结果"。
 
 
 #### BW-20-03 打包与三端验证
@@ -7600,110 +7423,89 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 缓存解析结果并评估预生成编解码器，衡量启动和序列化开销，锁定定义摘要和产出字节。
 
-- [x] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。（本席 `a041efd`+`9623715`：crates/entitydef/tests/entitydef_baseline.rs 三腿=冷启动 factory_create full_def(3 实体)+fantasydemo_def(5 实体)（诊断零+digest 钉住 oracle 否则不产生计时行）、编解码=两夹具全实体全属性解析默认值 add_to_stream/create_from_stream 20k 轮×每轮逐值恒等断言（11 族：标量 5+STRING/FLOAT64/ARRAY×2/FIXED_DICT×2）、暖启动同进程二次加载 digest 等冷值；记录 TSV docs/review/fixtures/entitydef-baseline/entitydef-baseline.tsv 63 行：cold 0.637/0.615ms、warm 0.448ms、标量 p50 457-474ns、FLOAT64 268ns、STRING 340ns、ARRAY 238/247ns、FIXED_DICT2 字段 817ns/3 字段 1565ns；墙钟只记录不设带；证据页 docs/review/opt-04-01-01-entitydef-baseline.md；entitydef 既有测试未动全绿）
-- [x] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。（本席 `9881c37`：FsResolver::open_section 进程级 parse 缓存（参照 resmgr/data_section_cache.hpp find/add/clear+setSize：thread_local 按全路径键、上限 1024 条溢出即清、clear_section_cache() 面；MemoryResolver 不动、仓内 FsResolver 消费者皆只读夹具）；基线 runner 起手清缓存→startup_*=缓存冷/ warm=缓存热；**比较**=同跑 cold 0.916ms vs warm 0.297ms（暖启动省 0.619ms=读+解析份额；跨记录冷值不作比因负载 40→21 档差已披露）；digest 前后同 18D00DC6 钉 oracle 恒等；entitydef 库测 247+集成全绿、覆盖 entity_description 99.31%/entity_map 99.24%/data_type 98.02%≥98；证据页 opt-04-01-01-entitydef-baseline.md OPT-04-01-02 节+TSV 滚动 canonical 记录）
-- [x] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。（本席 `f428168`：crates/entitydef/tests/entitydef_codec_gen.rs 评估原型=Kind 树载入期编译成闭包树（子经 Rc 共享、值词汇不动；write_int/truncate_integer/check_sequence_capacity 三 crate 私有助手忠复制、由字节恒等面钉住）；字节恒等腿=两夹具全 21 属性 gen 编码逐字节==解释式+两向解码均还原默认值+不支持类目（CLASS/UDO_REF/PYTHON/USER_TYPE）计数断言零；成本腿=每族 encode-only/decode-only 各 2 万轮、sink 构建在钟窗外、解码走预编码+rewind，TSV docs/review/fixtures/entitydef-baseline/codec-gen.tsv 92 行+三连跑方向全稳：标量 encode −3..−9%/decode −4..−6%、STRING −5%/−6%、ARRAY −8..−12%、**FIXED_DICT 两族反而 +0.4..+11%**（每字段 boxed 闭包间接调用吃掉省下的 match）；生成成本 7µs/21 属性无关紧要；**裁定=不采纳入引擎**——闭包树扁平族赢 3-12% 合成族输 4-11%，构建期直线单态 codegen 不可用（定义是运行期数据、参照引擎自身亦解释式分发）、标量 ~10ns 在噪声带不作契约；记录事故=首次 rustfmt 后单跑瞬时失败无 panic 留痕、同二进制 16 连跑全绿；零 src 改动=覆盖门不适用，entitydef 247+评估 2 测绿）
-- [x] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。（本席 `6ce8e4c`：crates/entitydef/tests/entitydef_rerun.rs 复跑 harness 三腿全一致——①摘要=full_def/fantasydemo_def/service_def/entity_index 四树经 factory_create 重载 digest 逐字==docs/review/reference/*_entitydef.json oracle（entity_index 无 alias.xml 容一字告警同 differential；client_integration 走 BW04_CI_RES env 未设则记 skipped，同 differential 口径）；②实体快照=fantasydemo Avatar.def（SHA e35472f0…==采集输入）+采集工具固定输入节，经参照四 pass shouldConsiderData 顺序（entity_description.cpp：base非client/base+client/cell+client/cell非client，每 pass 声明序）复现 entity-Avatar.snapshot.hex 15 字节逐字节恒等（含 INT8 输入 300→0x2c 参照截断）；③数据库行=BASE|CELL|ONLY_PERSISTENT_DATA（持久只认显式 <Persistent> 标签、缺省 false=data_description.cpp:220 readBool）+canBeOnCell 追加 position/direction/spaceID（xml_database.cpp getEntity 行公式）复现 database-Avatar.row.hex 38 字节逐字节恒等；记录 docs/review/fixtures/entitydef-baseline/def-rerun.tsv 14 行（四 digest+双 hex+双字节数+match 旗标）；**验收=产物一致，每次跑都断言**；OPT-04 段全收官）
+- [ ] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。
+- [ ] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。
+- [ ] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。
+- [ ] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。
 
 ### OPT-05-01 录制负载热点和故障基线
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `e028fbf`：crates/server-runtime/src/cellappmgr_baseline.rs 三腿合成钟 harness 在 crate 内 `#[cfg(test)] #[path]` 挂进 cellappmgr.rs（Space.root/BspInternal 私有），①分配=零面积 sliver B+热点 A 经 inform_of_load EMA 12 步（bias 0.05）爬坡，balance 一步收敛 B.ymin=ENTITY_EDGE=4000 钉死每步 EMA/每轮 A/B 范围；②回收两臂=零面积 sliver 首轮 1 CellRemoval+兄弟升 Rect::unbounded()，实面积 cell 因 growing child A 的 chunk ghost margin（Space::load_balance 从 unbounded 重导范围→chunk_bounds 不含 inflate desired→fallback A.range，chunk_limit=A.ymax-500=3500）被钉在 4000 不回收，两面对照记录；③恢复=严格 now-lastHeard>timeout 检测钉 5000ms/4tick，死信广播+BaseAppMgr 报告+双 cell 树erase 后存活 cell 占 unbounded+最后 app 死触发受控关服；ESTIMATED_INITIAL_CELL_LOAD bump 归 create_space creation seam；证据页 docs/review/opt-05-01-01-cellappmgr-baseline.md+TSV 56 行 fixtures/load-hotspot/cellappmgr-baseline.tsv；clippy/fmt 绿，server-runtime 1680 测绿，全仓 6949 passed/0 failed（基线 6948 +1））
-  - 双交付 FLAG（2026-11-26，本席登记）：main 另收平行腿 `e028fbf`（cellappmgr_baseline.rs 三腿合成钟 harness 入 cellappmgr.rs）与本席 `5120dea`+`0fbfa8f`（load/src/hotspot.rs run_hotspot_baseline）同面异实现，待主席择一。
-- [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（commit cd056fc：cellappmgr_tuning.rs 三固定场景对比——①热点爬坡跨 EMA bias 0.02/0.05(出货)/0.1/0.2：达阈 informs 52/21/10/5 严格反序、落点几何全同(4000 entity edge 两 pass)，bias 只换探测延迟不换落点；②反转跨 aggression 两分支：反转臂首 pass 减半 0.5 后 ×1.0718/pass 回升(8 pass 0.8123)、延续臂恒 1.0，closest_limit 单调故两臂落点同(5000=level1)，阻尼=抗振荡面零几何代价；③回收 drain 跨 chunk-limit 开关：关=1 pass 完成(CellRemoval 1+幸存者升 unbounded)、开=线被幸存者 chunk ghost margin 钉在 4000(基线 held 面)，空 retiring cell 按参照 Space::writeEntityBoundsForEdge 报无界边+offload floor(这才让 entity limit 可达世界边)；证据页 docs/review/opt-05-01-02-load-tuning-comparison.md+TSV 27 行 fixtures/load-hotspot/cellappmgr-tuning.tsv；server-runtime 1702 绿、全仓 6950 passed/0 failed）；⚠️ FLAG 平行交付未决 2026-11-26：bw14-script-host `a577c5c`+修 `9563f2e`（balance_baseline.rs 312 行真 CellAppMgr 96 tick 双相位+ScheduleLedger+BalanceTuning seam 七旋钮含 safety_bound/safety_ratio+cellappmgr.rs +122+证据页，lane-only）vs main 落地 bw15 `cd056fc` 面（cellappmgr_tuning.rs 三固定场景对比），异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `cd056fc` 面（cellappmgr_tuning.rs 三固定场景对比，已在树、server-runtime 全绿）为本行交付面；bw14 `a577c5c`+`9563f2e`（balance_baseline.rs）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：择 main `cd056fc` 面（cellappmgr_tuning.rs 三固定场景对比）为本行交付面；本席 lane-only `a577c5c`+修 `9563f2e`（balance_baseline.rs 312 行+BalanceTuning seam 七旋钮）转存档记录，随 lane 并入由主席处置。
-- [x] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。(2026-11-26 lane/bw15-platform fd21b51→main 51bf749+证据 0407552→515351b：复跑三面零失败——①迁移面 cargo test -p server-runtime --lib -- migrat offload teleport 75/75 绿（entity_creator mailbox/ghost 跨 space 传送可见集/offload 两侧恰一 real/控制器恢复/message_redirect 切换中恰一次）；②关服面 -- shutdown mixed 43/43 绿（shutdown 阶段线值对参考 enum/完成队列按序 drain/server_app init 失败也跑 fini/space 空 cell 销毁回收）；③混部面 el7_mixed_deploy --ignored 1/1 绿 5.01s，EL7 真二进制 pid/整机查询+addTCP/add 双版本+TCP 注册 22B+记录帧 45B×4+UDP×3+mldb 三标记+协议版本 10，TSV 与已提交 fixture 逐行 IDENTICAL；④附加 lifecycle_scenario.rs 种子场景 6 测绿（seed 41 复现/entity restore 一致/进程阶段与 task drain/replay tail 终态可复现，无墙钟采样）；本席 main 树复核=上述三面本机重跑数字；坑=EL7_MIXED_OUT 须文件路径传目录 IsADirectory)
-  - main 已收（台账席 1a21d7a）：本席 `fd21b51`→main `51bf749`（逐字节同）+复跑证 `515351b`，本席勾保持；main 行文误标 lane/bw15-platform，实为 lane/bw14-script-host 本席交付。
+- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。
+- [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。
+- [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 
 ### OPT-06-01 登录与资源下载基线
 
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
-- [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。(2026-11-26 lane/bw15-platform 5ec0620→main 4c29980+证据 afee8b2→fcfa88f：crates/load/src/login_baseline.rs 组合既有面记录三族数字——峰值=login hurricane online 序列最大值（seed 固定可复现）；拒绝率=FD 预算拒绝 login_refusal_rate=refused/(admitted+refused) 单列（与「发出后失败」分账，login_success_rate 仍参考 admitted/attempts 语义）；延迟=资源下载分块 tick 地板 ceil(payload/BUNDLE_BYTES)（参考 ServerDownloads::add_to_bundle 每 mini-tick 一 bundle 载荷）+队列驻留字节；**读法警告：离线面是模拟时间无墙钟 RTT，延迟=确定性地板非实测往返**；记录运行=保存夹具 login-hurricane.xml seed 20261123/FD 500×FD_PER_BOT+1/载荷 4096B→attempts 500/admitted 500/refused 177/online_peak 500/refusal_rate 0.26145/download_ticks 4/queue_bytes 4096，夹具 docs/review/fixtures/load/login-baseline.report.json；5 单测钉 ceil 分块/队列字节/峰值拒绝记录/seed 复现/预算拒绝臂；本席 main 树 load --lib 174 绿（含 login_baseline 6）)；⚠️ FLAG 平行交付未决 2026-11-26（bw15 `cca778a` 登记）：bw14 席 `cc648b5`（crates/server-runtime/src/login_baseline.rs 586 行 seed 登录+下载基线账本，lane-only）vs main 落地 bw15 `4c29980`（crates/load/src/login_baseline.rs，经 5ec0620 收编入 main），异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `4c29980` 面（load/login_baseline.rs，5 测绿在树）为本行交付面；bw14 `cc648b5`（server-runtime/login_baseline.rs 586 行）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：择 main `4c29980` 面（load/login_baseline.rs 三族数字）为本行交付面；本席 lane-only `cc648b5`（server-runtime/login_baseline.rs 586 行 seed 洪泛账本）转存档记录。
-- [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。(2026-11-26 lane/bw15-platform 083c598→main 790332b+证据 83f6caa：fleet.rs botsForLogOnRetry_ 排水从每条到期 bot 单独 Vec::remove 改单遍分区（mem::take 遍历 log_on_retry_time()<now 到期者 log_on() 后推回，O(n²)→O(n)，队序/重登序不变固定 seed 派遣序不变）；新测钉 4 到期条队序重登+1 留队；bench login_surge.rs parked 64/512 同刻到期单 tick 排水+Throughput::Elements；A/B 对照 taskset -c 6 钉核交错 6 轮：drain_64 13.93→7.39µs 0.530（1.9×）、drain_512 776→80µs 0.104（9.65×）每轮候选全优无交叉=效应远超噪声；本席 main 树 bench 跑通（drain_512 ~90µs 级）load --lib 175 绿，clippy 净，smoke.rs 三处 expect(&format!) 被遮 lint 顺手清（main 已有此修 auto-merge 消重）)；⚠️ FLAG 平行交付未决 2026-11-26（bw10 `05c581c` 登记）：bw14-script-host `3ced450`（crates/server-runtime/src/login_tuning.rs 115 行+login_baseline.rs 扩展登录排队尾延迟对比，lane-only）vs main 落地 bw15 `790332b` 单遍排水（fleet.rs O(n²)→O(n)+benches/login_surge.rs），异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `790332b` 面（fleet.rs 单遍排水，A/B drain_512 9.65× 零交叉在树）为本行交付面；bw14 `3ced450`（login_tuning.rs）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：择 main `790332b` 面（fleet.rs 单遍排水 9.65×）为本行交付面；本席 lane-only `3ced450`（login_tuning.rs 排队尾延迟对比）转存档记录。
-- [x] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。(2026-11-26 lane/bw15-platform efabd67→main 6ffd9af+bench 6318f61→bdf1327+证据 5c37709→c23987a：data_download.rs 装配 segments.concat()→assemble() 先按总长 with_capacity 一次分配再按值逐段 move 拷入——concat 峰值活数据=2×流长（完整结果+全部段并存）按值消费恒=1×流长，并发下载同刻完成时进程峰值 RSS 结构性减半；新测钉 capacity==6 精确一次分配+空段臂，其余 7 行为测不动（到达序拼接语义不变）；bench download_assembly complete_64/512；A/B 钉核交错 6 轮：complete_64 0.918/complete_512 0.845 轮间交叉=墙钟噪声内无可靠收益，**诚实判读=内存半边结构性 0.5、传输时长半边被 bundle 分块契约钉死（ServerDownloads::add_to_bundle 每 mini-tick 一 bundle，与参考一致，对照结论非优化项）**；本席 main 树 sr lib 1734 绿+bench 跑通，clippy 净)；⚠️ FLAG 平行交付未决 2026-11-26 两路：bw14-script-host `3e4839c`（crates/server-runtime/src/download_tuning.rs 263 行下载时长+内存对比，lane-only）与 bw16-18 `42d6686`+`238aab3`（crates/server-runtime/src/server_download.rs drain 直排+benches/download_drain.rs+legacy_queue.rs+tests/download_drain_alloc.rs+证据页 download-drain-server-side.md+TSV，lane-only）vs main 落地 bw15 `6ffd9af` assemble 预装配（data_download.rs 峰值活数据 2×→1×），三面异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `6ffd9af` 面（data_download.rs 客户端组装，峰值活数据 2×→1× 在树）为本行交付面；bw16-18 `42d6686` 服务器侧排出面（其页自报 drain_256 0.69-0.72×）与 bw14 `3e4839c` 对比面均记为补充/备选 lane-only 归档不删——三者异文件零重叠，如需并入补充面或置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：三路择 main `6ffd9af` 面（data_download.rs 预装配）为本行交付面；本席 lane-only `3e4839c`（download_tuning.rs 263 行）与 bw16-18 `42d6686`+`238aab3`（server_download.rs drain 直排）均转存档记录。
-- [x] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。(2026-11-26 lane/bw15-platform 838a54a→main 2f27440：复跑行零代码改动三条面全绿判一致——①重复登录 duplicate_auth.rs 5/5（同账号二次登录原位改写唯一映射/并发拒不污染/checkout 中拒不计尝试/logoff 后仍单记录/自定义扩展可重复）；②重连 -- relogon relogin 28/28（relogon.rs 9 态机回复码族+baseapp_relogon.rs 13 web/proxy 复用族+log_on_records 2+login_entity 2+headless_client 1，load 重连链 3 测+reconnect.xml 场景加载）；③旧客户端 loginapp.rs 版本面 10/10（三旧版本 BadProtocolVersion 且先于凭据参数拒/supports 严格相等/截断流 MalformedRequest/线上序反自然序回放）；ci/load.sh 4 lane PASS 6/6 场景入带；本席 main 树复核=同组腿本机重跑同数全绿)；⚠️ FLAG 平行交付未决 2026-11-26（bw10 `05c581c` 登记）：bw14-script-host `da80f8e`（crates/server-runtime/src/login_rerun.rs 422 行重复登录+重连复跑面，lane-only）vs main 落地 bw15 `2f27440` 复跑一致性面，异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `2f27440` 面（复跑一致性三面全绿在树）为本行交付面；bw14 `da80f8e`（login_rerun.rs 422 行）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：择 main `2f27440` 面（复跑一致性）为本行交付面；本席 lane-only `da80f8e`（login_rerun.rs 422 行复跑面）转存档记录。
+- [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。
+- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
+- [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
+- [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
 
 ### OPT-07-01 备份和归档基线
 
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
-- [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。19c4d4d（backup_baseline.rs 48 实体种子舰队过真实备份面：带宽逐 tick 1396/1410/1412×4 共 8454 字节 6 tick 清队列、收发队列峰各 48、接管 48/48 恢复且属性全等、归档恢复耗时 8 tick 重持久化 24/24 且逐实体往返核等；4 测 98.31% 行 100% 区域）
-- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。9abf58e（backup_tuning.rs BackupTuning seam(Default=逐位复现由测钉)同种子同负载双跑：slice 8→16+period 8→4，队列 6→3 tick、恢复 8→4 tick，代价=每 tick 带宽峰翻倍(1412→2824)但字节总恒等 8454(方向断言诚实)；same_load 钉同舰队/同持久集/同字节/同恢复；4 测 100% 行）
-- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。4c19ee7（shared_data_baseline.rs+shared_data_tuning.rs 96 变更过真实双 mgr 链(set/del 四 scope+forward/relay 环 4 BaseApp+3 CellApp)：shipped 575 消息(base284/cell219/fwd24/relay48) vs 抑制 no-op 写 444(216/174/17/37)=省 131(−22.8%)，21 次 no-op 放大为全链腿消去(全局 set=5/转发 set=9/cell=3)；终态三权威图逐位相等(same_load 钉)；跨种子形状钉；9 测 baseline 98.58%+tuning 100%）
-- [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。2fbfcf8（takeover_rerun.rs 12 实体种子舰队过真实备份面后源亡接管 restore 12/12 属性全等；16 变更建双 mgr 权威图后按 count+pairs 恢复流形状落盘、全新 mgr 对经真实 recover_shared_data_from_stream 读回=四图逐位等(2/4/2/4 条目)；跨种子形状钉；4 测 99.65% 行 100% 区域，唯一缺行=属性不匹配假臂被断言正确性排除）
-
+- [ ] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。
+- [ ] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。
+- [ ] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。
+- [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。
 
 ### OPT-08-01 密集 AOI 基线
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
-- [x] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。已交付 eee8fde：crates/server-runtime/src/aoi_baseline.rs 全 shipped 栈逐 tick 接线（cross 范围列表 move_entity shuffle ±0.75m 确定步/AoI trigger 跨界喂 witness add_to_aoi→flush→EnterAoI→request_entity_update 回应→CreateEntity/vision trigger 喂 vision_update 1.2rad 锥 28m 每 tick 清晰地形/Witness::update 预算调度 setWitnessCapacity(64000,10)=772B/tick 密集下绑定）。120 实体 10×12 格 4m 间距单观察者：账本=48+16 tick、tick0 创建爆发 289 消息 2704B（120 EnterAoI+120 CreateEntity）、tick1 首见爆发 44 starts、稳态窗(8..48) 4654B ≈116B/tick 预算绑死、总广播 5708 消息 9188B、AoI 跨界 120 进 0 出、seeing churn 77/31；迁移腿=handover 46 可见→目的地静默种子 46→真新 id 重公告 12、重复公告 0(diff 契约)、2 tick 收敛到 native 观察者集合(42)。断言全结构性（爆发一次性/稳态不超预算且恒发/种子无声/start 永不命中已持有 id/收敛 native/全账本逐 tick 复跑恒等）；墙钟探针(seeing 4.0ms/scheduling 392ms over 64 tick)只打印。面发现：目的地 vision trigger 必须由 vision_start_real 新建——预建 trigger 令 restore 的 set_vision(None→Some) 走清空路径、entities_in_vision_range 留空种子盲走；迁移实体 startReal 重建 trigger 正是 range 填充正确的机理。docs/review/opt-08-01-01-dense-aoi-baseline.md。门禁 server-runtime lib 1748 绿/fmt/clippy 净。
-- [x] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。已交付 98725ed：crates/server-runtime/src/aoi_tuning.rs 同负载双比较（OPT-08-01-01 种子/轨迹/120 实体场全 same-load）。①扇区预过滤索引=seeing pass 前按水平角>vision_angle+0.25rad 丢弃目标（水平朝向下 3D 锥角≤水平角⇒保守不过判）：48 tick 走行 5760→2471 行=省 57.1% 内圈、可见集/seeing-start 逐 tick 零失配(48/48 恒等)、探针墙钟 2.645→1.917ms；范围列表已索引距离故收益有界=仅去背向扇区。②Witness 调度扫描=调度器操作面 setWitnessCapacity 64000/128000/256000 bps(772/1572/3172B)：覆盖期预算绑死(爆发 2704B 赤字回扣)4×带宽 3→2 tick；稳态广播量对带宽不敏感(~116B/tick ≪ 772B 预算)——MAX_PRIORITY_DELTA 窗[front,front+5.0) 先于预算清空=稳态限流者是窗宽不是链路；两容量全覆盖(窗饿死人无)单调性断言；per-entity 覆盖从 bundle EntityUpdate id 观测。等值/单调全 assert、墙钟只打印。docs/review/opt-08-01-02-aoi-index-witness-scheduling.md。门禁 server-runtime lib 1750 绿/fmt/clippy 净。
-- [x] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。(2026-11-26 本席 lane/bw14-script-host 5e4181c:space_parallel.rs 复用 BW-08-05-01 decide_offload/collect_offload 实面,120 实体密场按 x=16m 分裂面两侧驻扎,AoI 基线同款 ±0.75m 步表真跨面;台账 crossings=2/offloads=2(逐 crossing 恰一次,落点=p_cell_at 所含侧)/stays=118,check_ms≈0.009-0.012 probe 打印不断言;分支规则 coordinate<position 把分界平面判给右子(x/z 双轴实证,骑面者归左必迁 OffloadTo(FAR));四 Stay 门(未创建/死通道/缺通道项=死/删除挂起)+disabled cell_should_offload 全 Stay;重跑台账恒等;4 测,lib 1754 全绿;review=docs/review/opt-08-01-03-space-parallel.md)
-- [x] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。(2026-11-26 本席 lane/bw14-script-host 616a885:aoi_rerun.rs 复跑密场景两遍逐 tick 审计,TickLedger 增有序 starts/stops/enters/leaves+整份 bundle 发送序;状态正确=视距触发器布点=窗谓词 (sub-range<x≤sub+range) 双轴、可见集=扫描锥真值(update gate 读控制器公开 tick 计数,run tick 用现位置/skip tick 恒等携带集)、start/stop 差分自洽(starts 只打未见 id/stops 只打持有 id/差分复现 visible_entities)、EnterAoI/LeaveAoI 消息=触发器跨越、witness AoI 映=500m 窗、bundle 逐实体序 EnterAoI→CreateEntity→EntityUpdate 更新不先于创建;迁移腿 destination+native 双世界 16 tick 全审,seed 静默 46→46、held 重报=0、终态 visible 42/range 布点/AoI 映三层全等 native;坑=client bundle 是客户端面向 AoI 态唯一重放源,tick 0 120 条 EnterAoI=120 跨越,二次重放会重复计数——两视图须对账不能叠加;2 测,lib 1756 全绿;review=docs/review/opt-08-01-04-aoi-rerun-state.md)
-
+- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。
+- [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。
+- [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。
+- [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。
 
 ### OPT-09-01 分别采集 MySQL 与 PostgreSQL 基线
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
-- [x] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。（opt-09-db-baseline 席 `da4e411`，lane/opt-09-db-baseline，main=`e59ca31`：crates/db-postgres/tests/store_baseline.rs 6 测=512 行确定性语料同一数据集落 MySQL（DDL 对照参考 db_storage_mysql 布局+值类型逐 kind 对）与 PostgreSQL（JSONB 嵌套列 codec 往返）双后端，schema/确定性/嵌套列各单测；TSV docs/review/fixtures/store-baseline/store-baseline.tsv 22 行，证据页 docs/review/opt-09-01-01-store-baseline.md；workspace 新增 `mysql` 依赖（minimal-rust）；本席 main 复测 6 绿。⚠️ 与 bw14-script-host `7024fb1` 平行交付 FLAG 待主席择一）→ **主席裁定 2026-11-26**：择 main `e59ca31` 面（lane/opt-09-db-baseline `da4e411` 收编形，512 行单数据集双后端在树）为本行交付面；bw14 `7024fb1` lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 本席 lane-only 交付存档（2026-11-26 主席裁定择 main `e59ca31` 面，opt-09-db-baseline `da4e411` 收编形）：本席 `7024fb1`（baseline_dataset.sql 双真机采集）转存档记录。
-- [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。（opt-09-db-baseline 席 `da9a135`，lane/opt-09-db-baseline，main=`04f5d37`：crates/db-postgres/tests/store_pool_candidates.rs 3 测=连接池与预编译语句候选对照（参考 `numConnections_` 默认 5 长连会话+每线程一连接+启动期预编译实体 SQL 模板两形），各后端延迟与吞吐逐形报告且回读恒等；TSV docs/review/fixtures/store-pool/pool-candidates.tsv 48 行，证据页 docs/review/opt-09-01-02-store-pool.md；本席 main 复测 3 绿）
-  - 本席 lane-only 交付存档（main 面=opt-09 lane `da9a135`→`04f5d37`）：本席 `9dda748`（pool_merge_eval.rs 三执行形状真 PG 对比）转存档记录。
-- [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。（opt-09-db-baseline 席 `cb65282`，lane/opt-09-db-baseline，main=`8b1fb8a`：crates/db-postgres/tests/store_commit_candidates.rs 4 测=实体写缓冲进 Transaction 按归档周期一 `COMMIT`（参考 sqlite_database.cpp 131-177+db_config 5s 默认）与显式 WRITE_EXPLICIT 两臂提交时长+归档整合恢复时长报告，落库回读逐字段等；TSV docs/review/fixtures/store-commit/commit-candidates.tsv 16 行，证据页 docs/review/opt-09-01-03-store-commit.md；本席 main 复测 4 绿）
-  - 本席 lane-only 交付存档（main 面=opt-09 lane `cb65282`→`8b1fb8a`）：本席 `01d391c`（archive_batch_eval.rs 三写形真 PG 对比）转存档记录。
-- [x] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。（opt-09-db-baseline 席 `7663701`，lane/opt-09-db-baseline，main=`3a7b9d0`：crates/db-postgres/tests/store_recovery.rs 3 测=参考 MySqlBackgroundTask::doBackgroundTask 契约复跑——可重试失败恰一次重试（attempts 2/on_retry 1）、回滚批零幸存行、事务外断连恰一次自动恢复+事务内手动重连；恢复后数据一致计数钉死；TSV docs/review/fixtures/store-recovery/recovery.tsv 21 行，证据页 docs/review/opt-09-01-04-store-recovery.md；本席 main 复测 3 绿）
-  - 本席 lane-only 交付存档（main 面=opt-09 lane `7663701`→`3a7b9d0`）：本席 `f09727b`（rerun_recovery.rs 三腿复跑）转存档记录。
+- [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。
+- [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
+- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
+- [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
 
 ### OPT-10-01 地图加载和查询基线
 
 优化空间流式装载、碰撞走查和导航缓存。比较峰值内存、场景冷启动和查询尾延迟，核对坐标与碰撞结果。
 
-- [x] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。(2026-11-26 本席 lane/bw14-script-host 37ec32a:crates/chunk/tests/map_load_baseline.rs 对原版夹具空间(docs/review/fixtures/chunk_space 18×2 网格)走全套流式面=解析 mapping→gather_chunks 枚举 37 候选→load_and_bind 绑 6 个 .chunk→focus→双半板地形 slab 过 focussed add_obstacle 门,整段冷启动计数分配器(OPT-01-01-01 同款 thread-local)+VmRSS 包夹;保存:冷启 1.6-2.5ms/2025 allocs/163790 bytes/rss Δ≈428kB,find_chunk_from_point 100 探针 p50 0.53µs/p99 1.7µs,collide findDropPoint 形 100 射线(50m→-10m 止于 10m 板) p50 1.8µs/p99 18.7µs;结构账断言且重跑恒等:绑集=6 文件、逐探针命中属主 chunk、逐射线 40m 处止板(±1e-3)、绑序/答案/距离/分配数全复现(2025/163790 双跑);墙钟与内存 probe 打印不断言;chunk 188 测全绿;review=docs/review/opt-10-01-01-map-load-baseline.md)
-  - main 已收（台账席，2026-11-26）：本席 `37ec32a`→main `5d88b28`（逐字节镜像，patch-id 同），本席勾保持。
-- [x] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。（2026-11-26 lane/bw14-script-host 7fc6d76：crates/chunk/tests/map_stream_opt.rs 走 shipped scan 卸两格重载全周期，候选=BwResource 段缓存 LRU 同 load_and_bind 解析面 vs 原始读+解析基线；峰值内存=计数分配器 LIVE 高水位 PEAK 单元，报告见 docs/review/opt-10-01-02-map-stream-opt.md——冷缓存填付 write_to_string 尺寸化 +469 allocs 更慢，重载 3.77ms/759 vs 原始 10.46ms/931，热全空间 1.50ms/1132 vs 冷 2.97ms/2025；结构面断言：缓存段 PartialEq 同树、双侧 bound/reloaded/finds/dists 全等、周期复跑恒等；墙钟探针数据只印不断言，allocs/peak 复跑精确复现；chunk 门禁 190 绿）
-  - main 已收（台账席，2026-11-26）：本席 `7fc6d76`→main `ac2d93d`（逐字节镜像），本席勾保持。
-- [x] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。（2026-11-26 lane/bw14-script-host bfde122：crates/client/tests/query_cache_opt.rs 双腿——导航=六单点集 permissive 链全 outside chunk，缓存面 find_path ReadWriteCache 骑成员 NavigatorCache 逐跳 vs 重算面 navigate_path_points/findFullPath 每调 scratch 缓存，同一批起点；碰撞=find_drop_point 打 BW-10-07-04 clientquery 夹具世界六 RAY 探针×40 重复；报告 docs/review/opt-10-01-03-query-cache-opt.md——缓存填跳 47 allocs 后四跳各 8 allocs（set path 尺寸 [6,5,4,3,2] 弹尽=命中臂逐跳行使），缓存总 79 vs 重算总 281（3.6× 省），复跑账 [47,8,8,8,8] 精确恒等；碰撞尾 p50 1.7-6.8µs/p99 至 26.3µs（GHOLED 格走查跨柱界），40 重复逐探针位级恒等（距离/落点/三角形/miss）；结构断言：逐跳进一格、末跳答终点、重算路线=共享穿越序列+隐藏穿越+裁剪终点（面发现：findPath 末跳换原始 dst 藏终点集穿越 vs findFullPath 保留+裁剪，两面对比共享序列各钉自己终点）、缓存侧分配严格更少；墙钟 probe 只印不断言；client 门禁 868 绿）
-  - main 已收（台账席，2026-11-26）：本席 `bfde122`→main `fafbe51`（逐字节镜像），本席勾保持。
-- [x] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。（2026-11-26 lane/bw14-script-host eb163d4：crates/client/tests/map_rerun_fixtures.rs 双腿复跑——路径=BW-10-07-03 genmap 双 chunk 世界按真相绑序重绑，五条 XPATH 探针对走 find_path ReadWriteCache 缓存步进面，源集侧逐跳钉在真相链上有序子序列（平滑可抽直不可绕），终点=真相解析终点（ACROSS 绕洞/RAMP 上坡/AROUND/SEAM A 侧 [wp0,wp4,wp3]+终点 B wp7/SEAMBA 终点 A wp3），五条复跑恒等；碰撞=chunk_space 夹具图走 OPT-10-01-02 缓存解析面 load_and_bind 绑 6 文件+参考地形 slab 过 focussed 门，100 探针格走客户端 findDropPoint 全部 40m 处止 10m 板±1e-3+格心解析属主 chunk，第二遍位级恒等；面发现两条：远侧跳=walk 面自有 for_destination 目标解析可落在原始 A* 链外邻点（源集侧才是夹具实质故严钉）、TOUR 不入走查（XPATHNONE 钉一次性 A* 面=genmap_load 已复放，walk 面每调只跨一门按构造可合法走完）——见 docs/review/opt-10-01-04-map-rerun-fixtures.md；client 门禁 870 绿）
-  - main 已收（台账席，2026-11-26）：本席 `eb163d4`→main `93a1576`（逐字节镜像），本席勾保持。
-
+- [ ] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。
+- [ ] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。
+- [ ] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。
+- [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
 
 ### OPT-11-01 三端固定镜头基线
 
 优化各端 GPU 上传、渲染批次、资源流与客户端帧调度。比较帧时间和显存，用固定镜头做视觉回归。
 
-- [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。(2026-11-26 lane/bw14-script-host 877e016：crates/client/tests/render_baseline_opt.rs 三端(linux/windows/macos=BW-11-04-07 可比集)各走同一固定镜头=DeviceConfig::default() 640×480 RGBA8 +64 帧 check_device→scene.step→present shipped 设备面；帧时间=每帧 Instant 只印不断言（本机 debug 面 p50 18.8-19.5ms/帧=307200 set_pixel+FNV，逐端逐帧 192 行 FRAME-TIME 落 docs/review/opt-11-01-01-render-baseline.md）；显存=计数分配器 LIVE+PEAK 高水位（OPT-10-01-02 变体）结构账断言：设备创建 2 allocs/1228848 bytes（640×480×4=1228800 背板+48 bytes 计数器 Arc），逐帧 0 allocs/0 bytes（present 原地画+摘要无上载抖动），整程峰值=创建足迹 1228848 恒不涨；固定镜头两证=新设备直接步进到帧序号复现该帧摘要（1/7/31/64）+全账复跑恒等；三端摘要逐帧全等+分配账全等；saved 基线钉 1..=8+64 帧摘要常量+整程内存账常量（光栅/场景/设备内存任一变化即触发，OPT-11-01-04 复跑同钉）；client 门禁 872 绿）
-- [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。(2026-11-26 lane/bw14-script-host 5313db6：crates/client/tests/render_batch_opt.rs 双面上传评估——shipped 面=TestScene::draw 逐像素 set_pixel（640×480 每帧 307200 次写）vs 批量候选=同像素数学走 shipped 批原语（整幅 fill 背景+标记列块逐行 slice fill，每帧 481 次写=1+480）；三端(linux/windows/macos)各 64 帧画+摘要分开计时对比（FRAME-TIME 逐帧 192 行+BATCH-TAIL 落 docs/review/opt-11-01-02-render-batch-opt.md）：批量面画半 p50 1.97-2.10ms vs shipped 15.05-17.36ms=7-8× 省，帧时间整体 ~20ms→~6.6ms，摘要半与面无关（同像素同 FNV，两端面在每端内一致本身即可比性验证）；结构断言：逐帧全像素向量相等（64 帧×3 端）+摘要相等+Device::present 真设备面摘要步走=计时面所骑 shipped walk+双面零分配+连续帧摘要必异（固定镜头下动画真实）+三端账逐帧全等+复跑恒等；墙钟 probe 只印不断言；评估结论=整段画半收益全在写形状 307200→481，批量候选不换契约（像素恒等）不加内存（仍零分配），OPT-11-01-01 saved 摘要钉两面都须答；client 门禁 874 绿）
-- [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。(2026-11-26 lane/bw14-script-host 5535b86：crates/client/tests/render_stream_sched_opt.rs 基线固定镜头(640×480, 64 帧)走 shipped 帧调度面 FrameLoop::run_frame（Tick→UpdateAnimations→Draw 逐帧 canonical+hooks 按相序断言，64 帧×3 端），六个排程切图帧(8/16/24/32/40/48)走 shipped load_and_bind 把参考夹具图 37 候选按扫描序分六批流进活空间；单 tracked 区跨全程=逐帧 allocs 增量+live 轨迹连续；切图报告（结构断言）：切图帧恰落在排程帧、并集=probe 全集 6 chunk、逐切图帧 allocs 954/32/32/32/32/128 严格大于全部稳帧(≤9)——分配账即切图/长帧的结构识别；内存=总 1729 allocs/峰值 1281573/终 live 1280327（流进的空间骑在设备 1228848 基线上），复跑恒等；长帧报告（probe 只印不断言）：本调试 runner 墙钟尾被 OS 抖动主导（最慢帧是稳帧 allocs=8 达 27-76ms 非切图帧），逐帧 192 行+切图行+每端 top-5 落 docs/review/opt-11-01-03-render-stream-sched-opt.md；夹具发现=第六绑 chunk 是分隔块 001x000x/sep/00110000o（标识符是路径非格胞，格胞中心解析只盖四个 hex 外块）；收尾四外块 find_chunk_from_point 各自格胞中心归位；client 门禁 876 绿）
-- [x] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。(2026-11-26 lane/bw14-script-host 96d8f67：crates/client/tests/render_visual_rerun.rs 三端复跑 OPT-11-01-01 saved 基线固定镜头（640×480, 64 帧）：钉帧 1..=8+64 摘要逐帧对上 saved 记录（首走+复走双验）；容差=复走间钉帧逐像素 differing_pixels=0 断言位级相等（确定性面容差下限=位，不设预算）——连 OPT-11-01-02 批量候选面也同满足：64 帧逐帧答 walked 摘要+钉帧批量像素 vs shipped 背板差 0；内存账复跑=saved 数字（走查区内 2 allocs/峰值 1228848，帧仍不抬高）；截图面（ScreenCopy::capture→TGA，BW-11-04-07 通道）钉帧 1/8/64 逐帧捕获=18 字节头+1228800 帧体，三端逐帧字节相等+第二遍复跑字节恒等（视觉回归产物自身复现）；OPT-11-01 簇收官——基线/上传批次/流与调度/视觉回归四面互相咬合（saved 摘要钉三行共答）；client 门禁 878 绿）
-
+- [ ] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。
+- [ ] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。
+- [ ] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。
+- [ ] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。
 
 ### OPT-12-01 各观测通道开销
 
 降低日志、Watcher、Profiler 的观测成本。验证背压、关闭观测后的开销及新旧工具查询兼容。
 
-- [x] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。(661e12a)
-- [x] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。(9a74213)
-- [x] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。(f4fce4f)
-
+- [ ] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。
+- [ ] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。
+- [ ] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。
 
 ### OPT-13-01 冷构建、增量与编辑器加载
 
 优化依赖缓存、并行转换和编辑器加载。比较冷构建、增量构建与大地图编辑时间，校验可复现产物。
 
-- [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。(1fd4739)
-- [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。(663dc8c)
-- [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。(`827ed8e`)
-- [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。(2026-11-26 补勾（交付 b981ae7 已在树，勾行遗漏）：crates/asset-pipeline/tests/asset_hash_format.rs 四测复跑 4/4 绿——hash64 五向量钉原版 bw_hash64.cpp FNV-1a 含 LE-integer+combine 契约（combined 0x85562B3F62384861）；SpaceConverter 真 space 两次独立转换逐字节+摘要全等（213B/3 sections，原版读者树读回 models/box.model|models/spikes.model）；DependencyList 精确哈希 4 输入 1 输出（primary 0x3A31A0D27AFBDAAB/full 0x39F4CDF311678C81）；res_packer 夹具两跑逐字节全等（177B×2）+原版 EL7 产物 bw.packed 经本包读者树读回全等（tree_equal=true）；墙钟 ASSET-FMT 只印不断言；docs/review/opt-13-01-04-asset-hash-format.md 补档）
-
+- [ ] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。
+- [ ] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。
+- [ ] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。
+- [ ] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。
 
 ### OPT-14-01 发布包尺寸及首次运行
 
@@ -7717,44 +7519,34 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（Linux 腿已在 main：bw15-platform 56c2673→f6107e8，platform io_timer_baseline.rs 1 测：写 30.33µs/读 9.04µs/replace 55.81µs/定时器分辨率 1µs/wakeup 0.95µs；bw14-script-host 另起平行实现 7081674→未进 main，patch-id 与 main 版不同——主席择一；Windows/macOS 腿未齐故行保持开）→ **主席裁定 2026-11-26**：Linux 腿择 main `f6107e8` 面为准；bw14 `7081674` 平行实现 lane-only 归档不删；行仍开待 Windows/macOS 腿，全腿到齐后按行验收勾。
-  - 主席裁定 2026-11-26（main 行内）：Linux 腿择 main `f6107e8` 面（bw15 `56c2673`）为准，行保持开待 Windows/macOS 腿；本席 lane-only `7081674`（13 probe+tests/baseline 目录）转存档记录，随 lane 并入由主席处置。
-  - 注记（2026-11-26，台账席）：Linux 腿已落——bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿。行保持开——「各平台」待 Windows/macOS 腿（三端 runner，BW-15-05-01）后补测再勾。
-- [x] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。(2026-11-26 lane/bw14-script-host 2f77126→main 25e40c7：crates/client/tests/render_backend_baseline.rs 按后端登记表采集三问——新树唯一出货像素后端=Device 下软件光栅器（参照侧 D3D9/OpenGL/cocos2d/Awesomium 四后端仅 BW-15-06-01 事实非移植，BACKENDS 留位即插）；设备面结构断言 SoftwareDevice 640×480 adapter=0 307200px RGBA8+帧序 1..=64 单设备对象+status=Ok+leaked()=0；驱动面=执行环境文本（CPU/核/OS/内核 probe 只印不断言）；帧时=固定镜头 check_device→step→present 64 帧逐帧 FRAME-TIME+FRAME-TAIL 报告，min/median/p99/max 记运行值不断言；结构契约逐相邻帧摘要异+帧 1..=8/64 复现 OPT-11-01-01 saved 钉+帧 1/7/31/64 纯帧序号复现+复跑恒等；提交目录 tests/baseline/render-backend-baseline.tsv 十列 linux-x86_64=measured，macos-arm64/windows-x86_64=pending rows 带 BW-15-04/BW-15-03 blocker 不编数字，语法检查拒 pending 带测量/未知后端/重复对/非数字/测量平台缺行；client 861 绿+集成全绿，clippy 净；本机 2 测绿)
-  - main 已收（台账席，2026-11-26）：本席 `2f77126`→main `25e40c7`（cherry-pick，取本席版非 bw15 腿），本席勾保持为交付记录。
-- [x] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。(2026-11-26 lane/bw14-script-host 3761c24→main 117a588：crates/platform/tests/platform_opt_parity.rs——同套协议场景两臂比结果：泛化 sendto/recvfrom 逐数据报 vs 批 sendmmsg/recvmmsg 逐窗口，同一 loopback UDP 对共发送套接字源三元组可比；256 数据报逐报字节+序恒等（内嵌大端序号=自身下标）+源 port/addr 网络序恒等+变长 16..=1200 抓聚合拆裂+批臂 8 send+8 recv vs 泛化 256+256；边沿同答：空批/空收 0/静默非阻塞两臂同 -1+EAGAIN（libc 约定，sendmmsg 注释"-errno"与实态不符如实登记）/8 槽收 5 排队恰 5 槽序字节恒等/单批同 sendto；自揭两发现=drained 错误形与槽宽=批容量（4 槽收 5 留队未丢，独立 C repro）；platform 64 lib+io_timer 1+parity 2+signal_call_sites 全绿，本机 2 测绿)
-  - main 已收（台账席，2026-11-26）：本席 `3761c24`→main `117a588`（cherry-pick，取本席版非 bw15 腿），本席勾保持为交付记录。
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
+- [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
 ### OPT-16-01 采集依赖与增量构建基线
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 d11c3d2(ci/build-baseline.sh)+96009f9(asset-pipeline/tests/dependency_rebuild_baseline.rs) 已 cherry-pick 入本树 c64444b/d4b764e 并复跑绿——build-baseline self-test：install-module/layout/upgrade/uninstall 四 PASS+build-fanout PASS(重编源定位=foundation 19 直接依赖者)+build-cold 196.77s+build-incremental 67.51s/12 crate 重编；dependency_rebuild_baseline 测试绿；fixture tsv 入 docs/review/fixtures/dep-graph/)
-- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 8c37171(asset-pipeline/tests/split_evaluation.rs+fixtures/dep-graph/split-*) 已 cherry-pick 入本树 0ddb5e0 并复跑绿，asset-pipeline 门禁 384 lib+集成含 split_evaluation 2 测全绿)
-- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 870ad04(asset-pipeline/tests/install_path_recheck.rs+fixtures/install-recheck/) 已 cherry-pick 入本树 5e99e3a 并复跑绿——the_load_and_install_paths_stay_compatible PASS+本树连带复跑 install-layout 全 PASS+package-baseline verify 3 平台语法净)
-
+- [ ] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。
+- [ ] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。
+- [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
 
-- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。(2026-11-26 跨席复测勾：他席 main 交付 38b99db(profiler/tests/long_stability_collection.rs+fixtures/long-stability/long-stability.tsv+docs/review/opt-23-01-01-long-stability-collection.md) 已 cherry-pick 入本树 5bb641c 并复跑绿，profiler 门禁 43 lib+集成全绿)
-- [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。(2026-11-26 跨席复测勾：他席 main 交付 2a26627(profiler/tests/buffer_export_evaluation.rs+fixtures/buffer-export/+docs/review/opt-23-01-02-buffer-export.md) 已 cherry-pick 入本树 98bec50 并复跑绿)
-- [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。(2026-11-26 跨席复测勾：他席 main 交付 0ee4b28(profiler/tests/collection_integrity_regression.rs+fixtures/collection-regression/+docs/review/opt-23-01-03-collection-integrity.md) 已 cherry-pick 入本树 28c1da9 并复跑绿)
-
+- [ ] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。
+- [ ] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。
+- [ ] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。
 
 ### OPT-26-01 固定事件回放并采集查询基线
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（opt26-db 席 `4c75e00`，lane/opt-26-db，main=`6973092`：crates/db-postgres/tests/event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账，钉定样本报表（四级窗口+五查询形计数）为 01-04 复算基线；TSV docs/review/fixtures/event-query/event-query.tsv 39 行，证据页 docs/review/opt-26-01-01-event-query-baseline.md；本席 main 复测 6 绿，TSV 复捕墙钟行随负载漂（结构计数行恒等）只记录不设带；⚠️ FLAG 2026-11-26：bw15-platform `8f42e4c` 平行交付（crates/message_logger/tests/qlog_replay_baseline.rs 523 行 20000 条固定事件回放+11 查询面墙钟+样本报表，与 main 6973092 db-postgres 侧 patch-id 不同=真平行非镜像，lane-only 待主席择一））→ **主席裁定 2026-11-26**：择 main `4c75e00` 面（6973092 收编形，event_query_baseline 6 测在树）为本行交付面；bw15 `8f42e4c`（qlog_replay_baseline.rs 523 行）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 本席跨席复测存档（2026-11-26 主席裁定择 `4c75e00` 面，main=`6973092`）：本席 cherry-pick `e34dacd`/`013f573`/`c578a23`/`7a1867c` 四行复测全绿（db-postgres 25 套）。
-- [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。（opt26-db 席 `40b58e0`，lane/opt-26-db，main=`027c6c0`：crates/db-postgres/tests/import_batch_candidates.rs 3 测=同 512 行语料五种事务形（每 1/16/64/256 行一提交+整库一事务）各报墙/吞吐/计数分配器峰值且逐形回读恒等；TSV docs/review/fixtures/import-batch/import-batch.tsv 30 行，证据页 docs/review/opt-26-01-02-import-batch.md；本席 main 复测 3 绿（批 64+ 后吞吐平坦 620-640 rows/s，批 1 最慢=每行一提交））
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `40b58e0`（main 已收 `027c6c0`）：导入批大小评估（64 行 commit 裁定+内存平坦）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
-- [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。（opt26-db 席 `bf335b5`，lane/opt-26-db，main=`5df3486`：crates/db-postgres/tests/query_aggregation_candidates.rs 3 测=一全扫建 name→id（512）+level→ids（200 键）两聚合图，同 128 名抽样网格前后对照——基线 name 查询 ~14× 键控 get，聚合后网格解析走图不走扫；TSV docs/review/fixtures/query-aggr/query-aggr.tsv 21 行，证据页 docs/review/opt-26-01-03-query-aggregation.md；本席 main 复测 3 绿（加速比两跑 8350×/4746×=负载敏感记录行，128 网格断言恒等））
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `bf335b5`（main 已收 `5df3486`）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
-- [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。（opt26-db 席 `b34554a`，lane/opt-26-db，main=`1590095`：crates/db-postgres/tests/sample_report_rerun.rs 3 测=同固定事件流重放后从**存储语料**复算样本报表，对照盘上 docs/review/fixtures/event-query/event-query.tsv 基线（四级窗口+五查询形计数逐项等），再在每项优化（64 行批导入/两聚合图）后各复算一次仍等；证据页 docs/review/opt-26-01-04-sample-report-rerun.md；本席 main 复测 3 绿）
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `b34554a`（main 已收 `1590095`）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+- [ ] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。
+- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。
+- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。
+- [ ] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。
 
 ## 5. 实施顺序与里程碑
 
@@ -8009,8 +7801,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-13-02-03 移植 res_packer**。**验收** 打包前后资源可等价读回。
   - 证据：`crates/asset-pipeline/src/res_packer.rs`（2387 行 / 22 测；fdce7ff）+ `crates/resources/src/datasection.rs` 增 `del_child_at`（3ac619c）。**结构**：`PackerEnv`（printf+MsgHandler 面：`out` 按序收集、`ERROR: `/`WARNING: ` 前缀、**sub-ERROR 清 error 旗标**——原版 handler 赋值 `errorsOccurred_ = priority >= ERROR` 的怪癖原样保留）；`SourceSection::{open,is_packed,can_pack}`（packed 魔数先、首个非空白 `'<` 判 XML、否则 Bin；派生 `Clone` 供 print 复用，因原版 `XmlPacker::print` 是 const 不消费 `ds_`）；`convert_bytes`/`convert`（`PackedSection::convert` 面，错误消息逐字）；`copy_file`/`file_exists`/`remove_trailing_slash`；`BasePacker` trait + `Claim`（src/dst 空值守卫）；六 packer + `Packers` 注册表（HIGHEST=0/LOWEST=0xFFFF，按**严格大于**插入）；`print_usage` 两块 printf 原文；`parse_args`（`--res/-r` 跳过、`--list/-l` 在 flag 走查中**立即**开且打不开提前退出、`--in/--out/--err/--encrypt/--strip`）；`run`（批列模式 + 兼容模式，返回退出码）。**验收面**：`packed_output_reads_back_equivalent`（XML→packed→`PackedSection` 读回：int/负数/0/大 i64/前导零 `"007"`/bool/float/vector3/文本/canonical base64 blob/嵌套与 matrix 行逐项等价）+ `repacking_packed_output_is_byte_stable`（重打包**逐字节**同——参考经 `asString` 重推每个值）。**--encrypt**：XOR `0xc9`+marker 1；二进制节整体加密（每个节点存自身 raw 块为 `ENCRYPTED_BLOB`，children 块 `[i16 n][n×(i32 dataPos|i16 keyPos)][i32]` 与 `packed::write_node` 同构），`binary_with_encrypt_round_trips` 验证整树可解密。**六 packer**：Xml（LOWEST 兜底，`canPack()||shouldEncrypt` 才认领，print 不消费节，pack 走 convert 去 `metaData`）、Fx（fx/fxh/fxo 三类全跳过：`PACK_SHADER_BINARIES=true`/`PACK_SHADER_SOURCE=false` 仍只认领不产文件）、Image（`--encrypt` 时让位给 XmlPacker；bmp/tga/png/jpg 优先同辈 `.dds`，否则同扩展名拷贝，扩展名不符→"Error: Cannot copy source %s to destination %s.\n"；`.dds` 走字体跳过：同目录 `.font` 的 `creation/sourceFont`+`abs(sourceFontSize)` 拼 `name_size`）、Chunk（clientOnly 过滤服务器实体、去 editorOnly/metaData/navmesh/worldNavmesh 深 2、`.packerTemp` 中转+转换后必删）、CData（`space.settings` 缺→WARNING 且 prepare false；copy 后按 bin/xml 两路删 thumbnail.dds/navmesh/worldNavmesh（受 `clientNavigation/enabled` 门控）+ 每个 `--strip`；保留 `#if 1` 逐个打印存活子）、ModelAnim（model 打包去 metaData、animation/anca 跳过；`.anca` 生成在接缝后退化为拷贝源 `.anca`；打不开模型→"Could not open model file %s\n"）。**CLI 面**：批列 fgets 尾字符吃掉/末行无换行削末字符、`--err` 日志、`"Processing %s..."`+`" %s\n"`、`"\nProcessing complete"`+失败计数三句尾；兼容模式 print（单参）/pack（`"Processing %s to %s..."`+`"...succeeded/failed"`）；未知类型 print 模式**先打印 "Error opening source file: %s\n"（原版 prepare 副作用）再成功返回**；`main` 尾 `return result ? EXIT_SUCCESS : EXIT_FAILURE`。**怪癖保留**：too_many_children 的 `"PackedSetcion"` typo（去掉尾部计数——Rust 错误型无计数）；CDataPacker::print 打出 `"Error: ChunkPacker not initialised properly\n"`（原版串错）。**门禁**：163 asset-pipeline 绿（141 既存+22 新）+ resources 227 绿（+1 `del_child_at`），clippy scoped 仅剩 workspace 两条既存 unused-dep，fmt 净；llvm-cov 0.9.1 `res_packer.rs` 行 92.70%（同 crate 的 offline_processor.rs 92.77% 同档；本 crate 整体 85.75%，未达核心 98% 线——如实登记）。已推 `lane/bw15-platform`（fdce7ff）。
 - [x] **BW-13-02-04 移植 resourcechecker**。**验收** 同一坏资源得到对应诊断。**交付**（2026-11-25，8678b06 + 16eda65 已推 lane/bw15-platform）：`crates/asset-pipeline/src/resource_checker.rs` 移植 `tools/resourcechecker/visual_checker.*` 的 `VisualChecker`。**规则面**：`_bsp.` 命名直接放行且不载规则；规则自 `visual_rules.xml`（cacheRules=true 直开 / false 先 fileExists——两分支同落 openSection，合并为 `cache_rules || file_exists`）；缺规则记 `Unable to find visual_rules.xml file.`（构造期错误，check() 首行 `errors_.clear()` 与原版一致会清掉）；匹配 = 目录路径小写 find 包含 + `stable_sort`（path 长降序、filespec 长降序稳定）+ `PathMatchSpec` 可移植 glob（`*`/`?`/`[seq]`/`[!seq]`，首 `]` 字面量，`{}` 列表无用户未实现已注册）；rulesById + parent 链递归读（宏生 vector/string/int/float/bool + hardPoint 集合）；exportAs ∈ {normal, static, static with nodes} 否则 `Unknown value for exportAs [%s]\n` + 重置 normal。**检查面**：尺寸/三角数（`*indices` 子节 `IndexHeader::read` 计 `nIndices_/3`，负数 wrapping 成 u32）/层级深度（缺 node 节原版解引用空指针即 UB，移植记 0 已注册）/portal 电池（基座矩阵 row0=uAxis、row2=boundary normal、row1=normal×uAxis、平移=normal·d，点从平面空间映射回对象空间；<3 点/非平面（零法线跳过）/朝外（`d − centre·n > 0`，平面法线须指内）/snap 1/2196 容差/距离 1/1024 容差/offset 1/8192 close，printf %f 全 `{:.6}`）/重复节点名/硬点缺失与未知（HP_flash01 与 HP_flash 豁免；`len>3 && substr(0,3)=="HP_"` 照抄）/纹理名空格（renderSet→geometry→primitiveGroup→`material/textureormfm` find_last_of）。**接缝注册**：MessageBox/automatedTest 分支一律走错误记录；`PrimitiveFile::get` 先 `.processed` 后裸名；XML 内容嗅探拒绝（原版空 asBinary 强转 IndexHeader 是 UB）；`snap_vertices` 原版即死字段照抄并注册。**验收即测试**：`portals_are_forbidden_on_normal_visuals`（同一坏视觉在 rules=false 下得 `Must not have any portals`）等 15 测——好视觉全规则零错、too small/too big/三角上下限/层级/朝外/非平面/snap+距离/重复+硬点/纹理/坏 exportAs/缺文件逐项断言原版消息全文。**附带**：`datasection::read_vector3` 改走 openSection 路径行走（原版 readVector3 即 `openSection(tag)`，`boundingBox/min` 两跳；16eda65 附 `read_vector3_walks_slash_paths` 测）；门禁 asset-pipeline 177 + resources 228 测绿，clippy 仅余两既存 workspace unused-dep，fmt 清，llvm-cov resource_checker.rs 行 96.49%（crate 整体 85.60%，工具 crate 口径照旧）。**坑**：原版 portal 点存平面空间 (u,v,0) 经基座矩阵映射回对象空间，测试夹具必须给平面坐标再由 winding 定平面法线朝内（朝外即触发 facing 错误）；`BinSection::save_bytes` 输出含非 UTF-8 magic 字节，夹具写盘必须走原始字节而非 `from_utf8_lossy`（会替换 0xa1 致容器解析空）。
-- [x] **BW-13-02-05 回归 NavGen 入口**。**验收** 可调用 BW-10 的导航生成。**跨席复测勾**（main 交付为准，2026-11-26，本席）：main `79f47c4`（`crates/asset-pipeline/src/navmesh_processor.rs` 2738 行/55 测，LockedChunks 引用计数/ChunkProcessorManagerFace 锁块怪癖/NavmeshProcessor 逐 girth 顶检→flood→as_binary 追加/NavmeshCache 全端口）依赖面 `977f555`（waypoint-gen workflow.rs 914 行：readTGA/extendThroughUnboundPortals/determineEdgesAdjacentToOtherChunks/compileGirthsList/GirthWorkflow）+`d26cb55`（tga temp dir 隔离），本席 cherry-pick `3ddf7b8`+`b868516`+`b91f983`。**缝冲突自纠**（`e5670ac`）：本树 b99cb0e（lane-only，GenChunk/FloodPhysics 缝）与 main 同面（NavmeshProbe/DropPhysics 缝）物理撞名 to_vector3/determine_edges——取 main 版为准，删本树私有重复，navgen_map harness 补 NavmeshProbe/DropPhysics 适配 impl 改骑 workflow 缝，truth log `gen_navgen_map.log` 逐行复现未变（两版行为等价实证）。**复跑证**：waypoint-gen 88 测绿（含 navgen_map truth-log 对照+workflow tests）+asset-pipeline 439 lib+集成 0 failed，fmt/clippy scoped 净（blowfish workspace 预存在非代码）。b99cb0e 余下不撞名面（generate/streamline/calculate_set_membership/as_binary 等）保持开待主席与 main 侧择一。
-
+- [ ] **BW-13-02-05 回归 NavGen 入口**。**验收** 可调用 BW-10 的导航生成。
 
 #### BW-13-03 WorldEditor
 
@@ -8084,11 +7875,6 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **BW-14-02-01 运行 Python simple 示例**。**验收** 与新服务端完成登录。
   - 卡点（服务端登录链路未落地，同 BW-14-01-02）：simple client 在参考 `examples/client_integration/python/simple/`（自带 res 树，实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对），其登录依赖新服务端 loginapp 挑战协商（BW-06-01-02）+ baseapp onLogin（BW-07-01），当前 `apps/server` 仅最小入口无登录处理。
-  - 复测（2026-11-26，台账席）：注记引用已过时但卡点事实未变——所引依赖均已交付：BW-06-01-02 挑战协商（`3244af7`）、BW-07-01（BW-07 车道 24/24）、BW-14-01-02（`c68667c`，进程内 harness 全链，边界自注「多进程运行不在本项」）；然 `apps/server/src/main.rs` 本日复核仍 36 行最小入口，`app::run`（BW-15-02-01 `750be59`）只接 Dispatcher+信号矩阵、零 mercury 引用（NetworkInterface 构造留随 BW-02-02/角色簇），无可监听的 loginapp——网络登录面本席侧仍缺。行保持开，待 `apps/server` 网络接线（BW-02-02/角色簇）与可跑客户端宿主（BW-21）落地后复测。
-  - 增量落地（2026-11-26，`44aca1e`(merge origin/lane/bw19-docs)，含 `a43f3f3` 收包面测试适配）：**服务端登录面接线已上 main**——角色循环走 `bwMainT` 全体（`app.rs` 新 `MercuryPass` 合流角色 dispatcher 与 Mercury dispatcher，machined 查询/内部接口配置链/`NetworkInterface::new_on_dispatcher` 构造/关服 drain）；loginapp 外口（`loginapp_interface.rs`，`PORT_LOGIN=20013`+`login_minder` 三入口 login/probe/challengeResponse 按声明序+`LoginInterfaceDispatch` 剥 first-request 尾脚+`probe` 真数据报往返）；login 门序与 `challengeResponse` 应答面（`loginapp_login.rs`，复用 BW-06-01-05 版本闸、challenge 缓存/resent quirk 逐字）；dbapp 出站面（`db_login.rs` `DB_APP_LOG_ON_ELEMENT_ID=8`+`DbAppForward`/`DbReplyHandler`，验收级真闭环测过 `the_dbapp_request_leg_reaches_the_wire_and_its_answer_routes_back`）。**适配点**：收包面 graft（`14d3d8c`）后 `the_network_pass_delivers_a_datagram_through_the_loop` 原发裸 `b"ping"` 被参考形 guard 判 corrupted，已改为带 clear flags 头的真帧 `[0,0,p,i,n,g]`（a43f3f3）；覆盖 loginapp_interface 100%、loginapp_login 98.78%、db_login 98.63%、app.rs 99%+。行保持开——simple client 端到端验收仍待 dbappmgr→loginapp `notifyDBAppAlpha` 活网格出生接线与 dbapp logOn 应答角色（BW-09-01 领地）落位后复测。
-  - 复测五（2026-11-26，lane/bw19-docs `0dfc448`）：**参考客户端真机往返已通两道门（82→72）**——预编译 `simple_python_client` 在参考树 `game/bin/server/el7/examples/simple_python_client`（本机可跑，`-server/-user/-password`，README 配方）；Linux 构建路径必须从 res 解析 `loginapp.pubkey` 文件（内嵌 key 仅 PS3/Xbox360 分支，main.cpp:228-238）——取 `scripts/cluster-smoke/res/loginapp.pubkey` 头插 res overlay 即解（BW-00-02-04 卡点在此实验面消除；配对 `res/server/loginapp.privkey`=参照 loginapp_config.cpp:22 默认读 `server/loginapp.privkey`，将来 dbapp 解密腿用）。真跑序列：本席 loginapp 外口 20013 监听（无 machined 回落绑全接口）→ 真客户端实体定义加载/网络绑定/`LoginHandler: LoginApp@127.0.0.1:20013` 起动 → ①默认配置拒 82=`LOGIN_REJECTED_LOGINS_NOT_ALLOWED`（=参照默认 `BW_OPTION(bool,allowLogin,false)` loginapp_config.cpp:24，移植一致非缺陷）→ ②overlay `<loginApp><allowLogin> true` 后拒 72=`LOGIN_REJECTED_DB_NOT_READY`（=参照 loginapp.cpp:862 isDBReady 门**先于**挑战门 1048——gate 序 82→72 实证）。**余卡点收窄两件**：活内部网格出生接线（dbappmgr→loginapp `notifyDBAppAlpha` 上线；dbappmgr.rs 自注 Mercury traffic not modelled）+ dbapp logOn 应答角色（BW-09-01 lane 领地）——两者落位后 overlay 配方（res 头插 loginapp.pubkey+overlay server/bw.xml 开 allowLogin）即可续跑至挑战协商与真登录。行保持开。
-  - 卡点复测（2026-11-26，bw14-script-host 席）：旧注「服务端登录链路未落地」**已过时**——登录链已落地并真机绿：BW-06-01-02 挑战协商（3244af7，main 祖先）+ BW-07-01 baseapp 装载/ID 分配 + BW-14-01-02/05 进程内登录链（`fantasydemo_login.rs` 5 测：既有账户走机/未知用户建档/错密码拒不碰行/新角色建档回指，`fantasydemo_logout_relogin.rs` 2 测：退出持久化重登读回，本席实测全绿）。**真余卡点两处**：①`apps/server` 仍最小入口（`main.rs` 仅 BWResource/BwConfig 初始化 + `app::run` 信号/关停面），无角色运行时把 loginapp/dbapp/baseapp 登录链接到真实 Mercury 端口（同 BW-15-02-01 卡点；BW-08-01-02 CellApp 创建与注册未勾）；②参考 simple 客户端是 **C++ 壳内嵌 Python**（`main.cpp`/`entity.cpp`/`py_server.cpp` 等，目录名「python」指 Python 脚本化实体而非纯 Python 程序），跑通它需移植该壳或等价客户端驱动，与①同属大面工程，随角色运行时落地。simple 自带 res 树实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对。
-
 - [x] **BW-14-02-02 运行原版 Android 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
   - 宿主缺口（未运行互通测试）：`docs/review/bw14-02-02-03-mobile-interop-host-gap.md`（402c28a）——参考 `examples/client_integration/c_plus_plus/android/`（JNI + `android.app.NativeActivity` + `android_native_app_glue` + `connection_model` 静态库 + `-llog -landroid -lEGL -lGLESv1_CM`，NDK `armeabi-v7a`/`APP_STL=gnustl_static`/`APP_PLATFORM=android-9`）需 Android NDK 工具链 + 真机/模拟器，本机 Linux 无 NDK/设备；即使宿主就绪，互通目标（新服务端登录）亦未落地（同 02-01 卡点）。协议结果未采集；两侧缺口均已登记。
 - [x] **BW-14-02-03 运行原版 iOS 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
@@ -8123,7 +7909,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-14-04-03 布置配置及样例资源**。**验收** 首次启动可定位。（commit 5da86a6）
   - 证据：`ci/install-layout.sh` + `docs/review/bw14-04-installable-artifact-layout.md`（b0a4d3e 起，5da86a6 完成）——`res/server/bw.xml` + `res/scripts/`（21 项样例资源镜像）随包布置（install-layout PASS：配置/资源/二进制/模块/`data/` 齐全）。**工具半**：装后 `process_defs -r <prefix>/res` 首启定位并加载安装资源树（install-cli-res PASS）。**服务器半**：`apps/server/src/main.rs`（5da86a6）按参考 `BIGWORLD_MAIN` 接入 `BWResource`/`BWConfig` 链，装后 `boundless-server <role>` 以 `BW_RES_PATH=<prefix>/res` 首启定位安装配置（install-res-server PASS：无「Could not find」/「No configuration section」，正常启动/停止 exit 0）；`role_lifecycle.rs` 首启定位/未定位双测试钉死观测差（定位静默、未定位记参考失败行）。
 - [ ] **BW-14-04-04 执行干净安装烟测**。**验收** 三端能启动和停止。
-  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**复测登记（2026-11-26，main 吸收 lane/bw16-18 `a05a849`←bw10-terrain `1dba9be`）**：`ci/install-layout.sh` self-test 10/10 PASS 含红/绿双验（他席独立跑过），同脚本装后启停绿；两席同证据链镜像非新交付，行保持开。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
+  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
 - [x] **BW-14-04-05 执行升级与卸载**。**验收** 验证用户数据保留行为。（commit b0a4d3e）
   - 证据：`ci/install-layout.sh`（b0a4d3e）——归档只携带包属树（`bin lib res`），用户数据在 `data/`（**不在归档**）。装后种子 `data/db/user.db`，篡改包属文件 `res/server/bw.xml` 后**升级**解包：包属文件还原为打包字节、`data/db/user.db` 保留（install-upgrade PASS）；**卸载**删除 `bin/ lib/ res/`、`data/db/user.db` 保留（install-uninstall PASS）。self-test 绿色全链路 + 4 条红色臂（启动失败/CLI 失败/坏模块/缺定义资源树均按预期咬合）。
 
@@ -8135,15 +7921,15 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 封装事件轮询和唤醒、单调时钟、信号/控制事件、子进程与退出状态、文件锁、内存映射、动态库和系统目录。对照大小写、路径编码、原子替换、IPv4/IPv6 和断网行为。
 
-- [ ] **BW-15-01-01 封装事件轮询和唤醒**。**验收** 三端可停止空闲循环。（Linux 腿注记 2026-11-26：bw15-platform `774372f`→main `70af995`，crates/platform/tests/idle_loop_stop.rs 1 测绿——空闲循环按需停（trigger 中断 epoll_wait 预算 interrupt1 680µs/1 迭代、preset 迭代、rearm 112/46µs、预算窗 5 迭代）；wakeup.rs 441ff01 既有注记同上；三端行保持开待 Windows/macOS 腿）
+- [ ] **BW-15-01-01 封装事件轮询和唤醒**。**验收** 三端可停止空闲循环。
   - 证据（部分，未勾）：`crates/platform/src/wakeup.rs`（441ff01）——自管道 `Wakeup`（`pipe(2)` 双端 `O_NONBLOCK`、`trigger` 任意线程一字节写入容忍 EAGAIN=已挂起、`consume` 排空重整、Drop 关双端），Linux 实测 5 测：空闲 `epoll_wait`（5s 预算）被另一线程 `trigger` 在 1s 内唤醒、预挂起即回、`consume` 后零超时不再上报、未触发 `consume` 为 no-op、100 轮触发/消费循环稳定；「轮询」半块已由 BW-02-01-02 `platform::poller`+Mercury `EventPoller` 承担（Linux epoll）。**macOS 后端已落（59da22c）**：`crates/platform/src/poller.rs` 拆为 Linux `epoll`/macOS `kqueue` 两后端、`lib.rs` 把 `poller` 门控扩到 macOS——kqueue 与 epoll 同为描述符持久注册集，`create`/`ctl`/`wait` 一对应映射（`kqueue()`；`kevent` EV_ADD/EV_DELETE 按 filter、`CTL_DEL` 先删读再删写、二者其一在册即成功、无册 fd 返 `ENOENT` 同参考 WARNING 分档；`EV_EOF`→`EPOLLHUP`/`EV_ERROR`→`EPOLLERR`；超时负值阻塞零轮询；事件位沿用 epoll 数值使调用方跨端同常量）；`platform` darwin `--all-targets` 交叉编译绿、darwin clippy `-D warnings` 绿、Linux 59 测零回归；kqueue 模块 4 测镜像 epoll 待三端 runner 实跑。**剩余**：Windows `WSAPoll` 走 socketpair 而非匿名管道——随 BW-15-05 三端 runner 落地（kqueue 实跑亦随三端 runner）。
 - [x] **BW-15-01-02 封装单调时钟**。**验收** 单调性及 Tick 单位一致。
   - 证据：crates/platform clock.rs 测试（monotonic 不回退、微秒单位、起点近零）。
-- [ ] **BW-15-01-03 封装进程控制及退出码**。**验收** 三端可正常关服并回收子进程。（Linux 腿注记 2026-11-26：bw15-platform `4a40422`→main `595be79`，crates/platform/tests/process_exit_baseline.rs 1 测绿——子进程状态码/spawn 262µs/wait 7.9ms/轮询收割 1.02ms/信号等待 247µs/一次收割 16 存活；三端行保持开待其余平台腿）
+- [ ] **BW-15-01-03 封装进程控制及退出码**。**验收** 三端可正常关服并回收子进程。
   - 证据（部分，未勾）：`crates/platform/src/process.rs`（d25d90a）——`Child`（`fork`+`execvp` PATH 搜索、子进程 exec 失败 `_exit(127)`、`wait` 阻塞重采/`try_wait` WNOHANG 非阻塞/`signal` kill、二采 `ECHILD` 报错）+ `ExitStatus`（`WIFEXITED`/`WEXITSTATUS`/`WIFSIGNALED`/`WTERMSIG` 解码、`success` 即 code 0）；Linux 实测 7 测：exit 42 采回、零退出成功、SIGTERM 终止、存活期 `try_wait` None 再采、exec 失败回 127、空 argv 拒、二采 ECHILD。**剩余**：Windows `CreateProcess` 后端随 BW-15-03 落地；`server-runtime` 关服接线（信号→kill 子进程→wait 回收）待做。
 - [x] **BW-15-01-04 封装文件锁及原子替换**。**验收** 并发更新夹具通过。（commit d0a9ac4）
   - 证据：`crates/platform/src/file.rs`（d0a9ac4）——`FileLock`（`flock` LOCK_EX 互斥、try 版返回 None 表已持有、Drop 即释放；**锁稳定伴生 `.lock` 文件而非被替换的数据文件**——rename 换 inode，锁被替换文件本身无法串行化更新，此平台事实已编码进模块文档）+ `atomic_replace`（同目录临时文件写全→`fsync`→`rename(2)` 原子换入，失败自动 unlink 残留）；**验收并发更新夹具实测过**：2 线程×50 锁-读-改-写-原子替换，计数恰为 100 零丢失（`file::tests::concurrent_update_fixture_loses_nothing`，`cargo test -p platform --lib` 64 测全绿）。**Windows `LockFileEx`/`ReplaceFile` 后端归 BW-15-05 三端 runner 平台移植**（本项验收为并发更新夹具，Linux 已过）。
-- [ ] **BW-15-01-05 封装内存映射与共享库查找**。**验收** 三端加载相同测试资源。（Linux 腿注记 2026-11-26：bw15-platform `294a434`→main `298fd89`，crates/platform/tests/mmap_library_baseline.rs 1 测绿——同资源 mmap 34µs/64KiB+anon 4096+共享库打开 22µs/符号查找 3µs malloc 命中；三端行保持开待其余平台腿）
+- [ ] **BW-15-01-05 封装内存映射与共享库查找**。**验收** 三端加载相同测试资源。
   - 证据（部分，未勾）：`crates/platform/src/mmap.rs`（3359d3b）——`Mmap`（`mmap` PROT_READ|MAP_SHARED 整文件映射、空文件映射空切片、匿名零页映射、`Deref<[u8]>`、Drop `munmap`；mmap 需活 fd、成功后 close 映射仍有效）+ `DynamicLibrary`（`dlopen` RTLD_NOW|LOCAL、`dlsym`、Drop `dlclose`、`dlerror` 消费）；Linux 实测 7 测：文件映射逐字节等于文件、空文件、匿名页全零、缺文件报错、dlopen libc 并 dlsym malloc 非空、缺符号报错、缺库报错。**剩余**：Windows `CreateFileMapping`/`LoadLibrary` 后端随 BW-15-05 落地。
 - [x] **BW-15-01-06 校验路径大小写、编码和系统目录**。**验收** 代表性夹具可寻址。（commit aa6e2ee）
   - 证据：`crates/platform/src/path.rs`（aa6e2ee）——`correct_case_of_path`（参考 `WinFileSystem::correctCaseOfPath`（win_file_system.cpp:782）的 POSIX 对应：`realpath(3)` 在大小写不敏感卷上解析出盘上真实拼写、敏感卷上即恒等、缺失路径原样返回）；`real_path`（canonical 定点、symlink 解析、缺失报 `ENOENT`）；`join`（参考 `getAbsolutePath` 的 base+path（unix_file_system.cpp:466），补缺 `'/'`）；`home_dir`（`$HOME`）/`temp_dir`（`TMPDIR`→`TMP`→`TEMP`→`/tmp`）；编码 `path_bytes`/`path_from_bytes` 字节级往返（POSIX 路径是字节串非必 UTF-8，实测 `0xFF` 字节往返）+ lossy。Linux 实测 7 测：temp 系统目录夹具写读可寻址、HOME 绝对、join 三态（缺分隔/已带/空 base）、realpath 不定点+symlink+缺失三态、correct_case 缺失原样/存在=realpath、非 UTF-8 往返。**Windows `%USERPROFILE%`/`%TEMP%`/`GetFullPathNameW` 后端归 BW-15-03 Windows runner 平台移植**（本项验收为代表性夹具可寻址，Linux 已实测过：`path::tests::temp_dir_holds_an_addressable_fixture`，temp 系统目录夹具写读可寻址）。
@@ -8171,14 +7957,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 验证原生服务端全角色、客户端、编辑器及产物。处理进程停止、DLL/CPython 查找、路径与驱动，并核对原版 Windows 客户端和编辑器样本。
 
 - [ ] **BW-15-03-01 跑 Windows 服务端全角色**。**验收** 能处理控制事件并关服。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-03-02 验证 DLL 和 CPython 发现**。**验收** 已安装布局中模块可导入。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
-- [ ] **BW-15-03-03 跑 Windows 客户端与编辑器**。**验收** 固定样本与原版对照。（对照基线注记 2026-11-26：对照面本体已在 main——Linux boundless-client 固定地图呈现（896×176 8 帧二跑逐位同+TGA 630,802 B）与 boundless-editor 编辑会话（ed_save (12,0,34)→(25,0,47)+二会话字节同，02bedbb）即样本面；两入口 `cargo check --locked --target x86_64-pc-windows-gnu -p boundless-client -p boundless-editor` 已 PASS（2026-11-26 实测零错误）；Windows 腿仍缺真机 runner（服务端 `mercury`/`std::os::fd` 交叉构建未过属 BW-15-03-01 面），行保持开）
-  - 交叉编译注记（2026-11-26，`454acee` 核验）：本席 `apps/client`/`apps/editor` 双入口 windows-gnu 交叉检 PASS（`cargo check --target x86_64-pc-windows-gnu`，仅预存 blowfish manifest 警告）；server 侧 `mercury` E0432×16 属 BW-15-03-01，不拦两入口。真跑仍待 Windows runner（BW-15-05-01），行保持开。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
+- [ ] **BW-15-03-03 跑 Windows 客户端与编辑器**。**验收** 固定样本与原版对照。
 - [ ] **BW-15-03-04 跑 Windows 工具和发布包**。**验收** 路径编码和启动烟测通过。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-04 macOS
 
@@ -8187,14 +7968,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **BW-15-04-01 跑 macOS 服务端全角色**。**验收** 能启动、停止并回收。
   - 证据（部分，未勾）：macOS 编译前置已通（afe9973）——`server_runtime::signals` 可移植到 `aarch64-apple-darwin`：等待原语按平台分派（Linux `sigwaitinfo`，macOS `sigwait`——libc crate 只给 BSD 族 `sigwait`，二者同是 POSIX 等待且都可被 `EINTR` 打断，`wait_one` 统一为负错误码）；`signal_number_to_string` 的实时信号臂（`SIGRTMIN`/`SIGRTMAX`，glibc 专属）门控到 Linux，macOS 无实时信号范围；`SIGMAX` 按平台取（Linux `SIGSYS`=31，macOS `SIGUSR2`=31，二者皆最高标准信号，`AtomicU32` 掩码一致）；`SIGNAL_NAMES` 按平台分表（参考表是 Linux 编号；macOS 编号不同：`SIGEMT`=7/`SIGBUS`=10/`SIGSYS`=12/`SIGCHLD`=20/`SIGIO`=23/`SIGINFO`=29/`SIGUSR1`=30/`SIGUSR2`=31，无 `SIGSTKFLT`/`SIGPWR`；服务端用的退出信号 `SIGTERM`/`SIGINT`/`SIGQUIT` 两端同号）。实测 `cargo check -p boundless-server --target aarch64-apple-darwin` 绿（仅剩 resources 预存警告）。**剩余**：macOS 上真机运行（`cargo build`+启动/停止/回收，需 macOS runner）；`--all-targets` 测试编译亦已绿（af0182b）——两处内联 `sigtimedwait`（server_app.rs:980/1211，BSD 无此符号）收进 `consume_pending_signal`（Linux `sigtimedwait` 零超时轮询、非 Linux `sigwait`；信号既已确认 pending 则立即返回），实测 `cargo check -p server-runtime --target aarch64-apple-darwin --all-targets` 无错；mercury 尚有 darwin 缺口（`lib.rs` 对 `event_dispatcher`/`packet_receiver` 的门控被 `interface_table.rs:18`/`request_manager.rs:27`/`network_utils.rs:36` 无条件 import；`endpoint.rs:403` 直用 linux-only `socket::IP_RECVERR`）——服务端最小入口不依赖 mercury 故不拦当前构建，待 Mercury 接入服务端（BW-02）时需先补。
 - [ ] **BW-15-04-02 验证 CPython 与应用资源布局**。**验收** 从应用包可加载。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
-- [ ] **BW-15-04-03 跑 macOS 客户端和编辑器**。**验收** 设备状态和固定地图测试通过。（对照基线注记 2026-11-26：固定地图测试面已在 main——crates/client 软栅格设备（present_with 帧账+checksum+map_display_baseline 2 测 896×176 二跑逐位同）与编辑器 ed_save 面（edit_reload 2 测），02bedbb；三入口 `cargo check --locked --target aarch64-apple-darwin` 实测 PASS；macOS 腿待真机 runner，行保持开）
-  - 交叉编译注记（2026-11-26，`454acee` 核验）：本席 `apps/client`/`apps/editor` 双入口 darwin 交叉检 PASS（`cargo check --target aarch64-apple-darwin`，仅预存 blowfish manifest 警告）；macOS kqueue+信号前置 `59da22c`/`afe9973` 已在 main。真跑仍待 macOS runner，行保持开。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
+- [ ] **BW-15-04-03 跑 macOS 客户端和编辑器**。**验收** 设备状态和固定地图测试通过。
 - [ ] **BW-15-04-04 跑 macOS 工具和发布包**。**验收** 干净安装后可执行。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-04-05 验证与 Linux 和 Windows 互通**。**验收** 跨端登录及实体同步通过。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-05 三端 CI 和混合部署
 
@@ -8205,11 +7981,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **BW-15-05-02 在三端执行协议、资源与 Python 测试**。**验收** 各端分别留存结果。
 - [ ] **BW-15-05-03 配置 MySQL、XML 与 SQLite 测试矩阵**。**验收** 每种模式产生独立结果。
 - [ ] **BW-15-05-04 配置 PostgreSQL 真实后端矩阵**。**验收** 各端完成登录、写档和重启读档。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-05-05 验证三端客户端连接不同平台服务端**。**验收** 记录每种支持组合。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-05-06 验证混部替换单角色**。**验收** 记录版本和关服顺序。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-06 平台图形和宿主依赖
 
@@ -8219,10 +7992,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 证据：`docs/review/bw15-06-01-graphics-backend-list.md`——四后端五平台：桌面 **Direct3D 9**（`lib/moo`，`bwclient`，`IF(BW_PLATFORM_WINDOWS)` 下链 `d3d9/d3dx9/dxguid/setupapi/psapi`，`moo_dx.cpp`/`render_context.cpp` 设备面；`IF(NOT BW_IS_SERVER)` 剥离服务端依赖）、工具 **OpenGL**（`navgen` 预览，`opengl32` + `<GL/gl.h>`/`HGLRC`）、移动 **cocos2d/OpenGL ES**（Android `-lEGL -lGLESv1_CM`、iOS libs 随树）、web **Awesomium**（`BW_AWESOMIUM_SUPPORT` 门控，`web_app` → `PyAwesomiumProvider`）。平台基线：顶层 `CMakeLists.txt:57-72` 构建门仅 Windows（win32/win64）+ Linux remote-only 服务端，无 macOS 桌面分支——Linux/macOS 桌面**无图形后端**（全树 `wgl|glX|CGL|glViewport` 扫描仅命中 navgen），macOS 侧按 BW-15 开篇约定以原版样本+跨端混跑验收。缺口：`third_party/` 无 `awesomium/`（同 DCC SDK 缺口）；新版渲染栈未建（BW-11），服务端零图形后端由 BW-16-02-02 对齐。
 - [x] **BW-15-06-02 维护 DCC 宿主矩阵**。**验收** 逐插件记录可用宿主。（commit ff504c9）
   - 证据：`docs/review/bw15-06-02-dcc-host-matrix.md`——三插件两宿主：visualexporter/animationexporter → Autodesk 3ds Max（`MFXExport : SceneExport`（mfxexp.hpp:154），`.dle`，Max 库级导出 `LibDescription@1..LibVersion@4`（visualexporter.def/animationexporter.def，expmain.cpp:124-155），Max **2009–2013** 逐版本目标 max2009_exporter…max2013_exporter）；mayavisualexporter → Autodesk Maya（`MLL_EXPORT initializePlugin/uninitializePlugin`（visualmain.cpp:38/131），`.mll`，随分发 visualfileexporterscript.mel，Maya **2009–2014** 逐版本目标）。启用条件=`BW_CMAKE_TARGET=exporters`（`BWConfiguration_exporters.cmake` `EXPORTER_PROJECTS`：默认 Max/Maya 2010-13 + Max 2010-12，win32 追加 2009 组，win64 追加 maya2014，非 vc9 追加 max2013；`BW_EXPORTER`+`_SECURE_SCL=1`）；输出 `game/tools/exporter/3dsmax<ver>{,x64}/`、`maya<ver>{,x64}/`。缺口：`third_party/` 无 `3dsmax/`、`maya/` SDK 目录（外部依赖），插件二进制无法从本树构建——宿主实测（BW-15-06-03/04）需外部 DCC SDK 与宿主安装。
-- [ ] **BW-15-06-03 验收三端客户端与编辑流程**。**验收** 同一地图有可比证据。（Linux 腿注记 2026-11-26：boundless2 `02bedbb`→main（ada3706 去重）——固定地图双入口同图可比证据：apps/client `boundless-client --res docs/review/fixtures/chunk_space/res/space_00010001` 18×3 视图 896×176 软栅格 8 帧 checksum 系列二跑逐位同+TGA 630,802 B（crates/client/tests/map_display_baseline.rs 2 测），apps/editor `boundless-editor` ed_save 移 tree00 (12,0,34)→(25,0,47) 重载验证+二会话字节同（apps/editor/tests/edit_reload.rs 2 测）；Windows/macOS 腿待 runner，行保持开）
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
+- [ ] **BW-15-06-03 验收三端客户端与编辑流程**。**验收** 同一地图有可比证据。
 - [ ] **BW-15-06-04 验证外部导出的跨端读取**。**验收** 各适用消费者可打开。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 ### BW-16 目录分层、依赖方向与模块归属
 
@@ -8607,7 +8378,7 @@ Boundless 新增交付，独立位于 `extensions/vscode/`，内部拆为 `src/`
 - [x] **BW-20-02-06 验证 VS Code 的 Rust 启动调试**。**验收** 能由启动配置运行 CellApp 并命中断点。（commit aa15e2c）
   - 证据：原版结果——引用端角色进程是 C++ `bigworld_app <role>`，VS Code 调试需手配 launch.json 指向其二进制。新版结果——`src/workspace/launchConfig.ts` 的 `rustLaunchConfig(role)` 生成启动配置：`type` 按平台取 `lldb`（Linux/macOS）或 `cppvsdbg`（Windows），`program` 指向 `target/debug/boundless-server`（`apps/server` 的产物，`apps/server/Cargo.toml` [[bin]]），`args=[role]`，`env.BW_RES_PATH=<workspaceFolder>/res`，`stopAtEntry:false`；`extension.ts` 的 `boundless.setupRustDebug` 命令经同一个 `mergeLaunchJson` 并入工作区 `launch.json`，且把 `boundless.cluster.binary` 的默认值从错误的 `target/debug/server` 修正为实际产物名。证据链接——`pnpm test` 149 例全绿且 `pnpm run check` 0 错误（含 `rustLaunchConfig` 形状、Windows 调试器选择、覆盖 program/resPath、与附加配置并存的 4 例）；实跑 `sh tools/verify/rustLaunch.sh`：gdb batch 以 launch 配置同一命令行（`target/debug/boundless-server cellapp`、`BW_RES_PATH` 指向示例 res）启动 CellApp，断点命中 `server_runtime::app::run`（`crates/server-runtime/src/app.rs:46`），回溯顶两帧为 `app::run ← boundless_server::main`，脚本判 PASS。
 - [x] **BW-20-02-07 提供文档 MCP 接入配置**。**验收** 查询返回当前工作区版本文档。
-  - 证据：原版结果——引用端的文档是仓库里的 markdown（VitePress 渲染），编辑器侧没有任何检索入口，开发者只能翻目录或开网页版；引用端不存在 MCP 面。新版结果——`extensions/vscode/src/workspace/docsMcp.ts` 生成 `.vscode/mcp.json` 条目：`type: stdio`、`command` 指向 `boundless-docs-mcp`、`args` 依次为 `--root ${workspaceFolder}`、`--prefix docs`、`--version HEAD`、`--langs zh`，配置了站点地址才追加 `--docs-url`（`9623715_MCP_DEFAULTS` 与 `boundless-docs-mcp` 自己的默认值一致）；`mergeMcpJson` 与 launch.json 同一"只增不改"面——只替换自己写的那一项、用户自己的 server 原样保留，解析不出来的文件整体重写；`extension.ts` 的 `boundless.setupDocsMcp` 命令按工作区文件夹逐个写入 `.vscode/mcp.json`，新增 6 个设置 `boundless.docs.{server,root,version,prefix,langs,url}`。证据链接——`pnpm test` 160 例全绿（含新 `test/docsMcp.test.ts` 11 例）、`pnpm run check` 0 错误；实跑 `node tools/verify/docsMcp.cjs` 11/11 PASS：harness 用扩展自己的 writer 写出真实 `.vscode/mcp.json`，再按该文件里的 command/args 起真二进制（`${workspaceFolder}` 按编辑器变量语义替换）做 MCP stdio 会话——`tools/list` 只列 `search_docs`/`read_doc`；`search_docs "second edition"` 命中仅 v2 才存在的 `guide/second.md` 且 `version` 为配置给的 `HEAD`；`read_doc guide/second.md` 返回 `version=HEAD`、`commit=2b8be3d` 恰等于工作区当前 HEAD、`source=https://docs.boundless.example/guide/second.html`；同一配置把 `boundless.docs.version` 改成 `v1` 后，v2 页面零命中、`guide/entities.md` 回到 v1 文案、链接保持仓库相对 `docs/guide/entities.html`。如实登记——编辑器内的 MCP 客户端加载（自动发现 `.vscode/mcp.json`）未在真实 VS Code 里验证：本机 `/usr/bin/code` 1.144.1 可装但不跑带 GUI 的 MCP 会话，取证止于"按其写出的配置实跑真二进制并逐条核对查询结果"。
+  - 证据：原版结果——引用端的文档是仓库里的 markdown（VitePress 渲染），编辑器侧没有任何检索入口，开发者只能翻目录或开网页版；引用端不存在 MCP 面。新版结果——`extensions/vscode/src/workspace/docsMcp.ts` 生成 `.vscode/mcp.json` 条目：`type: stdio`、`command` 指向 `boundless-docs-mcp`、`args` 依次为 `--root ${workspaceFolder}`、`--prefix docs`、`--version HEAD`、`--langs zh`，配置了站点地址才追加 `--docs-url`（`DOCS_MCP_DEFAULTS` 与 `boundless-docs-mcp` 自己的默认值一致）；`mergeMcpJson` 与 launch.json 同一"只增不改"面——只替换自己写的那一项、用户自己的 server 原样保留，解析不出来的文件整体重写；`extension.ts` 的 `boundless.setupDocsMcp` 命令按工作区文件夹逐个写入 `.vscode/mcp.json`，新增 6 个设置 `boundless.docs.{server,root,version,prefix,langs,url}`。证据链接——`pnpm test` 160 例全绿（含新 `test/docsMcp.test.ts` 11 例）、`pnpm run check` 0 错误；实跑 `node tools/verify/docsMcp.cjs` 11/11 PASS：harness 用扩展自己的 writer 写出真实 `.vscode/mcp.json`，再按该文件里的 command/args 起真二进制（`${workspaceFolder}` 按编辑器变量语义替换）做 MCP stdio 会话——`tools/list` 只列 `search_docs`/`read_doc`；`search_docs "second edition"` 命中仅 v2 才存在的 `guide/second.md` 且 `version` 为配置给的 `HEAD`；`read_doc guide/second.md` 返回 `version=HEAD`、`commit=2b8be3d` 恰等于工作区当前 HEAD、`source=https://docs.boundless.example/guide/second.html`；同一配置把 `boundless.docs.version` 改成 `v1` 后，v2 页面零命中、`guide/entities.md` 回到 v1 文案、链接保持仓库相对 `docs/guide/entities.html`。如实登记——编辑器内的 MCP 客户端加载（自动发现 `.vscode/mcp.json`）未在真实 VS Code 里验证：本机 `/usr/bin/code` 1.144.1 可装但不跑带 GUI 的 MCP 会话，取证止于"按其写出的配置实跑真二进制并逐条核对查询结果"。
 
 
 #### BW-20-03 打包与三端验证
@@ -9206,110 +8977,89 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 缓存解析结果并评估预生成编解码器，衡量启动和序列化开销，锁定定义摘要和产出字节。
 
-- [x] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。（本席 `a041efd`+`9623715`：crates/entitydef/tests/entitydef_baseline.rs 三腿=冷启动 factory_create full_def(3 实体)+fantasydemo_def(5 实体)（诊断零+digest 钉住 oracle 否则不产生计时行）、编解码=两夹具全实体全属性解析默认值 add_to_stream/create_from_stream 20k 轮×每轮逐值恒等断言（11 族：标量 5+STRING/FLOAT64/ARRAY×2/FIXED_DICT×2）、暖启动同进程二次加载 digest 等冷值；记录 TSV docs/review/fixtures/entitydef-baseline/entitydef-baseline.tsv 63 行：cold 0.637/0.615ms、warm 0.448ms、标量 p50 457-474ns、FLOAT64 268ns、STRING 340ns、ARRAY 238/247ns、FIXED_DICT2 字段 817ns/3 字段 1565ns；墙钟只记录不设带；证据页 docs/review/opt-04-01-01-entitydef-baseline.md；entitydef 既有测试未动全绿）
-- [x] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。（本席 `9881c37`：FsResolver::open_section 进程级 parse 缓存（参照 resmgr/data_section_cache.hpp find/add/clear+setSize：thread_local 按全路径键、上限 1024 条溢出即清、clear_section_cache() 面；MemoryResolver 不动、仓内 FsResolver 消费者皆只读夹具）；基线 runner 起手清缓存→startup_*=缓存冷/ warm=缓存热；**比较**=同跑 cold 0.916ms vs warm 0.297ms（暖启动省 0.619ms=读+解析份额；跨记录冷值不作比因负载 40→21 档差已披露）；digest 前后同 18D00DC6 钉 oracle 恒等；entitydef 库测 247+集成全绿、覆盖 entity_description 99.31%/entity_map 99.24%/data_type 98.02%≥98；证据页 opt-04-01-01-entitydef-baseline.md OPT-04-01-02 节+TSV 滚动 canonical 记录）
-- [x] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。（本席 `f428168`：crates/entitydef/tests/entitydef_codec_gen.rs 评估原型=Kind 树载入期编译成闭包树（子经 Rc 共享、值词汇不动；write_int/truncate_integer/check_sequence_capacity 三 crate 私有助手忠复制、由字节恒等面钉住）；字节恒等腿=两夹具全 21 属性 gen 编码逐字节==解释式+两向解码均还原默认值+不支持类目（CLASS/UDO_REF/PYTHON/USER_TYPE）计数断言零；成本腿=每族 encode-only/decode-only 各 2 万轮、sink 构建在钟窗外、解码走预编码+rewind，TSV docs/review/fixtures/entitydef-baseline/codec-gen.tsv 92 行+三连跑方向全稳：标量 encode −3..−9%/decode −4..−6%、STRING −5%/−6%、ARRAY −8..−12%、**FIXED_DICT 两族反而 +0.4..+11%**（每字段 boxed 闭包间接调用吃掉省下的 match）；生成成本 7µs/21 属性无关紧要；**裁定=不采纳入引擎**——闭包树扁平族赢 3-12% 合成族输 4-11%，构建期直线单态 codegen 不可用（定义是运行期数据、参照引擎自身亦解释式分发）、标量 ~10ns 在噪声带不作契约；记录事故=首次 rustfmt 后单跑瞬时失败无 panic 留痕、同二进制 16 连跑全绿；零 src 改动=覆盖门不适用，entitydef 247+评估 2 测绿）
-- [x] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。（本席 `6ce8e4c`：crates/entitydef/tests/entitydef_rerun.rs 复跑 harness 三腿全一致——①摘要=full_def/fantasydemo_def/service_def/entity_index 四树经 factory_create 重载 digest 逐字==docs/review/reference/*_entitydef.json oracle（entity_index 无 alias.xml 容一字告警同 differential；client_integration 走 BW04_CI_RES env 未设则记 skipped，同 differential 口径）；②实体快照=fantasydemo Avatar.def（SHA e35472f0…==采集输入）+采集工具固定输入节，经参照四 pass shouldConsiderData 顺序（entity_description.cpp：base非client/base+client/cell+client/cell非client，每 pass 声明序）复现 entity-Avatar.snapshot.hex 15 字节逐字节恒等（含 INT8 输入 300→0x2c 参照截断）；③数据库行=BASE|CELL|ONLY_PERSISTENT_DATA（持久只认显式 <Persistent> 标签、缺省 false=data_description.cpp:220 readBool）+canBeOnCell 追加 position/direction/spaceID（xml_database.cpp getEntity 行公式）复现 database-Avatar.row.hex 38 字节逐字节恒等；记录 docs/review/fixtures/entitydef-baseline/def-rerun.tsv 14 行（四 digest+双 hex+双字节数+match 旗标）；**验收=产物一致，每次跑都断言**；OPT-04 段全收官）
+- [ ] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。
+- [ ] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。
+- [ ] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。
+- [ ] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。
 
 ### OPT-05-01 录制负载热点和故障基线
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `e028fbf`：crates/server-runtime/src/cellappmgr_baseline.rs 三腿合成钟 harness 在 crate 内 `#[cfg(test)] #[path]` 挂进 cellappmgr.rs（Space.root/BspInternal 私有），①分配=零面积 sliver B+热点 A 经 inform_of_load EMA 12 步（bias 0.05）爬坡，balance 一步收敛 B.ymin=ENTITY_EDGE=4000 钉死每步 EMA/每轮 A/B 范围；②回收两臂=零面积 sliver 首轮 1 CellRemoval+兄弟升 Rect::unbounded()，实面积 cell 因 growing child A 的 chunk ghost margin（Space::load_balance 从 unbounded 重导范围→chunk_bounds 不含 inflate desired→fallback A.range，chunk_limit=A.ymax-500=3500）被钉在 4000 不回收，两面对照记录；③恢复=严格 now-lastHeard>timeout 检测钉 5000ms/4tick，死信广播+BaseAppMgr 报告+双 cell 树erase 后存活 cell 占 unbounded+最后 app 死触发受控关服；ESTIMATED_INITIAL_CELL_LOAD bump 归 create_space creation seam；证据页 docs/review/opt-05-01-01-cellappmgr-baseline.md+TSV 56 行 fixtures/load-hotspot/cellappmgr-baseline.tsv；clippy/fmt 绿，server-runtime 1680 测绿，全仓 6949 passed/0 failed（基线 6948 +1））
-  - 双交付 FLAG（2026-11-26，本席登记）：main 另收平行腿 `e028fbf`（cellappmgr_baseline.rs 三腿合成钟 harness 入 cellappmgr.rs）与本席 `5120dea`+`0fbfa8f`（load/src/hotspot.rs run_hotspot_baseline）同面异实现，待主席择一。
-- [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（commit cd056fc：cellappmgr_tuning.rs 三固定场景对比——①热点爬坡跨 EMA bias 0.02/0.05(出货)/0.1/0.2：达阈 informs 52/21/10/5 严格反序、落点几何全同(4000 entity edge 两 pass)，bias 只换探测延迟不换落点；②反转跨 aggression 两分支：反转臂首 pass 减半 0.5 后 ×1.0718/pass 回升(8 pass 0.8123)、延续臂恒 1.0，closest_limit 单调故两臂落点同(5000=level1)，阻尼=抗振荡面零几何代价；③回收 drain 跨 chunk-limit 开关：关=1 pass 完成(CellRemoval 1+幸存者升 unbounded)、开=线被幸存者 chunk ghost margin 钉在 4000(基线 held 面)，空 retiring cell 按参照 Space::writeEntityBoundsForEdge 报无界边+offload floor(这才让 entity limit 可达世界边)；证据页 docs/review/opt-05-01-02-load-tuning-comparison.md+TSV 27 行 fixtures/load-hotspot/cellappmgr-tuning.tsv；server-runtime 1702 绿、全仓 6950 passed/0 failed）；⚠️ FLAG 平行交付未决 2026-11-26：bw14-script-host `a577c5c`+修 `9563f2e`（balance_baseline.rs 312 行真 CellAppMgr 96 tick 双相位+ScheduleLedger+BalanceTuning seam 七旋钮含 safety_bound/safety_ratio+cellappmgr.rs +122+证据页，lane-only）vs main 落地 bw15 `cd056fc` 面（cellappmgr_tuning.rs 三固定场景对比），异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `cd056fc` 面（cellappmgr_tuning.rs 三固定场景对比，已在树、server-runtime 全绿）为本行交付面；bw14 `a577c5c`+`9563f2e`（balance_baseline.rs）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：择 main `cd056fc` 面（cellappmgr_tuning.rs 三固定场景对比）为本行交付面；本席 lane-only `a577c5c`+修 `9563f2e`（balance_baseline.rs 312 行+BalanceTuning seam 七旋钮）转存档记录，随 lane 并入由主席处置。
-- [x] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。(2026-11-26 lane/bw15-platform fd21b51→main 51bf749+证据 0407552→515351b：复跑三面零失败——①迁移面 cargo test -p server-runtime --lib -- migrat offload teleport 75/75 绿（entity_creator mailbox/ghost 跨 space 传送可见集/offload 两侧恰一 real/控制器恢复/message_redirect 切换中恰一次）；②关服面 -- shutdown mixed 43/43 绿（shutdown 阶段线值对参考 enum/完成队列按序 drain/server_app init 失败也跑 fini/space 空 cell 销毁回收）；③混部面 el7_mixed_deploy --ignored 1/1 绿 5.01s，EL7 真二进制 pid/整机查询+addTCP/add 双版本+TCP 注册 22B+记录帧 45B×4+UDP×3+mldb 三标记+协议版本 10，TSV 与已提交 fixture 逐行 IDENTICAL；④附加 lifecycle_scenario.rs 种子场景 6 测绿（seed 41 复现/entity restore 一致/进程阶段与 task drain/replay tail 终态可复现，无墙钟采样）；本席 main 树复核=上述三面本机重跑数字；坑=EL7_MIXED_OUT 须文件路径传目录 IsADirectory)
-  - main 已收（台账席 1a21d7a）：本席 `fd21b51`→main `51bf749`（逐字节同）+复跑证 `515351b`，本席勾保持；main 行文误标 lane/bw15-platform，实为 lane/bw14-script-host 本席交付。
+- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。
+- [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。
+- [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 
 ### OPT-06-01 登录与资源下载基线
 
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
-- [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。(2026-11-26 lane/bw15-platform 5ec0620→main 4c29980+证据 afee8b2→fcfa88f：crates/load/src/login_baseline.rs 组合既有面记录三族数字——峰值=login hurricane online 序列最大值（seed 固定可复现）；拒绝率=FD 预算拒绝 login_refusal_rate=refused/(admitted+refused) 单列（与「发出后失败」分账，login_success_rate 仍参考 admitted/attempts 语义）；延迟=资源下载分块 tick 地板 ceil(payload/BUNDLE_BYTES)（参考 ServerDownloads::add_to_bundle 每 mini-tick 一 bundle 载荷）+队列驻留字节；**读法警告：离线面是模拟时间无墙钟 RTT，延迟=确定性地板非实测往返**；记录运行=保存夹具 login-hurricane.xml seed 20261123/FD 500×FD_PER_BOT+1/载荷 4096B→attempts 500/admitted 500/refused 177/online_peak 500/refusal_rate 0.26145/download_ticks 4/queue_bytes 4096，夹具 docs/review/fixtures/load/login-baseline.report.json；5 单测钉 ceil 分块/队列字节/峰值拒绝记录/seed 复现/预算拒绝臂；本席 main 树 load --lib 174 绿（含 login_baseline 6）)；⚠️ FLAG 平行交付未决 2026-11-26（bw15 `cca778a` 登记）：bw14 席 `cc648b5`（crates/server-runtime/src/login_baseline.rs 586 行 seed 登录+下载基线账本，lane-only）vs main 落地 bw15 `4c29980`（crates/load/src/login_baseline.rs，经 5ec0620 收编入 main），异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `4c29980` 面（load/login_baseline.rs，5 测绿在树）为本行交付面；bw14 `cc648b5`（server-runtime/login_baseline.rs 586 行）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：择 main `4c29980` 面（load/login_baseline.rs 三族数字）为本行交付面；本席 lane-only `cc648b5`（server-runtime/login_baseline.rs 586 行 seed 洪泛账本）转存档记录。
-- [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。(2026-11-26 lane/bw15-platform 083c598→main 790332b+证据 83f6caa：fleet.rs botsForLogOnRetry_ 排水从每条到期 bot 单独 Vec::remove 改单遍分区（mem::take 遍历 log_on_retry_time()<now 到期者 log_on() 后推回，O(n²)→O(n)，队序/重登序不变固定 seed 派遣序不变）；新测钉 4 到期条队序重登+1 留队；bench login_surge.rs parked 64/512 同刻到期单 tick 排水+Throughput::Elements；A/B 对照 taskset -c 6 钉核交错 6 轮：drain_64 13.93→7.39µs 0.530（1.9×）、drain_512 776→80µs 0.104（9.65×）每轮候选全优无交叉=效应远超噪声；本席 main 树 bench 跑通（drain_512 ~90µs 级）load --lib 175 绿，clippy 净，smoke.rs 三处 expect(&format!) 被遮 lint 顺手清（main 已有此修 auto-merge 消重）)；⚠️ FLAG 平行交付未决 2026-11-26（bw10 `05c581c` 登记）：bw14-script-host `3ced450`（crates/server-runtime/src/login_tuning.rs 115 行+login_baseline.rs 扩展登录排队尾延迟对比，lane-only）vs main 落地 bw15 `790332b` 单遍排水（fleet.rs O(n²)→O(n)+benches/login_surge.rs），异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `790332b` 面（fleet.rs 单遍排水，A/B drain_512 9.65× 零交叉在树）为本行交付面；bw14 `3ced450`（login_tuning.rs）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：择 main `790332b` 面（fleet.rs 单遍排水 9.65×）为本行交付面；本席 lane-only `3ced450`（login_tuning.rs 排队尾延迟对比）转存档记录。
-- [x] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。(2026-11-26 lane/bw15-platform efabd67→main 6ffd9af+bench 6318f61→bdf1327+证据 5c37709→c23987a：data_download.rs 装配 segments.concat()→assemble() 先按总长 with_capacity 一次分配再按值逐段 move 拷入——concat 峰值活数据=2×流长（完整结果+全部段并存）按值消费恒=1×流长，并发下载同刻完成时进程峰值 RSS 结构性减半；新测钉 capacity==6 精确一次分配+空段臂，其余 7 行为测不动（到达序拼接语义不变）；bench download_assembly complete_64/512；A/B 钉核交错 6 轮：complete_64 0.918/complete_512 0.845 轮间交叉=墙钟噪声内无可靠收益，**诚实判读=内存半边结构性 0.5、传输时长半边被 bundle 分块契约钉死（ServerDownloads::add_to_bundle 每 mini-tick 一 bundle，与参考一致，对照结论非优化项）**；本席 main 树 sr lib 1734 绿+bench 跑通，clippy 净)；⚠️ FLAG 平行交付未决 2026-11-26 两路：bw14-script-host `3e4839c`（crates/server-runtime/src/download_tuning.rs 263 行下载时长+内存对比，lane-only）与 bw16-18 `42d6686`+`238aab3`（crates/server-runtime/src/server_download.rs drain 直排+benches/download_drain.rs+legacy_queue.rs+tests/download_drain_alloc.rs+证据页 download-drain-server-side.md+TSV，lane-only）vs main 落地 bw15 `6ffd9af` assemble 预装配（data_download.rs 峰值活数据 2×→1×），三面异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `6ffd9af` 面（data_download.rs 客户端组装，峰值活数据 2×→1× 在树）为本行交付面；bw16-18 `42d6686` 服务器侧排出面（其页自报 drain_256 0.69-0.72×）与 bw14 `3e4839c` 对比面均记为补充/备选 lane-only 归档不删——三者异文件零重叠，如需并入补充面或置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：三路择 main `6ffd9af` 面（data_download.rs 预装配）为本行交付面；本席 lane-only `3e4839c`（download_tuning.rs 263 行）与 bw16-18 `42d6686`+`238aab3`（server_download.rs drain 直排）均转存档记录。
-- [x] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。(2026-11-26 lane/bw15-platform 838a54a→main 2f27440：复跑行零代码改动三条面全绿判一致——①重复登录 duplicate_auth.rs 5/5（同账号二次登录原位改写唯一映射/并发拒不污染/checkout 中拒不计尝试/logoff 后仍单记录/自定义扩展可重复）；②重连 -- relogon relogin 28/28（relogon.rs 9 态机回复码族+baseapp_relogon.rs 13 web/proxy 复用族+log_on_records 2+login_entity 2+headless_client 1，load 重连链 3 测+reconnect.xml 场景加载）；③旧客户端 loginapp.rs 版本面 10/10（三旧版本 BadProtocolVersion 且先于凭据参数拒/supports 严格相等/截断流 MalformedRequest/线上序反自然序回放）；ci/load.sh 4 lane PASS 6/6 场景入带；本席 main 树复核=同组腿本机重跑同数全绿)；⚠️ FLAG 平行交付未决 2026-11-26（bw10 `05c581c` 登记）：bw14-script-host `da80f8e`（crates/server-runtime/src/login_rerun.rs 422 行重复登录+重连复跑面，lane-only）vs main 落地 bw15 `2f27440` 复跑一致性面，异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `2f27440` 面（复跑一致性三面全绿在树）为本行交付面；bw14 `da80f8e`（login_rerun.rs 422 行）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：择 main `2f27440` 面（复跑一致性）为本行交付面；本席 lane-only `da80f8e`（login_rerun.rs 422 行复跑面）转存档记录。
+- [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。
+- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
+- [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
+- [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
 
 ### OPT-07-01 备份和归档基线
 
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
-- [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。19c4d4d（backup_baseline.rs 48 实体种子舰队过真实备份面：带宽逐 tick 1396/1410/1412×4 共 8454 字节 6 tick 清队列、收发队列峰各 48、接管 48/48 恢复且属性全等、归档恢复耗时 8 tick 重持久化 24/24 且逐实体往返核等；4 测 98.31% 行 100% 区域）
-- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。9abf58e（backup_tuning.rs BackupTuning seam(Default=逐位复现由测钉)同种子同负载双跑：slice 8→16+period 8→4，队列 6→3 tick、恢复 8→4 tick，代价=每 tick 带宽峰翻倍(1412→2824)但字节总恒等 8454(方向断言诚实)；same_load 钉同舰队/同持久集/同字节/同恢复；4 测 100% 行）
-- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。4c19ee7（shared_data_baseline.rs+shared_data_tuning.rs 96 变更过真实双 mgr 链(set/del 四 scope+forward/relay 环 4 BaseApp+3 CellApp)：shipped 575 消息(base284/cell219/fwd24/relay48) vs 抑制 no-op 写 444(216/174/17/37)=省 131(−22.8%)，21 次 no-op 放大为全链腿消去(全局 set=5/转发 set=9/cell=3)；终态三权威图逐位相等(same_load 钉)；跨种子形状钉；9 测 baseline 98.58%+tuning 100%）
-- [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。2fbfcf8（takeover_rerun.rs 12 实体种子舰队过真实备份面后源亡接管 restore 12/12 属性全等；16 变更建双 mgr 权威图后按 count+pairs 恢复流形状落盘、全新 mgr 对经真实 recover_shared_data_from_stream 读回=四图逐位等(2/4/2/4 条目)；跨种子形状钉；4 测 99.65% 行 100% 区域，唯一缺行=属性不匹配假臂被断言正确性排除）
-
+- [ ] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。
+- [ ] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。
+- [ ] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。
+- [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。
 
 ### OPT-08-01 密集 AOI 基线
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
-- [x] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。已交付 eee8fde：crates/server-runtime/src/aoi_baseline.rs 全 shipped 栈逐 tick 接线（cross 范围列表 move_entity shuffle ±0.75m 确定步/AoI trigger 跨界喂 witness add_to_aoi→flush→EnterAoI→request_entity_update 回应→CreateEntity/vision trigger 喂 vision_update 1.2rad 锥 28m 每 tick 清晰地形/Witness::update 预算调度 setWitnessCapacity(64000,10)=772B/tick 密集下绑定）。120 实体 10×12 格 4m 间距单观察者：账本=48+16 tick、tick0 创建爆发 289 消息 2704B（120 EnterAoI+120 CreateEntity）、tick1 首见爆发 44 starts、稳态窗(8..48) 4654B ≈116B/tick 预算绑死、总广播 5708 消息 9188B、AoI 跨界 120 进 0 出、seeing churn 77/31；迁移腿=handover 46 可见→目的地静默种子 46→真新 id 重公告 12、重复公告 0(diff 契约)、2 tick 收敛到 native 观察者集合(42)。断言全结构性（爆发一次性/稳态不超预算且恒发/种子无声/start 永不命中已持有 id/收敛 native/全账本逐 tick 复跑恒等）；墙钟探针(seeing 4.0ms/scheduling 392ms over 64 tick)只打印。面发现：目的地 vision trigger 必须由 vision_start_real 新建——预建 trigger 令 restore 的 set_vision(None→Some) 走清空路径、entities_in_vision_range 留空种子盲走；迁移实体 startReal 重建 trigger 正是 range 填充正确的机理。docs/review/opt-08-01-01-dense-aoi-baseline.md。门禁 server-runtime lib 1748 绿/fmt/clippy 净。
-- [x] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。已交付 98725ed：crates/server-runtime/src/aoi_tuning.rs 同负载双比较（OPT-08-01-01 种子/轨迹/120 实体场全 same-load）。①扇区预过滤索引=seeing pass 前按水平角>vision_angle+0.25rad 丢弃目标（水平朝向下 3D 锥角≤水平角⇒保守不过判）：48 tick 走行 5760→2471 行=省 57.1% 内圈、可见集/seeing-start 逐 tick 零失配(48/48 恒等)、探针墙钟 2.645→1.917ms；范围列表已索引距离故收益有界=仅去背向扇区。②Witness 调度扫描=调度器操作面 setWitnessCapacity 64000/128000/256000 bps(772/1572/3172B)：覆盖期预算绑死(爆发 2704B 赤字回扣)4×带宽 3→2 tick；稳态广播量对带宽不敏感(~116B/tick ≪ 772B 预算)——MAX_PRIORITY_DELTA 窗[front,front+5.0) 先于预算清空=稳态限流者是窗宽不是链路；两容量全覆盖(窗饿死人无)单调性断言；per-entity 覆盖从 bundle EntityUpdate id 观测。等值/单调全 assert、墙钟只打印。docs/review/opt-08-01-02-aoi-index-witness-scheduling.md。门禁 server-runtime lib 1750 绿/fmt/clippy 净。
-- [x] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。(2026-11-26 本席 lane/bw14-script-host 5e4181c:space_parallel.rs 复用 BW-08-05-01 decide_offload/collect_offload 实面,120 实体密场按 x=16m 分裂面两侧驻扎,AoI 基线同款 ±0.75m 步表真跨面;台账 crossings=2/offloads=2(逐 crossing 恰一次,落点=p_cell_at 所含侧)/stays=118,check_ms≈0.009-0.012 probe 打印不断言;分支规则 coordinate<position 把分界平面判给右子(x/z 双轴实证,骑面者归左必迁 OffloadTo(FAR));四 Stay 门(未创建/死通道/缺通道项=死/删除挂起)+disabled cell_should_offload 全 Stay;重跑台账恒等;4 测,lib 1754 全绿;review=docs/review/opt-08-01-03-space-parallel.md)
-- [x] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。(2026-11-26 本席 lane/bw14-script-host 616a885:aoi_rerun.rs 复跑密场景两遍逐 tick 审计,TickLedger 增有序 starts/stops/enters/leaves+整份 bundle 发送序;状态正确=视距触发器布点=窗谓词 (sub-range<x≤sub+range) 双轴、可见集=扫描锥真值(update gate 读控制器公开 tick 计数,run tick 用现位置/skip tick 恒等携带集)、start/stop 差分自洽(starts 只打未见 id/stops 只打持有 id/差分复现 visible_entities)、EnterAoI/LeaveAoI 消息=触发器跨越、witness AoI 映=500m 窗、bundle 逐实体序 EnterAoI→CreateEntity→EntityUpdate 更新不先于创建;迁移腿 destination+native 双世界 16 tick 全审,seed 静默 46→46、held 重报=0、终态 visible 42/range 布点/AoI 映三层全等 native;坑=client bundle 是客户端面向 AoI 态唯一重放源,tick 0 120 条 EnterAoI=120 跨越,二次重放会重复计数——两视图须对账不能叠加;2 测,lib 1756 全绿;review=docs/review/opt-08-01-04-aoi-rerun-state.md)
-
+- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。
+- [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。
+- [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。
+- [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。
 
 ### OPT-09-01 分别采集 MySQL 与 PostgreSQL 基线
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
-- [x] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。（opt-09-db-baseline 席 `da4e411`，lane/opt-09-db-baseline，main=`e59ca31`：crates/db-postgres/tests/store_baseline.rs 6 测=512 行确定性语料同一数据集落 MySQL（DDL 对照参考 db_storage_mysql 布局+值类型逐 kind 对）与 PostgreSQL（JSONB 嵌套列 codec 往返）双后端，schema/确定性/嵌套列各单测；TSV docs/review/fixtures/store-baseline/store-baseline.tsv 22 行，证据页 docs/review/opt-09-01-01-store-baseline.md；workspace 新增 `mysql` 依赖（minimal-rust）；本席 main 复测 6 绿。⚠️ 与 bw14-script-host `7024fb1` 平行交付 FLAG 待主席择一）→ **主席裁定 2026-11-26**：择 main `e59ca31` 面（lane/opt-09-db-baseline `da4e411` 收编形，512 行单数据集双后端在树）为本行交付面；bw14 `7024fb1` lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 本席 lane-only 交付存档（2026-11-26 主席裁定择 main `e59ca31` 面，opt-09-db-baseline `da4e411` 收编形）：本席 `7024fb1`（baseline_dataset.sql 双真机采集）转存档记录。
-- [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。（opt-09-db-baseline 席 `da9a135`，lane/opt-09-db-baseline，main=`04f5d37`：crates/db-postgres/tests/store_pool_candidates.rs 3 测=连接池与预编译语句候选对照（参考 `numConnections_` 默认 5 长连会话+每线程一连接+启动期预编译实体 SQL 模板两形），各后端延迟与吞吐逐形报告且回读恒等；TSV docs/review/fixtures/store-pool/pool-candidates.tsv 48 行，证据页 docs/review/opt-09-01-02-store-pool.md；本席 main 复测 3 绿）
-  - 本席 lane-only 交付存档（main 面=opt-09 lane `da9a135`→`04f5d37`）：本席 `9dda748`（pool_merge_eval.rs 三执行形状真 PG 对比）转存档记录。
-- [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。（opt-09-db-baseline 席 `cb65282`，lane/opt-09-db-baseline，main=`8b1fb8a`：crates/db-postgres/tests/store_commit_candidates.rs 4 测=实体写缓冲进 Transaction 按归档周期一 `COMMIT`（参考 sqlite_database.cpp 131-177+db_config 5s 默认）与显式 WRITE_EXPLICIT 两臂提交时长+归档整合恢复时长报告，落库回读逐字段等；TSV docs/review/fixtures/store-commit/commit-candidates.tsv 16 行，证据页 docs/review/opt-09-01-03-store-commit.md；本席 main 复测 4 绿）
-  - 本席 lane-only 交付存档（main 面=opt-09 lane `cb65282`→`8b1fb8a`）：本席 `01d391c`（archive_batch_eval.rs 三写形真 PG 对比）转存档记录。
-- [x] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。（opt-09-db-baseline 席 `7663701`，lane/opt-09-db-baseline，main=`3a7b9d0`：crates/db-postgres/tests/store_recovery.rs 3 测=参考 MySqlBackgroundTask::doBackgroundTask 契约复跑——可重试失败恰一次重试（attempts 2/on_retry 1）、回滚批零幸存行、事务外断连恰一次自动恢复+事务内手动重连；恢复后数据一致计数钉死；TSV docs/review/fixtures/store-recovery/recovery.tsv 21 行，证据页 docs/review/opt-09-01-04-store-recovery.md；本席 main 复测 3 绿）
-  - 本席 lane-only 交付存档（main 面=opt-09 lane `7663701`→`3a7b9d0`）：本席 `f09727b`（rerun_recovery.rs 三腿复跑）转存档记录。
+- [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。
+- [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
+- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
+- [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
 
 ### OPT-10-01 地图加载和查询基线
 
 优化空间流式装载、碰撞走查和导航缓存。比较峰值内存、场景冷启动和查询尾延迟，核对坐标与碰撞结果。
 
-- [x] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。(2026-11-26 本席 lane/bw14-script-host 37ec32a:crates/chunk/tests/map_load_baseline.rs 对原版夹具空间(docs/review/fixtures/chunk_space 18×2 网格)走全套流式面=解析 mapping→gather_chunks 枚举 37 候选→load_and_bind 绑 6 个 .chunk→focus→双半板地形 slab 过 focussed add_obstacle 门,整段冷启动计数分配器(OPT-01-01-01 同款 thread-local)+VmRSS 包夹;保存:冷启 1.6-2.5ms/2025 allocs/163790 bytes/rss Δ≈428kB,find_chunk_from_point 100 探针 p50 0.53µs/p99 1.7µs,collide findDropPoint 形 100 射线(50m→-10m 止于 10m 板) p50 1.8µs/p99 18.7µs;结构账断言且重跑恒等:绑集=6 文件、逐探针命中属主 chunk、逐射线 40m 处止板(±1e-3)、绑序/答案/距离/分配数全复现(2025/163790 双跑);墙钟与内存 probe 打印不断言;chunk 188 测全绿;review=docs/review/opt-10-01-01-map-load-baseline.md)
-  - main 已收（台账席，2026-11-26）：本席 `37ec32a`→main `5d88b28`（逐字节镜像，patch-id 同），本席勾保持。
-- [x] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。（2026-11-26 lane/bw14-script-host 7fc6d76：crates/chunk/tests/map_stream_opt.rs 走 shipped scan 卸两格重载全周期，候选=BwResource 段缓存 LRU 同 load_and_bind 解析面 vs 原始读+解析基线；峰值内存=计数分配器 LIVE 高水位 PEAK 单元，报告见 docs/review/opt-10-01-02-map-stream-opt.md——冷缓存填付 write_to_string 尺寸化 +469 allocs 更慢，重载 3.77ms/759 vs 原始 10.46ms/931，热全空间 1.50ms/1132 vs 冷 2.97ms/2025；结构面断言：缓存段 PartialEq 同树、双侧 bound/reloaded/finds/dists 全等、周期复跑恒等；墙钟探针数据只印不断言，allocs/peak 复跑精确复现；chunk 门禁 190 绿）
-  - main 已收（台账席，2026-11-26）：本席 `7fc6d76`→main `ac2d93d`（逐字节镜像），本席勾保持。
-- [x] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。（2026-11-26 lane/bw14-script-host bfde122：crates/client/tests/query_cache_opt.rs 双腿——导航=六单点集 permissive 链全 outside chunk，缓存面 find_path ReadWriteCache 骑成员 NavigatorCache 逐跳 vs 重算面 navigate_path_points/findFullPath 每调 scratch 缓存，同一批起点；碰撞=find_drop_point 打 BW-10-07-04 clientquery 夹具世界六 RAY 探针×40 重复；报告 docs/review/opt-10-01-03-query-cache-opt.md——缓存填跳 47 allocs 后四跳各 8 allocs（set path 尺寸 [6,5,4,3,2] 弹尽=命中臂逐跳行使），缓存总 79 vs 重算总 281（3.6× 省），复跑账 [47,8,8,8,8] 精确恒等；碰撞尾 p50 1.7-6.8µs/p99 至 26.3µs（GHOLED 格走查跨柱界），40 重复逐探针位级恒等（距离/落点/三角形/miss）；结构断言：逐跳进一格、末跳答终点、重算路线=共享穿越序列+隐藏穿越+裁剪终点（面发现：findPath 末跳换原始 dst 藏终点集穿越 vs findFullPath 保留+裁剪，两面对比共享序列各钉自己终点）、缓存侧分配严格更少；墙钟 probe 只印不断言；client 门禁 868 绿）
-  - main 已收（台账席，2026-11-26）：本席 `bfde122`→main `fafbe51`（逐字节镜像），本席勾保持。
-- [x] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。（2026-11-26 lane/bw14-script-host eb163d4：crates/client/tests/map_rerun_fixtures.rs 双腿复跑——路径=BW-10-07-03 genmap 双 chunk 世界按真相绑序重绑，五条 XPATH 探针对走 find_path ReadWriteCache 缓存步进面，源集侧逐跳钉在真相链上有序子序列（平滑可抽直不可绕），终点=真相解析终点（ACROSS 绕洞/RAMP 上坡/AROUND/SEAM A 侧 [wp0,wp4,wp3]+终点 B wp7/SEAMBA 终点 A wp3），五条复跑恒等；碰撞=chunk_space 夹具图走 OPT-10-01-02 缓存解析面 load_and_bind 绑 6 文件+参考地形 slab 过 focussed 门，100 探针格走客户端 findDropPoint 全部 40m 处止 10m 板±1e-3+格心解析属主 chunk，第二遍位级恒等；面发现两条：远侧跳=walk 面自有 for_destination 目标解析可落在原始 A* 链外邻点（源集侧才是夹具实质故严钉）、TOUR 不入走查（XPATHNONE 钉一次性 A* 面=genmap_load 已复放，walk 面每调只跨一门按构造可合法走完）——见 docs/review/opt-10-01-04-map-rerun-fixtures.md；client 门禁 870 绿）
-  - main 已收（台账席，2026-11-26）：本席 `eb163d4`→main `93a1576`（逐字节镜像），本席勾保持。
-
+- [ ] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。
+- [ ] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。
+- [ ] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。
+- [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
 
 ### OPT-11-01 三端固定镜头基线
 
 优化各端 GPU 上传、渲染批次、资源流与客户端帧调度。比较帧时间和显存，用固定镜头做视觉回归。
 
-- [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。(2026-11-26 lane/bw14-script-host 877e016：crates/client/tests/render_baseline_opt.rs 三端(linux/windows/macos=BW-11-04-07 可比集)各走同一固定镜头=DeviceConfig::default() 640×480 RGBA8 +64 帧 check_device→scene.step→present shipped 设备面；帧时间=每帧 Instant 只印不断言（本机 debug 面 p50 18.8-19.5ms/帧=307200 set_pixel+FNV，逐端逐帧 192 行 FRAME-TIME 落 docs/review/opt-11-01-01-render-baseline.md）；显存=计数分配器 LIVE+PEAK 高水位（OPT-10-01-02 变体）结构账断言：设备创建 2 allocs/1228848 bytes（640×480×4=1228800 背板+48 bytes 计数器 Arc），逐帧 0 allocs/0 bytes（present 原地画+摘要无上载抖动），整程峰值=创建足迹 1228848 恒不涨；固定镜头两证=新设备直接步进到帧序号复现该帧摘要（1/7/31/64）+全账复跑恒等；三端摘要逐帧全等+分配账全等；saved 基线钉 1..=8+64 帧摘要常量+整程内存账常量（光栅/场景/设备内存任一变化即触发，OPT-11-01-04 复跑同钉）；client 门禁 872 绿）
-- [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。(2026-11-26 lane/bw14-script-host 5313db6：crates/client/tests/render_batch_opt.rs 双面上传评估——shipped 面=TestScene::draw 逐像素 set_pixel（640×480 每帧 307200 次写）vs 批量候选=同像素数学走 shipped 批原语（整幅 fill 背景+标记列块逐行 slice fill，每帧 481 次写=1+480）；三端(linux/windows/macos)各 64 帧画+摘要分开计时对比（FRAME-TIME 逐帧 192 行+BATCH-TAIL 落 docs/review/opt-11-01-02-render-batch-opt.md）：批量面画半 p50 1.97-2.10ms vs shipped 15.05-17.36ms=7-8× 省，帧时间整体 ~20ms→~6.6ms，摘要半与面无关（同像素同 FNV，两端面在每端内一致本身即可比性验证）；结构断言：逐帧全像素向量相等（64 帧×3 端）+摘要相等+Device::present 真设备面摘要步走=计时面所骑 shipped walk+双面零分配+连续帧摘要必异（固定镜头下动画真实）+三端账逐帧全等+复跑恒等；墙钟 probe 只印不断言；评估结论=整段画半收益全在写形状 307200→481，批量候选不换契约（像素恒等）不加内存（仍零分配），OPT-11-01-01 saved 摘要钉两面都须答；client 门禁 874 绿）
-- [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。(2026-11-26 lane/bw14-script-host 5535b86：crates/client/tests/render_stream_sched_opt.rs 基线固定镜头(640×480, 64 帧)走 shipped 帧调度面 FrameLoop::run_frame（Tick→UpdateAnimations→Draw 逐帧 canonical+hooks 按相序断言，64 帧×3 端），六个排程切图帧(8/16/24/32/40/48)走 shipped load_and_bind 把参考夹具图 37 候选按扫描序分六批流进活空间；单 tracked 区跨全程=逐帧 allocs 增量+live 轨迹连续；切图报告（结构断言）：切图帧恰落在排程帧、并集=probe 全集 6 chunk、逐切图帧 allocs 954/32/32/32/32/128 严格大于全部稳帧(≤9)——分配账即切图/长帧的结构识别；内存=总 1729 allocs/峰值 1281573/终 live 1280327（流进的空间骑在设备 1228848 基线上），复跑恒等；长帧报告（probe 只印不断言）：本调试 runner 墙钟尾被 OS 抖动主导（最慢帧是稳帧 allocs=8 达 27-76ms 非切图帧），逐帧 192 行+切图行+每端 top-5 落 docs/review/opt-11-01-03-render-stream-sched-opt.md；夹具发现=第六绑 chunk 是分隔块 001x000x/sep/00110000o（标识符是路径非格胞，格胞中心解析只盖四个 hex 外块）；收尾四外块 find_chunk_from_point 各自格胞中心归位；client 门禁 876 绿）
-- [x] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。(2026-11-26 lane/bw14-script-host 96d8f67：crates/client/tests/render_visual_rerun.rs 三端复跑 OPT-11-01-01 saved 基线固定镜头（640×480, 64 帧）：钉帧 1..=8+64 摘要逐帧对上 saved 记录（首走+复走双验）；容差=复走间钉帧逐像素 differing_pixels=0 断言位级相等（确定性面容差下限=位，不设预算）——连 OPT-11-01-02 批量候选面也同满足：64 帧逐帧答 walked 摘要+钉帧批量像素 vs shipped 背板差 0；内存账复跑=saved 数字（走查区内 2 allocs/峰值 1228848，帧仍不抬高）；截图面（ScreenCopy::capture→TGA，BW-11-04-07 通道）钉帧 1/8/64 逐帧捕获=18 字节头+1228800 帧体，三端逐帧字节相等+第二遍复跑字节恒等（视觉回归产物自身复现）；OPT-11-01 簇收官——基线/上传批次/流与调度/视觉回归四面互相咬合（saved 摘要钉三行共答）；client 门禁 878 绿）
-
+- [ ] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。
+- [ ] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。
+- [ ] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。
+- [ ] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。
 
 ### OPT-12-01 各观测通道开销
 
 降低日志、Watcher、Profiler 的观测成本。验证背压、关闭观测后的开销及新旧工具查询兼容。
 
-- [x] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。(661e12a)
-- [x] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。(9a74213)
-- [x] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。(f4fce4f)
-
+- [ ] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。
+- [ ] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。
+- [ ] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。
 
 ### OPT-13-01 冷构建、增量与编辑器加载
 
 优化依赖缓存、并行转换和编辑器加载。比较冷构建、增量构建与大地图编辑时间，校验可复现产物。
 
-- [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。(1fd4739)
-- [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。(663dc8c)
-- [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。(`827ed8e`)
-- [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。(2026-11-26 补勾（交付 b981ae7 已在树，勾行遗漏）：crates/asset-pipeline/tests/asset_hash_format.rs 四测复跑 4/4 绿——hash64 五向量钉原版 bw_hash64.cpp FNV-1a 含 LE-integer+combine 契约（combined 0x85562B3F62384861）；SpaceConverter 真 space 两次独立转换逐字节+摘要全等（213B/3 sections，原版读者树读回 models/box.model|models/spikes.model）；DependencyList 精确哈希 4 输入 1 输出（primary 0x3A31A0D27AFBDAAB/full 0x39F4CDF311678C81）；res_packer 夹具两跑逐字节全等（177B×2）+原版 EL7 产物 bw.packed 经本包读者树读回全等（tree_equal=true）；墙钟 ASSET-FMT 只印不断言；docs/review/opt-13-01-04-asset-hash-format.md 补档）
-
+- [ ] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。
+- [ ] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。
+- [ ] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。
+- [ ] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。
 
 ### OPT-14-01 发布包尺寸及首次运行
 
@@ -9323,44 +9073,34 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（Linux 腿已在 main：bw15-platform 56c2673→f6107e8，platform io_timer_baseline.rs 1 测：写 30.33µs/读 9.04µs/replace 55.81µs/定时器分辨率 1µs/wakeup 0.95µs；bw14-script-host 另起平行实现 7081674→未进 main，patch-id 与 main 版不同——主席择一；Windows/macOS 腿未齐故行保持开）→ **主席裁定 2026-11-26**：Linux 腿择 main `f6107e8` 面为准；bw14 `7081674` 平行实现 lane-only 归档不删；行仍开待 Windows/macOS 腿，全腿到齐后按行验收勾。
-  - 主席裁定 2026-11-26（main 行内）：Linux 腿择 main `f6107e8` 面（bw15 `56c2673`）为准，行保持开待 Windows/macOS 腿；本席 lane-only `7081674`（13 probe+tests/baseline 目录）转存档记录，随 lane 并入由主席处置。
-  - 注记（2026-11-26，台账席）：Linux 腿已落——bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿。行保持开——「各平台」待 Windows/macOS 腿（三端 runner，BW-15-05-01）后补测再勾。
-- [x] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。(2026-11-26 lane/bw14-script-host 2f77126→main 25e40c7：crates/client/tests/render_backend_baseline.rs 按后端登记表采集三问——新树唯一出货像素后端=Device 下软件光栅器（参照侧 D3D9/OpenGL/cocos2d/Awesomium 四后端仅 BW-15-06-01 事实非移植，BACKENDS 留位即插）；设备面结构断言 SoftwareDevice 640×480 adapter=0 307200px RGBA8+帧序 1..=64 单设备对象+status=Ok+leaked()=0；驱动面=执行环境文本（CPU/核/OS/内核 probe 只印不断言）；帧时=固定镜头 check_device→step→present 64 帧逐帧 FRAME-TIME+FRAME-TAIL 报告，min/median/p99/max 记运行值不断言；结构契约逐相邻帧摘要异+帧 1..=8/64 复现 OPT-11-01-01 saved 钉+帧 1/7/31/64 纯帧序号复现+复跑恒等；提交目录 tests/baseline/render-backend-baseline.tsv 十列 linux-x86_64=measured，macos-arm64/windows-x86_64=pending rows 带 BW-15-04/BW-15-03 blocker 不编数字，语法检查拒 pending 带测量/未知后端/重复对/非数字/测量平台缺行；client 861 绿+集成全绿，clippy 净；本机 2 测绿)
-  - main 已收（台账席，2026-11-26）：本席 `2f77126`→main `25e40c7`（cherry-pick，取本席版非 bw15 腿），本席勾保持为交付记录。
-- [x] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。(2026-11-26 lane/bw14-script-host 3761c24→main 117a588：crates/platform/tests/platform_opt_parity.rs——同套协议场景两臂比结果：泛化 sendto/recvfrom 逐数据报 vs 批 sendmmsg/recvmmsg 逐窗口，同一 loopback UDP 对共发送套接字源三元组可比；256 数据报逐报字节+序恒等（内嵌大端序号=自身下标）+源 port/addr 网络序恒等+变长 16..=1200 抓聚合拆裂+批臂 8 send+8 recv vs 泛化 256+256；边沿同答：空批/空收 0/静默非阻塞两臂同 -1+EAGAIN（libc 约定，sendmmsg 注释"-errno"与实态不符如实登记）/8 槽收 5 排队恰 5 槽序字节恒等/单批同 sendto；自揭两发现=drained 错误形与槽宽=批容量（4 槽收 5 留队未丢，独立 C repro）；platform 64 lib+io_timer 1+parity 2+signal_call_sites 全绿，本机 2 测绿)
-  - main 已收（台账席，2026-11-26）：本席 `3761c24`→main `117a588`（cherry-pick，取本席版非 bw15 腿），本席勾保持为交付记录。
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
+- [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
 ### OPT-16-01 采集依赖与增量构建基线
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 d11c3d2(ci/build-baseline.sh)+96009f9(asset-pipeline/tests/dependency_rebuild_baseline.rs) 已 cherry-pick 入本树 c64444b/d4b764e 并复跑绿——build-baseline self-test：install-module/layout/upgrade/uninstall 四 PASS+build-fanout PASS(重编源定位=foundation 19 直接依赖者)+build-cold 196.77s+build-incremental 67.51s/12 crate 重编；dependency_rebuild_baseline 测试绿；fixture tsv 入 docs/review/fixtures/dep-graph/)
-- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 8c37171(asset-pipeline/tests/split_evaluation.rs+fixtures/dep-graph/split-*) 已 cherry-pick 入本树 0ddb5e0 并复跑绿，asset-pipeline 门禁 384 lib+集成含 split_evaluation 2 测全绿)
-- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 870ad04(asset-pipeline/tests/install_path_recheck.rs+fixtures/install-recheck/) 已 cherry-pick 入本树 5e99e3a 并复跑绿——the_load_and_install_paths_stay_compatible PASS+本树连带复跑 install-layout 全 PASS+package-baseline verify 3 平台语法净)
-
+- [ ] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。
+- [ ] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。
+- [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
 
-- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。(2026-11-26 跨席复测勾：他席 main 交付 38b99db(profiler/tests/long_stability_collection.rs+fixtures/long-stability/long-stability.tsv+docs/review/opt-23-01-01-long-stability-collection.md) 已 cherry-pick 入本树 5bb641c 并复跑绿，profiler 门禁 43 lib+集成全绿)
-- [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。(2026-11-26 跨席复测勾：他席 main 交付 2a26627(profiler/tests/buffer_export_evaluation.rs+fixtures/buffer-export/+docs/review/opt-23-01-02-buffer-export.md) 已 cherry-pick 入本树 98bec50 并复跑绿)
-- [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。(2026-11-26 跨席复测勾：他席 main 交付 0ee4b28(profiler/tests/collection_integrity_regression.rs+fixtures/collection-regression/+docs/review/opt-23-01-03-collection-integrity.md) 已 cherry-pick 入本树 28c1da9 并复跑绿)
-
+- [ ] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。
+- [ ] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。
+- [ ] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。
 
 ### OPT-26-01 固定事件回放并采集查询基线
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（opt26-db 席 `4c75e00`，lane/opt-26-db，main=`6973092`：crates/db-postgres/tests/event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账，钉定样本报表（四级窗口+五查询形计数）为 01-04 复算基线；TSV docs/review/fixtures/event-query/event-query.tsv 39 行，证据页 docs/review/opt-26-01-01-event-query-baseline.md；本席 main 复测 6 绿，TSV 复捕墙钟行随负载漂（结构计数行恒等）只记录不设带；⚠️ FLAG 2026-11-26：bw15-platform `8f42e4c` 平行交付（crates/message_logger/tests/qlog_replay_baseline.rs 523 行 20000 条固定事件回放+11 查询面墙钟+样本报表，与 main 6973092 db-postgres 侧 patch-id 不同=真平行非镜像，lane-only 待主席择一））→ **主席裁定 2026-11-26**：择 main `4c75e00` 面（6973092 收编形，event_query_baseline 6 测在树）为本行交付面；bw15 `8f42e4c`（qlog_replay_baseline.rs 523 行）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 本席跨席复测存档（2026-11-26 主席裁定择 `4c75e00` 面，main=`6973092`）：本席 cherry-pick `e34dacd`/`013f573`/`c578a23`/`7a1867c` 四行复测全绿（db-postgres 25 套）。
-- [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。（opt26-db 席 `40b58e0`，lane/opt-26-db，main=`027c6c0`：crates/db-postgres/tests/import_batch_candidates.rs 3 测=同 512 行语料五种事务形（每 1/16/64/256 行一提交+整库一事务）各报墙/吞吐/计数分配器峰值且逐形回读恒等；TSV docs/review/fixtures/import-batch/import-batch.tsv 30 行，证据页 docs/review/opt-26-01-02-import-batch.md；本席 main 复测 3 绿（批 64+ 后吞吐平坦 620-640 rows/s，批 1 最慢=每行一提交））
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `40b58e0`（main 已收 `027c6c0`）：导入批大小评估（64 行 commit 裁定+内存平坦）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
-- [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。（opt26-db 席 `bf335b5`，lane/opt-26-db，main=`5df3486`：crates/db-postgres/tests/query_aggregation_candidates.rs 3 测=一全扫建 name→id（512）+level→ids（200 键）两聚合图，同 128 名抽样网格前后对照——基线 name 查询 ~14× 键控 get，聚合后网格解析走图不走扫；TSV docs/review/fixtures/query-aggr/query-aggr.tsv 21 行，证据页 docs/review/opt-26-01-03-query-aggregation.md；本席 main 复测 3 绿（加速比两跑 8350×/4746×=负载敏感记录行，128 网格断言恒等））
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `bf335b5`（main 已收 `5df3486`）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
-- [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。（opt26-db 席 `b34554a`，lane/opt-26-db，main=`1590095`：crates/db-postgres/tests/sample_report_rerun.rs 3 测=同固定事件流重放后从**存储语料**复算样本报表，对照盘上 docs/review/fixtures/event-query/event-query.tsv 基线（四级窗口+五查询形计数逐项等），再在每项优化（64 行批导入/两聚合图）后各复算一次仍等；证据页 docs/review/opt-26-01-04-sample-report-rerun.md；本席 main 复测 3 绿）
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `b34554a`（main 已收 `1590095`）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+- [ ] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。
+- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。
+- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。
+- [ ] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。
 
 ## 5. 实施顺序与里程碑
 
@@ -9588,8 +9328,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-13-02-03 移植 res_packer**。**验收** 打包前后资源可等价读回。
   - 证据：`crates/asset-pipeline/src/res_packer.rs`（2387 行 / 22 测；fdce7ff）+ `crates/resources/src/datasection.rs` 增 `del_child_at`（3ac619c）。**结构**：`PackerEnv`（printf+MsgHandler 面：`out` 按序收集、`ERROR: `/`WARNING: ` 前缀、**sub-ERROR 清 error 旗标**——原版 handler 赋值 `errorsOccurred_ = priority >= ERROR` 的怪癖原样保留）；`SourceSection::{open,is_packed,can_pack}`（packed 魔数先、首个非空白 `'<` 判 XML、否则 Bin；派生 `Clone` 供 print 复用，因原版 `XmlPacker::print` 是 const 不消费 `ds_`）；`convert_bytes`/`convert`（`PackedSection::convert` 面，错误消息逐字）；`copy_file`/`file_exists`/`remove_trailing_slash`；`BasePacker` trait + `Claim`（src/dst 空值守卫）；六 packer + `Packers` 注册表（HIGHEST=0/LOWEST=0xFFFF，按**严格大于**插入）；`print_usage` 两块 printf 原文；`parse_args`（`--res/-r` 跳过、`--list/-l` 在 flag 走查中**立即**开且打不开提前退出、`--in/--out/--err/--encrypt/--strip`）；`run`（批列模式 + 兼容模式，返回退出码）。**验收面**：`packed_output_reads_back_equivalent`（XML→packed→`PackedSection` 读回：int/负数/0/大 i64/前导零 `"007"`/bool/float/vector3/文本/canonical base64 blob/嵌套与 matrix 行逐项等价）+ `repacking_packed_output_is_byte_stable`（重打包**逐字节**同——参考经 `asString` 重推每个值）。**--encrypt**：XOR `0xc9`+marker 1；二进制节整体加密（每个节点存自身 raw 块为 `ENCRYPTED_BLOB`，children 块 `[i16 n][n×(i32 dataPos|i16 keyPos)][i32]` 与 `packed::write_node` 同构），`binary_with_encrypt_round_trips` 验证整树可解密。**六 packer**：Xml（LOWEST 兜底，`canPack()||shouldEncrypt` 才认领，print 不消费节，pack 走 convert 去 `metaData`）、Fx（fx/fxh/fxo 三类全跳过：`PACK_SHADER_BINARIES=true`/`PACK_SHADER_SOURCE=false` 仍只认领不产文件）、Image（`--encrypt` 时让位给 XmlPacker；bmp/tga/png/jpg 优先同辈 `.dds`，否则同扩展名拷贝，扩展名不符→"Error: Cannot copy source %s to destination %s.\n"；`.dds` 走字体跳过：同目录 `.font` 的 `creation/sourceFont`+`abs(sourceFontSize)` 拼 `name_size`）、Chunk（clientOnly 过滤服务器实体、去 editorOnly/metaData/navmesh/worldNavmesh 深 2、`.packerTemp` 中转+转换后必删）、CData（`space.settings` 缺→WARNING 且 prepare false；copy 后按 bin/xml 两路删 thumbnail.dds/navmesh/worldNavmesh（受 `clientNavigation/enabled` 门控）+ 每个 `--strip`；保留 `#if 1` 逐个打印存活子）、ModelAnim（model 打包去 metaData、animation/anca 跳过；`.anca` 生成在接缝后退化为拷贝源 `.anca`；打不开模型→"Could not open model file %s\n"）。**CLI 面**：批列 fgets 尾字符吃掉/末行无换行削末字符、`--err` 日志、`"Processing %s..."`+`" %s\n"`、`"\nProcessing complete"`+失败计数三句尾；兼容模式 print（单参）/pack（`"Processing %s to %s..."`+`"...succeeded/failed"`）；未知类型 print 模式**先打印 "Error opening source file: %s\n"（原版 prepare 副作用）再成功返回**；`main` 尾 `return result ? EXIT_SUCCESS : EXIT_FAILURE`。**怪癖保留**：too_many_children 的 `"PackedSetcion"` typo（去掉尾部计数——Rust 错误型无计数）；CDataPacker::print 打出 `"Error: ChunkPacker not initialised properly\n"`（原版串错）。**门禁**：163 asset-pipeline 绿（141 既存+22 新）+ resources 227 绿（+1 `del_child_at`），clippy scoped 仅剩 workspace 两条既存 unused-dep，fmt 净；llvm-cov 0.9.1 `res_packer.rs` 行 92.70%（同 crate 的 offline_processor.rs 92.77% 同档；本 crate 整体 85.75%，未达核心 98% 线——如实登记）。已推 `lane/bw15-platform`（fdce7ff）。
 - [x] **BW-13-02-04 移植 resourcechecker**。**验收** 同一坏资源得到对应诊断。**交付**（2026-11-25，8678b06 + 16eda65 已推 lane/bw15-platform）：`crates/asset-pipeline/src/resource_checker.rs` 移植 `tools/resourcechecker/visual_checker.*` 的 `VisualChecker`。**规则面**：`_bsp.` 命名直接放行且不载规则；规则自 `visual_rules.xml`（cacheRules=true 直开 / false 先 fileExists——两分支同落 openSection，合并为 `cache_rules || file_exists`）；缺规则记 `Unable to find visual_rules.xml file.`（构造期错误，check() 首行 `errors_.clear()` 与原版一致会清掉）；匹配 = 目录路径小写 find 包含 + `stable_sort`（path 长降序、filespec 长降序稳定）+ `PathMatchSpec` 可移植 glob（`*`/`?`/`[seq]`/`[!seq]`，首 `]` 字面量，`{}` 列表无用户未实现已注册）；rulesById + parent 链递归读（宏生 vector/string/int/float/bool + hardPoint 集合）；exportAs ∈ {normal, static, static with nodes} 否则 `Unknown value for exportAs [%s]\n` + 重置 normal。**检查面**：尺寸/三角数（`*indices` 子节 `IndexHeader::read` 计 `nIndices_/3`，负数 wrapping 成 u32）/层级深度（缺 node 节原版解引用空指针即 UB，移植记 0 已注册）/portal 电池（基座矩阵 row0=uAxis、row2=boundary normal、row1=normal×uAxis、平移=normal·d，点从平面空间映射回对象空间；<3 点/非平面（零法线跳过）/朝外（`d − centre·n > 0`，平面法线须指内）/snap 1/2196 容差/距离 1/1024 容差/offset 1/8192 close，printf %f 全 `{:.6}`）/重复节点名/硬点缺失与未知（HP_flash01 与 HP_flash 豁免；`len>3 && substr(0,3)=="HP_"` 照抄）/纹理名空格（renderSet→geometry→primitiveGroup→`material/textureormfm` find_last_of）。**接缝注册**：MessageBox/automatedTest 分支一律走错误记录；`PrimitiveFile::get` 先 `.processed` 后裸名；XML 内容嗅探拒绝（原版空 asBinary 强转 IndexHeader 是 UB）；`snap_vertices` 原版即死字段照抄并注册。**验收即测试**：`portals_are_forbidden_on_normal_visuals`（同一坏视觉在 rules=false 下得 `Must not have any portals`）等 15 测——好视觉全规则零错、too small/too big/三角上下限/层级/朝外/非平面/snap+距离/重复+硬点/纹理/坏 exportAs/缺文件逐项断言原版消息全文。**附带**：`datasection::read_vector3` 改走 openSection 路径行走（原版 readVector3 即 `openSection(tag)`，`boundingBox/min` 两跳；16eda65 附 `read_vector3_walks_slash_paths` 测）；门禁 asset-pipeline 177 + resources 228 测绿，clippy 仅余两既存 workspace unused-dep，fmt 清，llvm-cov resource_checker.rs 行 96.49%（crate 整体 85.60%，工具 crate 口径照旧）。**坑**：原版 portal 点存平面空间 (u,v,0) 经基座矩阵映射回对象空间，测试夹具必须给平面坐标再由 winding 定平面法线朝内（朝外即触发 facing 错误）；`BinSection::save_bytes` 输出含非 UTF-8 magic 字节，夹具写盘必须走原始字节而非 `from_utf8_lossy`（会替换 0xa1 致容器解析空）。
-- [x] **BW-13-02-05 回归 NavGen 入口**。**验收** 可调用 BW-10 的导航生成。**跨席复测勾**（main 交付为准，2026-11-26，本席）：main `79f47c4`（`crates/asset-pipeline/src/navmesh_processor.rs` 2738 行/55 测，LockedChunks 引用计数/ChunkProcessorManagerFace 锁块怪癖/NavmeshProcessor 逐 girth 顶检→flood→as_binary 追加/NavmeshCache 全端口）依赖面 `977f555`（waypoint-gen workflow.rs 914 行：readTGA/extendThroughUnboundPortals/determineEdgesAdjacentToOtherChunks/compileGirthsList/GirthWorkflow）+`d26cb55`（tga temp dir 隔离），本席 cherry-pick `3ddf7b8`+`b868516`+`b91f983`。**缝冲突自纠**（`e5670ac`）：本树 b99cb0e（lane-only，GenChunk/FloodPhysics 缝）与 main 同面（NavmeshProbe/DropPhysics 缝）物理撞名 to_vector3/determine_edges——取 main 版为准，删本树私有重复，navgen_map harness 补 NavmeshProbe/DropPhysics 适配 impl 改骑 workflow 缝，truth log `gen_navgen_map.log` 逐行复现未变（两版行为等价实证）。**复跑证**：waypoint-gen 88 测绿（含 navgen_map truth-log 对照+workflow tests）+asset-pipeline 439 lib+集成 0 failed，fmt/clippy scoped 净（blowfish workspace 预存在非代码）。b99cb0e 余下不撞名面（generate/streamline/calculate_set_membership/as_binary 等）保持开待主席与 main 侧择一。
-
+- [ ] **BW-13-02-05 回归 NavGen 入口**。**验收** 可调用 BW-10 的导航生成。
 
 #### BW-13-03 WorldEditor
 
@@ -9663,11 +9402,6 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **BW-14-02-01 运行 Python simple 示例**。**验收** 与新服务端完成登录。
   - 卡点（服务端登录链路未落地，同 BW-14-01-02）：simple client 在参考 `examples/client_integration/python/simple/`（自带 res 树，实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对），其登录依赖新服务端 loginapp 挑战协商（BW-06-01-02）+ baseapp onLogin（BW-07-01），当前 `apps/server` 仅最小入口无登录处理。
-  - 复测（2026-11-26，台账席）：注记引用已过时但卡点事实未变——所引依赖均已交付：BW-06-01-02 挑战协商（`3244af7`）、BW-07-01（BW-07 车道 24/24）、BW-14-01-02（`c68667c`，进程内 harness 全链，边界自注「多进程运行不在本项」）；然 `apps/server/src/main.rs` 本日复核仍 36 行最小入口，`app::run`（BW-15-02-01 `750be59`）只接 Dispatcher+信号矩阵、零 mercury 引用（NetworkInterface 构造留随 BW-02-02/角色簇），无可监听的 loginapp——网络登录面本席侧仍缺。行保持开，待 `apps/server` 网络接线（BW-02-02/角色簇）与可跑客户端宿主（BW-21）落地后复测。
-  - 增量落地（2026-11-26，`44aca1e`(merge origin/lane/bw19-docs)，含 `a43f3f3` 收包面测试适配）：**服务端登录面接线已上 main**——角色循环走 `bwMainT` 全体（`app.rs` 新 `MercuryPass` 合流角色 dispatcher 与 Mercury dispatcher，machined 查询/内部接口配置链/`NetworkInterface::new_on_dispatcher` 构造/关服 drain）；loginapp 外口（`loginapp_interface.rs`，`PORT_LOGIN=20013`+`login_minder` 三入口 login/probe/challengeResponse 按声明序+`LoginInterfaceDispatch` 剥 first-request 尾脚+`probe` 真数据报往返）；login 门序与 `challengeResponse` 应答面（`loginapp_login.rs`，复用 BW-06-01-05 版本闸、challenge 缓存/resent quirk 逐字）；dbapp 出站面（`db_login.rs` `DB_APP_LOG_ON_ELEMENT_ID=8`+`DbAppForward`/`DbReplyHandler`，验收级真闭环测过 `the_dbapp_request_leg_reaches_the_wire_and_its_answer_routes_back`）。**适配点**：收包面 graft（`14d3d8c`）后 `the_network_pass_delivers_a_datagram_through_the_loop` 原发裸 `b"ping"` 被参考形 guard 判 corrupted，已改为带 clear flags 头的真帧 `[0,0,p,i,n,g]`（a43f3f3）；覆盖 loginapp_interface 100%、loginapp_login 98.78%、db_login 98.63%、app.rs 99%+。行保持开——simple client 端到端验收仍待 dbappmgr→loginapp `notifyDBAppAlpha` 活网格出生接线与 dbapp logOn 应答角色（BW-09-01 领地）落位后复测。
-  - 复测五（2026-11-26，lane/bw19-docs `0dfc448`）：**参考客户端真机往返已通两道门（82→72）**——预编译 `simple_python_client` 在参考树 `game/bin/server/el7/examples/simple_python_client`（本机可跑，`-server/-user/-password`，README 配方）；Linux 构建路径必须从 res 解析 `loginapp.pubkey` 文件（内嵌 key 仅 PS3/Xbox360 分支，main.cpp:228-238）——取 `scripts/cluster-smoke/res/loginapp.pubkey` 头插 res overlay 即解（BW-00-02-04 卡点在此实验面消除；配对 `res/server/loginapp.privkey`=参照 loginapp_config.cpp:22 默认读 `server/loginapp.privkey`，将来 dbapp 解密腿用）。真跑序列：本席 loginapp 外口 20013 监听（无 machined 回落绑全接口）→ 真客户端实体定义加载/网络绑定/`LoginHandler: LoginApp@127.0.0.1:20013` 起动 → ①默认配置拒 82=`LOGIN_REJECTED_LOGINS_NOT_ALLOWED`（=参照默认 `BW_OPTION(bool,allowLogin,false)` loginapp_config.cpp:24，移植一致非缺陷）→ ②overlay `<loginApp><allowLogin> true` 后拒 72=`LOGIN_REJECTED_DB_NOT_READY`（=参照 loginapp.cpp:862 isDBReady 门**先于**挑战门 1048——gate 序 82→72 实证）。**余卡点收窄两件**：活内部网格出生接线（dbappmgr→loginapp `notifyDBAppAlpha` 上线；dbappmgr.rs 自注 Mercury traffic not modelled）+ dbapp logOn 应答角色（BW-09-01 lane 领地）——两者落位后 overlay 配方（res 头插 loginapp.pubkey+overlay server/bw.xml 开 allowLogin）即可续跑至挑战协商与真登录。行保持开。
-  - 卡点复测（2026-11-26，bw14-script-host 席）：旧注「服务端登录链路未落地」**已过时**——登录链已落地并真机绿：BW-06-01-02 挑战协商（3244af7，main 祖先）+ BW-07-01 baseapp 装载/ID 分配 + BW-14-01-02/05 进程内登录链（`fantasydemo_login.rs` 5 测：既有账户走机/未知用户建档/错密码拒不碰行/新角色建档回指，`fantasydemo_logout_relogin.rs` 2 测：退出持久化重登读回，本席实测全绿）。**真余卡点两处**：①`apps/server` 仍最小入口（`main.rs` 仅 BWResource/BwConfig 初始化 + `app::run` 信号/关停面），无角色运行时把 loginapp/dbapp/baseapp 登录链接到真实 Mercury 端口（同 BW-15-02-01 卡点；BW-08-01-02 CellApp 创建与注册未勾）；②参考 simple 客户端是 **C++ 壳内嵌 Python**（`main.cpp`/`entity.cpp`/`py_server.cpp` 等，目录名「python」指 Python 脚本化实体而非纯 Python 程序），跑通它需移植该壳或等价客户端驱动，与①同属大面工程，随角色运行时落地。simple 自带 res 树实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对。
-
 - [x] **BW-14-02-02 运行原版 Android 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
   - 宿主缺口（未运行互通测试）：`docs/review/bw14-02-02-03-mobile-interop-host-gap.md`（402c28a）——参考 `examples/client_integration/c_plus_plus/android/`（JNI + `android.app.NativeActivity` + `android_native_app_glue` + `connection_model` 静态库 + `-llog -landroid -lEGL -lGLESv1_CM`，NDK `armeabi-v7a`/`APP_STL=gnustl_static`/`APP_PLATFORM=android-9`）需 Android NDK 工具链 + 真机/模拟器，本机 Linux 无 NDK/设备；即使宿主就绪，互通目标（新服务端登录）亦未落地（同 02-01 卡点）。协议结果未采集；两侧缺口均已登记。
 - [x] **BW-14-02-03 运行原版 iOS 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
@@ -9702,7 +9436,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-14-04-03 布置配置及样例资源**。**验收** 首次启动可定位。（commit 5da86a6）
   - 证据：`ci/install-layout.sh` + `docs/review/bw14-04-installable-artifact-layout.md`（b0a4d3e 起，5da86a6 完成）——`res/server/bw.xml` + `res/scripts/`（21 项样例资源镜像）随包布置（install-layout PASS：配置/资源/二进制/模块/`data/` 齐全）。**工具半**：装后 `process_defs -r <prefix>/res` 首启定位并加载安装资源树（install-cli-res PASS）。**服务器半**：`apps/server/src/main.rs`（5da86a6）按参考 `BIGWORLD_MAIN` 接入 `BWResource`/`BWConfig` 链，装后 `boundless-server <role>` 以 `BW_RES_PATH=<prefix>/res` 首启定位安装配置（install-res-server PASS：无「Could not find」/「No configuration section」，正常启动/停止 exit 0）；`role_lifecycle.rs` 首启定位/未定位双测试钉死观测差（定位静默、未定位记参考失败行）。
 - [ ] **BW-14-04-04 执行干净安装烟测**。**验收** 三端能启动和停止。
-  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**复测登记（2026-11-26，main 吸收 lane/bw16-18 `a05a849`←bw10-terrain `1dba9be`）**：`ci/install-layout.sh` self-test 10/10 PASS 含红/绿双验（他席独立跑过），同脚本装后启停绿；两席同证据链镜像非新交付，行保持开。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
+  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
 - [x] **BW-14-04-05 执行升级与卸载**。**验收** 验证用户数据保留行为。（commit b0a4d3e）
   - 证据：`ci/install-layout.sh`（b0a4d3e）——归档只携带包属树（`bin lib res`），用户数据在 `data/`（**不在归档**）。装后种子 `data/db/user.db`，篡改包属文件 `res/server/bw.xml` 后**升级**解包：包属文件还原为打包字节、`data/db/user.db` 保留（install-upgrade PASS）；**卸载**删除 `bin/ lib/ res/`、`data/db/user.db` 保留（install-uninstall PASS）。self-test 绿色全链路 + 4 条红色臂（启动失败/CLI 失败/坏模块/缺定义资源树均按预期咬合）。
 
@@ -9714,15 +9448,15 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 封装事件轮询和唤醒、单调时钟、信号/控制事件、子进程与退出状态、文件锁、内存映射、动态库和系统目录。对照大小写、路径编码、原子替换、IPv4/IPv6 和断网行为。
 
-- [ ] **BW-15-01-01 封装事件轮询和唤醒**。**验收** 三端可停止空闲循环。（Linux 腿注记 2026-11-26：bw15-platform `774372f`→main `70af995`，crates/platform/tests/idle_loop_stop.rs 1 测绿——空闲循环按需停（trigger 中断 epoll_wait 预算 interrupt1 680µs/1 迭代、preset 迭代、rearm 112/46µs、预算窗 5 迭代）；wakeup.rs 441ff01 既有注记同上；三端行保持开待 Windows/macOS 腿）
+- [ ] **BW-15-01-01 封装事件轮询和唤醒**。**验收** 三端可停止空闲循环。
   - 证据（部分，未勾）：`crates/platform/src/wakeup.rs`（441ff01）——自管道 `Wakeup`（`pipe(2)` 双端 `O_NONBLOCK`、`trigger` 任意线程一字节写入容忍 EAGAIN=已挂起、`consume` 排空重整、Drop 关双端），Linux 实测 5 测：空闲 `epoll_wait`（5s 预算）被另一线程 `trigger` 在 1s 内唤醒、预挂起即回、`consume` 后零超时不再上报、未触发 `consume` 为 no-op、100 轮触发/消费循环稳定；「轮询」半块已由 BW-02-01-02 `platform::poller`+Mercury `EventPoller` 承担（Linux epoll）。**macOS 后端已落（59da22c）**：`crates/platform/src/poller.rs` 拆为 Linux `epoll`/macOS `kqueue` 两后端、`lib.rs` 把 `poller` 门控扩到 macOS——kqueue 与 epoll 同为描述符持久注册集，`create`/`ctl`/`wait` 一对应映射（`kqueue()`；`kevent` EV_ADD/EV_DELETE 按 filter、`CTL_DEL` 先删读再删写、二者其一在册即成功、无册 fd 返 `ENOENT` 同参考 WARNING 分档；`EV_EOF`→`EPOLLHUP`/`EV_ERROR`→`EPOLLERR`；超时负值阻塞零轮询；事件位沿用 epoll 数值使调用方跨端同常量）；`platform` darwin `--all-targets` 交叉编译绿、darwin clippy `-D warnings` 绿、Linux 59 测零回归；kqueue 模块 4 测镜像 epoll 待三端 runner 实跑。**剩余**：Windows `WSAPoll` 走 socketpair 而非匿名管道——随 BW-15-05 三端 runner 落地（kqueue 实跑亦随三端 runner）。
 - [x] **BW-15-01-02 封装单调时钟**。**验收** 单调性及 Tick 单位一致。
   - 证据：crates/platform clock.rs 测试（monotonic 不回退、微秒单位、起点近零）。
-- [ ] **BW-15-01-03 封装进程控制及退出码**。**验收** 三端可正常关服并回收子进程。（Linux 腿注记 2026-11-26：bw15-platform `4a40422`→main `595be79`，crates/platform/tests/process_exit_baseline.rs 1 测绿——子进程状态码/spawn 262µs/wait 7.9ms/轮询收割 1.02ms/信号等待 247µs/一次收割 16 存活；三端行保持开待其余平台腿）
+- [ ] **BW-15-01-03 封装进程控制及退出码**。**验收** 三端可正常关服并回收子进程。
   - 证据（部分，未勾）：`crates/platform/src/process.rs`（d25d90a）——`Child`（`fork`+`execvp` PATH 搜索、子进程 exec 失败 `_exit(127)`、`wait` 阻塞重采/`try_wait` WNOHANG 非阻塞/`signal` kill、二采 `ECHILD` 报错）+ `ExitStatus`（`WIFEXITED`/`WEXITSTATUS`/`WIFSIGNALED`/`WTERMSIG` 解码、`success` 即 code 0）；Linux 实测 7 测：exit 42 采回、零退出成功、SIGTERM 终止、存活期 `try_wait` None 再采、exec 失败回 127、空 argv 拒、二采 ECHILD。**剩余**：Windows `CreateProcess` 后端随 BW-15-03 落地；`server-runtime` 关服接线（信号→kill 子进程→wait 回收）待做。
 - [x] **BW-15-01-04 封装文件锁及原子替换**。**验收** 并发更新夹具通过。（commit d0a9ac4）
   - 证据：`crates/platform/src/file.rs`（d0a9ac4）——`FileLock`（`flock` LOCK_EX 互斥、try 版返回 None 表已持有、Drop 即释放；**锁稳定伴生 `.lock` 文件而非被替换的数据文件**——rename 换 inode，锁被替换文件本身无法串行化更新，此平台事实已编码进模块文档）+ `atomic_replace`（同目录临时文件写全→`fsync`→`rename(2)` 原子换入，失败自动 unlink 残留）；**验收并发更新夹具实测过**：2 线程×50 锁-读-改-写-原子替换，计数恰为 100 零丢失（`file::tests::concurrent_update_fixture_loses_nothing`，`cargo test -p platform --lib` 64 测全绿）。**Windows `LockFileEx`/`ReplaceFile` 后端归 BW-15-05 三端 runner 平台移植**（本项验收为并发更新夹具，Linux 已过）。
-- [ ] **BW-15-01-05 封装内存映射与共享库查找**。**验收** 三端加载相同测试资源。（Linux 腿注记 2026-11-26：bw15-platform `294a434`→main `298fd89`，crates/platform/tests/mmap_library_baseline.rs 1 测绿——同资源 mmap 34µs/64KiB+anon 4096+共享库打开 22µs/符号查找 3µs malloc 命中；三端行保持开待其余平台腿）
+- [ ] **BW-15-01-05 封装内存映射与共享库查找**。**验收** 三端加载相同测试资源。
   - 证据（部分，未勾）：`crates/platform/src/mmap.rs`（3359d3b）——`Mmap`（`mmap` PROT_READ|MAP_SHARED 整文件映射、空文件映射空切片、匿名零页映射、`Deref<[u8]>`、Drop `munmap`；mmap 需活 fd、成功后 close 映射仍有效）+ `DynamicLibrary`（`dlopen` RTLD_NOW|LOCAL、`dlsym`、Drop `dlclose`、`dlerror` 消费）；Linux 实测 7 测：文件映射逐字节等于文件、空文件、匿名页全零、缺文件报错、dlopen libc 并 dlsym malloc 非空、缺符号报错、缺库报错。**剩余**：Windows `CreateFileMapping`/`LoadLibrary` 后端随 BW-15-05 落地。
 - [x] **BW-15-01-06 校验路径大小写、编码和系统目录**。**验收** 代表性夹具可寻址。（commit aa6e2ee）
   - 证据：`crates/platform/src/path.rs`（aa6e2ee）——`correct_case_of_path`（参考 `WinFileSystem::correctCaseOfPath`（win_file_system.cpp:782）的 POSIX 对应：`realpath(3)` 在大小写不敏感卷上解析出盘上真实拼写、敏感卷上即恒等、缺失路径原样返回）；`real_path`（canonical 定点、symlink 解析、缺失报 `ENOENT`）；`join`（参考 `getAbsolutePath` 的 base+path（unix_file_system.cpp:466），补缺 `'/'`）；`home_dir`（`$HOME`）/`temp_dir`（`TMPDIR`→`TMP`→`TEMP`→`/tmp`）；编码 `path_bytes`/`path_from_bytes` 字节级往返（POSIX 路径是字节串非必 UTF-8，实测 `0xFF` 字节往返）+ lossy。Linux 实测 7 测：temp 系统目录夹具写读可寻址、HOME 绝对、join 三态（缺分隔/已带/空 base）、realpath 不定点+symlink+缺失三态、correct_case 缺失原样/存在=realpath、非 UTF-8 往返。**Windows `%USERPROFILE%`/`%TEMP%`/`GetFullPathNameW` 后端归 BW-15-03 Windows runner 平台移植**（本项验收为代表性夹具可寻址，Linux 已实测过：`path::tests::temp_dir_holds_an_addressable_fixture`，temp 系统目录夹具写读可寻址）。
@@ -9750,14 +9484,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 验证原生服务端全角色、客户端、编辑器及产物。处理进程停止、DLL/CPython 查找、路径与驱动，并核对原版 Windows 客户端和编辑器样本。
 
 - [ ] **BW-15-03-01 跑 Windows 服务端全角色**。**验收** 能处理控制事件并关服。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-03-02 验证 DLL 和 CPython 发现**。**验收** 已安装布局中模块可导入。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
-- [ ] **BW-15-03-03 跑 Windows 客户端与编辑器**。**验收** 固定样本与原版对照。（对照基线注记 2026-11-26：对照面本体已在 main——Linux boundless-client 固定地图呈现（896×176 8 帧二跑逐位同+TGA 630,802 B）与 boundless-editor 编辑会话（ed_save (12,0,34)→(25,0,47)+二会话字节同，02bedbb）即样本面；两入口 `cargo check --locked --target x86_64-pc-windows-gnu -p boundless-client -p boundless-editor` 已 PASS（2026-11-26 实测零错误）；Windows 腿仍缺真机 runner（服务端 `mercury`/`std::os::fd` 交叉构建未过属 BW-15-03-01 面），行保持开）
-  - 交叉编译注记（2026-11-26，`454acee` 核验）：本席 `apps/client`/`apps/editor` 双入口 windows-gnu 交叉检 PASS（`cargo check --target x86_64-pc-windows-gnu`，仅预存 blowfish manifest 警告）；server 侧 `mercury` E0432×16 属 BW-15-03-01，不拦两入口。真跑仍待 Windows runner（BW-15-05-01），行保持开。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
+- [ ] **BW-15-03-03 跑 Windows 客户端与编辑器**。**验收** 固定样本与原版对照。
 - [ ] **BW-15-03-04 跑 Windows 工具和发布包**。**验收** 路径编码和启动烟测通过。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-04 macOS
 
@@ -9766,14 +9495,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **BW-15-04-01 跑 macOS 服务端全角色**。**验收** 能启动、停止并回收。
   - 证据（部分，未勾）：macOS 编译前置已通（afe9973）——`server_runtime::signals` 可移植到 `aarch64-apple-darwin`：等待原语按平台分派（Linux `sigwaitinfo`，macOS `sigwait`——libc crate 只给 BSD 族 `sigwait`，二者同是 POSIX 等待且都可被 `EINTR` 打断，`wait_one` 统一为负错误码）；`signal_number_to_string` 的实时信号臂（`SIGRTMIN`/`SIGRTMAX`，glibc 专属）门控到 Linux，macOS 无实时信号范围；`SIGMAX` 按平台取（Linux `SIGSYS`=31，macOS `SIGUSR2`=31，二者皆最高标准信号，`AtomicU32` 掩码一致）；`SIGNAL_NAMES` 按平台分表（参考表是 Linux 编号；macOS 编号不同：`SIGEMT`=7/`SIGBUS`=10/`SIGSYS`=12/`SIGCHLD`=20/`SIGIO`=23/`SIGINFO`=29/`SIGUSR1`=30/`SIGUSR2`=31，无 `SIGSTKFLT`/`SIGPWR`；服务端用的退出信号 `SIGTERM`/`SIGINT`/`SIGQUIT` 两端同号）。实测 `cargo check -p boundless-server --target aarch64-apple-darwin` 绿（仅剩 resources 预存警告）。**剩余**：macOS 上真机运行（`cargo build`+启动/停止/回收，需 macOS runner）；`--all-targets` 测试编译亦已绿（af0182b）——两处内联 `sigtimedwait`（server_app.rs:980/1211，BSD 无此符号）收进 `consume_pending_signal`（Linux `sigtimedwait` 零超时轮询、非 Linux `sigwait`；信号既已确认 pending 则立即返回），实测 `cargo check -p server-runtime --target aarch64-apple-darwin --all-targets` 无错；mercury 尚有 darwin 缺口（`lib.rs` 对 `event_dispatcher`/`packet_receiver` 的门控被 `interface_table.rs:18`/`request_manager.rs:27`/`network_utils.rs:36` 无条件 import；`endpoint.rs:403` 直用 linux-only `socket::IP_RECVERR`）——服务端最小入口不依赖 mercury 故不拦当前构建，待 Mercury 接入服务端（BW-02）时需先补。
 - [ ] **BW-15-04-02 验证 CPython 与应用资源布局**。**验收** 从应用包可加载。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
-- [ ] **BW-15-04-03 跑 macOS 客户端和编辑器**。**验收** 设备状态和固定地图测试通过。（对照基线注记 2026-11-26：固定地图测试面已在 main——crates/client 软栅格设备（present_with 帧账+checksum+map_display_baseline 2 测 896×176 二跑逐位同）与编辑器 ed_save 面（edit_reload 2 测），02bedbb；三入口 `cargo check --locked --target aarch64-apple-darwin` 实测 PASS；macOS 腿待真机 runner，行保持开）
-  - 交叉编译注记（2026-11-26，`454acee` 核验）：本席 `apps/client`/`apps/editor` 双入口 darwin 交叉检 PASS（`cargo check --target aarch64-apple-darwin`，仅预存 blowfish manifest 警告）；macOS kqueue+信号前置 `59da22c`/`afe9973` 已在 main。真跑仍待 macOS runner，行保持开。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
+- [ ] **BW-15-04-03 跑 macOS 客户端和编辑器**。**验收** 设备状态和固定地图测试通过。
 - [ ] **BW-15-04-04 跑 macOS 工具和发布包**。**验收** 干净安装后可执行。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-04-05 验证与 Linux 和 Windows 互通**。**验收** 跨端登录及实体同步通过。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-05 三端 CI 和混合部署
 
@@ -9784,11 +9508,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **BW-15-05-02 在三端执行协议、资源与 Python 测试**。**验收** 各端分别留存结果。
 - [ ] **BW-15-05-03 配置 MySQL、XML 与 SQLite 测试矩阵**。**验收** 每种模式产生独立结果。
 - [ ] **BW-15-05-04 配置 PostgreSQL 真实后端矩阵**。**验收** 各端完成登录、写档和重启读档。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-05-05 验证三端客户端连接不同平台服务端**。**验收** 记录每种支持组合。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 - [ ] **BW-15-05-06 验证混部替换单角色**。**验收** 记录版本和关服顺序。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 #### BW-15-06 平台图形和宿主依赖
 
@@ -9798,10 +9519,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 证据：`docs/review/bw15-06-01-graphics-backend-list.md`——四后端五平台：桌面 **Direct3D 9**（`lib/moo`，`bwclient`，`IF(BW_PLATFORM_WINDOWS)` 下链 `d3d9/d3dx9/dxguid/setupapi/psapi`，`moo_dx.cpp`/`render_context.cpp` 设备面；`IF(NOT BW_IS_SERVER)` 剥离服务端依赖）、工具 **OpenGL**（`navgen` 预览，`opengl32` + `<GL/gl.h>`/`HGLRC`）、移动 **cocos2d/OpenGL ES**（Android `-lEGL -lGLESv1_CM`、iOS libs 随树）、web **Awesomium**（`BW_AWESOMIUM_SUPPORT` 门控，`web_app` → `PyAwesomiumProvider`）。平台基线：顶层 `CMakeLists.txt:57-72` 构建门仅 Windows（win32/win64）+ Linux remote-only 服务端，无 macOS 桌面分支——Linux/macOS 桌面**无图形后端**（全树 `wgl|glX|CGL|glViewport` 扫描仅命中 navgen），macOS 侧按 BW-15 开篇约定以原版样本+跨端混跑验收。缺口：`third_party/` 无 `awesomium/`（同 DCC SDK 缺口）；新版渲染栈未建（BW-11），服务端零图形后端由 BW-16-02-02 对齐。
 - [x] **BW-15-06-02 维护 DCC 宿主矩阵**。**验收** 逐插件记录可用宿主。（commit ff504c9）
   - 证据：`docs/review/bw15-06-02-dcc-host-matrix.md`——三插件两宿主：visualexporter/animationexporter → Autodesk 3ds Max（`MFXExport : SceneExport`（mfxexp.hpp:154），`.dle`，Max 库级导出 `LibDescription@1..LibVersion@4`（visualexporter.def/animationexporter.def，expmain.cpp:124-155），Max **2009–2013** 逐版本目标 max2009_exporter…max2013_exporter）；mayavisualexporter → Autodesk Maya（`MLL_EXPORT initializePlugin/uninitializePlugin`（visualmain.cpp:38/131），`.mll`，随分发 visualfileexporterscript.mel，Maya **2009–2014** 逐版本目标）。启用条件=`BW_CMAKE_TARGET=exporters`（`BWConfiguration_exporters.cmake` `EXPORTER_PROJECTS`：默认 Max/Maya 2010-13 + Max 2010-12，win32 追加 2009 组，win64 追加 maya2014，非 vc9 追加 max2013；`BW_EXPORTER`+`_SECURE_SCL=1`）；输出 `game/tools/exporter/3dsmax<ver>{,x64}/`、`maya<ver>{,x64}/`。缺口：`third_party/` 无 `3dsmax/`、`maya/` SDK 目录（外部依赖），插件二进制无法从本树构建——宿主实测（BW-15-06-03/04）需外部 DCC SDK 与宿主安装。
-- [ ] **BW-15-06-03 验收三端客户端与编辑流程**。**验收** 同一地图有可比证据。（Linux 腿注记 2026-11-26：boundless2 `02bedbb`→main（ada3706 去重）——固定地图双入口同图可比证据：apps/client `boundless-client --res docs/review/fixtures/chunk_space/res/space_00010001` 18×3 视图 896×176 软栅格 8 帧 checksum 系列二跑逐位同+TGA 630,802 B（crates/client/tests/map_display_baseline.rs 2 测），apps/editor `boundless-editor` ed_save 移 tree00 (12,0,34)→(25,0,47) 重载验证+二会话字节同（apps/editor/tests/edit_reload.rs 2 测）；Windows/macOS 腿待 runner，行保持开）
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
+- [ ] **BW-15-06-03 验收三端客户端与编辑流程**。**验收** 同一地图有可比证据。
 - [ ] **BW-15-06-04 验证外部导出的跨端读取**。**验收** 各适用消费者可打开。
-  - - 登记（2026-11-26，本席）：BW-15 簇归 bw15-platform 席（lane 名即簇主）——Windows/macOS 宿主面待其 runner 与端口落地（BW-15-03 信号端口/BW-15-04 文件系统与窗口），行保持开本席不接，其 lane 台账为准。
 
 ### BW-16 目录分层、依赖方向与模块归属
 
@@ -10186,7 +9905,7 @@ Boundless 新增交付，独立位于 `extensions/vscode/`，内部拆为 `src/`
 - [x] **BW-20-02-06 验证 VS Code 的 Rust 启动调试**。**验收** 能由启动配置运行 CellApp 并命中断点。（commit aa15e2c）
   - 证据：原版结果——引用端角色进程是 C++ `bigworld_app <role>`，VS Code 调试需手配 launch.json 指向其二进制。新版结果——`src/workspace/launchConfig.ts` 的 `rustLaunchConfig(role)` 生成启动配置：`type` 按平台取 `lldb`（Linux/macOS）或 `cppvsdbg`（Windows），`program` 指向 `target/debug/boundless-server`（`apps/server` 的产物，`apps/server/Cargo.toml` [[bin]]），`args=[role]`，`env.BW_RES_PATH=<workspaceFolder>/res`，`stopAtEntry:false`；`extension.ts` 的 `boundless.setupRustDebug` 命令经同一个 `mergeLaunchJson` 并入工作区 `launch.json`，且把 `boundless.cluster.binary` 的默认值从错误的 `target/debug/server` 修正为实际产物名。证据链接——`pnpm test` 149 例全绿且 `pnpm run check` 0 错误（含 `rustLaunchConfig` 形状、Windows 调试器选择、覆盖 program/resPath、与附加配置并存的 4 例）；实跑 `sh tools/verify/rustLaunch.sh`：gdb batch 以 launch 配置同一命令行（`target/debug/boundless-server cellapp`、`BW_RES_PATH` 指向示例 res）启动 CellApp，断点命中 `server_runtime::app::run`（`crates/server-runtime/src/app.rs:46`），回溯顶两帧为 `app::run ← boundless_server::main`，脚本判 PASS。
 - [x] **BW-20-02-07 提供文档 MCP 接入配置**。**验收** 查询返回当前工作区版本文档。
-  - 证据：原版结果——引用端的文档是仓库里的 markdown（VitePress 渲染），编辑器侧没有任何检索入口，开发者只能翻目录或开网页版；引用端不存在 MCP 面。新版结果——`extensions/vscode/src/workspace/docsMcp.ts` 生成 `.vscode/mcp.json` 条目：`type: stdio`、`command` 指向 `boundless-docs-mcp`、`args` 依次为 `--root ${workspaceFolder}`、`--prefix docs`、`--version HEAD`、`--langs zh`，配置了站点地址才追加 `--docs-url`（`9623715_MCP_DEFAULTS` 与 `boundless-docs-mcp` 自己的默认值一致）；`mergeMcpJson` 与 launch.json 同一"只增不改"面——只替换自己写的那一项、用户自己的 server 原样保留，解析不出来的文件整体重写；`extension.ts` 的 `boundless.setupDocsMcp` 命令按工作区文件夹逐个写入 `.vscode/mcp.json`，新增 6 个设置 `boundless.docs.{server,root,version,prefix,langs,url}`。证据链接——`pnpm test` 160 例全绿（含新 `test/docsMcp.test.ts` 11 例）、`pnpm run check` 0 错误；实跑 `node tools/verify/docsMcp.cjs` 11/11 PASS：harness 用扩展自己的 writer 写出真实 `.vscode/mcp.json`，再按该文件里的 command/args 起真二进制（`${workspaceFolder}` 按编辑器变量语义替换）做 MCP stdio 会话——`tools/list` 只列 `search_docs`/`read_doc`；`search_docs "second edition"` 命中仅 v2 才存在的 `guide/second.md` 且 `version` 为配置给的 `HEAD`；`read_doc guide/second.md` 返回 `version=HEAD`、`commit=2b8be3d` 恰等于工作区当前 HEAD、`source=https://docs.boundless.example/guide/second.html`；同一配置把 `boundless.docs.version` 改成 `v1` 后，v2 页面零命中、`guide/entities.md` 回到 v1 文案、链接保持仓库相对 `docs/guide/entities.html`。如实登记——编辑器内的 MCP 客户端加载（自动发现 `.vscode/mcp.json`）未在真实 VS Code 里验证：本机 `/usr/bin/code` 1.144.1 可装但不跑带 GUI 的 MCP 会话，取证止于"按其写出的配置实跑真二进制并逐条核对查询结果"。
+  - 证据：原版结果——引用端的文档是仓库里的 markdown（VitePress 渲染），编辑器侧没有任何检索入口，开发者只能翻目录或开网页版；引用端不存在 MCP 面。新版结果——`extensions/vscode/src/workspace/docsMcp.ts` 生成 `.vscode/mcp.json` 条目：`type: stdio`、`command` 指向 `boundless-docs-mcp`、`args` 依次为 `--root ${workspaceFolder}`、`--prefix docs`、`--version HEAD`、`--langs zh`，配置了站点地址才追加 `--docs-url`（`DOCS_MCP_DEFAULTS` 与 `boundless-docs-mcp` 自己的默认值一致）；`mergeMcpJson` 与 launch.json 同一"只增不改"面——只替换自己写的那一项、用户自己的 server 原样保留，解析不出来的文件整体重写；`extension.ts` 的 `boundless.setupDocsMcp` 命令按工作区文件夹逐个写入 `.vscode/mcp.json`，新增 6 个设置 `boundless.docs.{server,root,version,prefix,langs,url}`。证据链接——`pnpm test` 160 例全绿（含新 `test/docsMcp.test.ts` 11 例）、`pnpm run check` 0 错误；实跑 `node tools/verify/docsMcp.cjs` 11/11 PASS：harness 用扩展自己的 writer 写出真实 `.vscode/mcp.json`，再按该文件里的 command/args 起真二进制（`${workspaceFolder}` 按编辑器变量语义替换）做 MCP stdio 会话——`tools/list` 只列 `search_docs`/`read_doc`；`search_docs "second edition"` 命中仅 v2 才存在的 `guide/second.md` 且 `version` 为配置给的 `HEAD`；`read_doc guide/second.md` 返回 `version=HEAD`、`commit=2b8be3d` 恰等于工作区当前 HEAD、`source=https://docs.boundless.example/guide/second.html`；同一配置把 `boundless.docs.version` 改成 `v1` 后，v2 页面零命中、`guide/entities.md` 回到 v1 文案、链接保持仓库相对 `docs/guide/entities.html`。如实登记——编辑器内的 MCP 客户端加载（自动发现 `.vscode/mcp.json`）未在真实 VS Code 里验证：本机 `/usr/bin/code` 1.144.1 可装但不跑带 GUI 的 MCP 会话，取证止于"按其写出的配置实跑真二进制并逐条核对查询结果"。
 
 
 #### BW-20-03 打包与三端验证
@@ -10785,110 +10504,89 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 缓存解析结果并评估预生成编解码器，衡量启动和序列化开销，锁定定义摘要和产出字节。
 
-- [x] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。（本席 `a041efd`+`9623715`：crates/entitydef/tests/entitydef_baseline.rs 三腿=冷启动 factory_create full_def(3 实体)+fantasydemo_def(5 实体)（诊断零+digest 钉住 oracle 否则不产生计时行）、编解码=两夹具全实体全属性解析默认值 add_to_stream/create_from_stream 20k 轮×每轮逐值恒等断言（11 族：标量 5+STRING/FLOAT64/ARRAY×2/FIXED_DICT×2）、暖启动同进程二次加载 digest 等冷值；记录 TSV docs/review/fixtures/entitydef-baseline/entitydef-baseline.tsv 63 行：cold 0.637/0.615ms、warm 0.448ms、标量 p50 457-474ns、FLOAT64 268ns、STRING 340ns、ARRAY 238/247ns、FIXED_DICT2 字段 817ns/3 字段 1565ns；墙钟只记录不设带；证据页 docs/review/opt-04-01-01-entitydef-baseline.md；entitydef 既有测试未动全绿）
-- [x] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。（本席 `9881c37`：FsResolver::open_section 进程级 parse 缓存（参照 resmgr/data_section_cache.hpp find/add/clear+setSize：thread_local 按全路径键、上限 1024 条溢出即清、clear_section_cache() 面；MemoryResolver 不动、仓内 FsResolver 消费者皆只读夹具）；基线 runner 起手清缓存→startup_*=缓存冷/ warm=缓存热；**比较**=同跑 cold 0.916ms vs warm 0.297ms（暖启动省 0.619ms=读+解析份额；跨记录冷值不作比因负载 40→21 档差已披露）；digest 前后同 18D00DC6 钉 oracle 恒等；entitydef 库测 247+集成全绿、覆盖 entity_description 99.31%/entity_map 99.24%/data_type 98.02%≥98；证据页 opt-04-01-01-entitydef-baseline.md OPT-04-01-02 节+TSV 滚动 canonical 记录）
-- [x] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。（本席 `f428168`：crates/entitydef/tests/entitydef_codec_gen.rs 评估原型=Kind 树载入期编译成闭包树（子经 Rc 共享、值词汇不动；write_int/truncate_integer/check_sequence_capacity 三 crate 私有助手忠复制、由字节恒等面钉住）；字节恒等腿=两夹具全 21 属性 gen 编码逐字节==解释式+两向解码均还原默认值+不支持类目（CLASS/UDO_REF/PYTHON/USER_TYPE）计数断言零；成本腿=每族 encode-only/decode-only 各 2 万轮、sink 构建在钟窗外、解码走预编码+rewind，TSV docs/review/fixtures/entitydef-baseline/codec-gen.tsv 92 行+三连跑方向全稳：标量 encode −3..−9%/decode −4..−6%、STRING −5%/−6%、ARRAY −8..−12%、**FIXED_DICT 两族反而 +0.4..+11%**（每字段 boxed 闭包间接调用吃掉省下的 match）；生成成本 7µs/21 属性无关紧要；**裁定=不采纳入引擎**——闭包树扁平族赢 3-12% 合成族输 4-11%，构建期直线单态 codegen 不可用（定义是运行期数据、参照引擎自身亦解释式分发）、标量 ~10ns 在噪声带不作契约；记录事故=首次 rustfmt 后单跑瞬时失败无 panic 留痕、同二进制 16 连跑全绿；零 src 改动=覆盖门不适用，entitydef 247+评估 2 测绿）
-- [x] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。（本席 `6ce8e4c`：crates/entitydef/tests/entitydef_rerun.rs 复跑 harness 三腿全一致——①摘要=full_def/fantasydemo_def/service_def/entity_index 四树经 factory_create 重载 digest 逐字==docs/review/reference/*_entitydef.json oracle（entity_index 无 alias.xml 容一字告警同 differential；client_integration 走 BW04_CI_RES env 未设则记 skipped，同 differential 口径）；②实体快照=fantasydemo Avatar.def（SHA e35472f0…==采集输入）+采集工具固定输入节，经参照四 pass shouldConsiderData 顺序（entity_description.cpp：base非client/base+client/cell+client/cell非client，每 pass 声明序）复现 entity-Avatar.snapshot.hex 15 字节逐字节恒等（含 INT8 输入 300→0x2c 参照截断）；③数据库行=BASE|CELL|ONLY_PERSISTENT_DATA（持久只认显式 <Persistent> 标签、缺省 false=data_description.cpp:220 readBool）+canBeOnCell 追加 position/direction/spaceID（xml_database.cpp getEntity 行公式）复现 database-Avatar.row.hex 38 字节逐字节恒等；记录 docs/review/fixtures/entitydef-baseline/def-rerun.tsv 14 行（四 digest+双 hex+双字节数+match 旗标）；**验收=产物一致，每次跑都断言**；OPT-04 段全收官）
+- [ ] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。
+- [ ] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。
+- [ ] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。
+- [ ] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。
 
 ### OPT-05-01 录制负载热点和故障基线
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `e028fbf`：crates/server-runtime/src/cellappmgr_baseline.rs 三腿合成钟 harness 在 crate 内 `#[cfg(test)] #[path]` 挂进 cellappmgr.rs（Space.root/BspInternal 私有），①分配=零面积 sliver B+热点 A 经 inform_of_load EMA 12 步（bias 0.05）爬坡，balance 一步收敛 B.ymin=ENTITY_EDGE=4000 钉死每步 EMA/每轮 A/B 范围；②回收两臂=零面积 sliver 首轮 1 CellRemoval+兄弟升 Rect::unbounded()，实面积 cell 因 growing child A 的 chunk ghost margin（Space::load_balance 从 unbounded 重导范围→chunk_bounds 不含 inflate desired→fallback A.range，chunk_limit=A.ymax-500=3500）被钉在 4000 不回收，两面对照记录；③恢复=严格 now-lastHeard>timeout 检测钉 5000ms/4tick，死信广播+BaseAppMgr 报告+双 cell 树erase 后存活 cell 占 unbounded+最后 app 死触发受控关服；ESTIMATED_INITIAL_CELL_LOAD bump 归 create_space creation seam；证据页 docs/review/opt-05-01-01-cellappmgr-baseline.md+TSV 56 行 fixtures/load-hotspot/cellappmgr-baseline.tsv；clippy/fmt 绿，server-runtime 1680 测绿，全仓 6949 passed/0 failed（基线 6948 +1））
-  - 双交付 FLAG（2026-11-26，本席登记）：main 另收平行腿 `e028fbf`（cellappmgr_baseline.rs 三腿合成钟 harness 入 cellappmgr.rs）与本席 `5120dea`+`0fbfa8f`（load/src/hotspot.rs run_hotspot_baseline）同面异实现，待主席择一。
-- [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（commit cd056fc：cellappmgr_tuning.rs 三固定场景对比——①热点爬坡跨 EMA bias 0.02/0.05(出货)/0.1/0.2：达阈 informs 52/21/10/5 严格反序、落点几何全同(4000 entity edge 两 pass)，bias 只换探测延迟不换落点；②反转跨 aggression 两分支：反转臂首 pass 减半 0.5 后 ×1.0718/pass 回升(8 pass 0.8123)、延续臂恒 1.0，closest_limit 单调故两臂落点同(5000=level1)，阻尼=抗振荡面零几何代价；③回收 drain 跨 chunk-limit 开关：关=1 pass 完成(CellRemoval 1+幸存者升 unbounded)、开=线被幸存者 chunk ghost margin 钉在 4000(基线 held 面)，空 retiring cell 按参照 Space::writeEntityBoundsForEdge 报无界边+offload floor(这才让 entity limit 可达世界边)；证据页 docs/review/opt-05-01-02-load-tuning-comparison.md+TSV 27 行 fixtures/load-hotspot/cellappmgr-tuning.tsv；server-runtime 1702 绿、全仓 6950 passed/0 failed）；⚠️ FLAG 平行交付未决 2026-11-26：bw14-script-host `a577c5c`+修 `9563f2e`（balance_baseline.rs 312 行真 CellAppMgr 96 tick 双相位+ScheduleLedger+BalanceTuning seam 七旋钮含 safety_bound/safety_ratio+cellappmgr.rs +122+证据页，lane-only）vs main 落地 bw15 `cd056fc` 面（cellappmgr_tuning.rs 三固定场景对比），异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `cd056fc` 面（cellappmgr_tuning.rs 三固定场景对比，已在树、server-runtime 全绿）为本行交付面；bw14 `a577c5c`+`9563f2e`（balance_baseline.rs）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：择 main `cd056fc` 面（cellappmgr_tuning.rs 三固定场景对比）为本行交付面；本席 lane-only `a577c5c`+修 `9563f2e`（balance_baseline.rs 312 行+BalanceTuning seam 七旋钮）转存档记录，随 lane 并入由主席处置。
-- [x] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。(2026-11-26 lane/bw15-platform fd21b51→main 51bf749+证据 0407552→515351b：复跑三面零失败——①迁移面 cargo test -p server-runtime --lib -- migrat offload teleport 75/75 绿（entity_creator mailbox/ghost 跨 space 传送可见集/offload 两侧恰一 real/控制器恢复/message_redirect 切换中恰一次）；②关服面 -- shutdown mixed 43/43 绿（shutdown 阶段线值对参考 enum/完成队列按序 drain/server_app init 失败也跑 fini/space 空 cell 销毁回收）；③混部面 el7_mixed_deploy --ignored 1/1 绿 5.01s，EL7 真二进制 pid/整机查询+addTCP/add 双版本+TCP 注册 22B+记录帧 45B×4+UDP×3+mldb 三标记+协议版本 10，TSV 与已提交 fixture 逐行 IDENTICAL；④附加 lifecycle_scenario.rs 种子场景 6 测绿（seed 41 复现/entity restore 一致/进程阶段与 task drain/replay tail 终态可复现，无墙钟采样）；本席 main 树复核=上述三面本机重跑数字；坑=EL7_MIXED_OUT 须文件路径传目录 IsADirectory)
-  - main 已收（台账席 1a21d7a）：本席 `fd21b51`→main `51bf749`（逐字节同）+复跑证 `515351b`，本席勾保持；main 行文误标 lane/bw15-platform，实为 lane/bw14-script-host 本席交付。
+- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。
+- [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。
+- [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 
 ### OPT-06-01 登录与资源下载基线
 
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
-- [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。(2026-11-26 lane/bw15-platform 5ec0620→main 4c29980+证据 afee8b2→fcfa88f：crates/load/src/login_baseline.rs 组合既有面记录三族数字——峰值=login hurricane online 序列最大值（seed 固定可复现）；拒绝率=FD 预算拒绝 login_refusal_rate=refused/(admitted+refused) 单列（与「发出后失败」分账，login_success_rate 仍参考 admitted/attempts 语义）；延迟=资源下载分块 tick 地板 ceil(payload/BUNDLE_BYTES)（参考 ServerDownloads::add_to_bundle 每 mini-tick 一 bundle 载荷）+队列驻留字节；**读法警告：离线面是模拟时间无墙钟 RTT，延迟=确定性地板非实测往返**；记录运行=保存夹具 login-hurricane.xml seed 20261123/FD 500×FD_PER_BOT+1/载荷 4096B→attempts 500/admitted 500/refused 177/online_peak 500/refusal_rate 0.26145/download_ticks 4/queue_bytes 4096，夹具 docs/review/fixtures/load/login-baseline.report.json；5 单测钉 ceil 分块/队列字节/峰值拒绝记录/seed 复现/预算拒绝臂；本席 main 树 load --lib 174 绿（含 login_baseline 6）)；⚠️ FLAG 平行交付未决 2026-11-26（bw15 `cca778a` 登记）：bw14 席 `cc648b5`（crates/server-runtime/src/login_baseline.rs 586 行 seed 登录+下载基线账本，lane-only）vs main 落地 bw15 `4c29980`（crates/load/src/login_baseline.rs，经 5ec0620 收编入 main），异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `4c29980` 面（load/login_baseline.rs，5 测绿在树）为本行交付面；bw14 `cc648b5`（server-runtime/login_baseline.rs 586 行）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：择 main `4c29980` 面（load/login_baseline.rs 三族数字）为本行交付面；本席 lane-only `cc648b5`（server-runtime/login_baseline.rs 586 行 seed 洪泛账本）转存档记录。
-- [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。(2026-11-26 lane/bw15-platform 083c598→main 790332b+证据 83f6caa：fleet.rs botsForLogOnRetry_ 排水从每条到期 bot 单独 Vec::remove 改单遍分区（mem::take 遍历 log_on_retry_time()<now 到期者 log_on() 后推回，O(n²)→O(n)，队序/重登序不变固定 seed 派遣序不变）；新测钉 4 到期条队序重登+1 留队；bench login_surge.rs parked 64/512 同刻到期单 tick 排水+Throughput::Elements；A/B 对照 taskset -c 6 钉核交错 6 轮：drain_64 13.93→7.39µs 0.530（1.9×）、drain_512 776→80µs 0.104（9.65×）每轮候选全优无交叉=效应远超噪声；本席 main 树 bench 跑通（drain_512 ~90µs 级）load --lib 175 绿，clippy 净，smoke.rs 三处 expect(&format!) 被遮 lint 顺手清（main 已有此修 auto-merge 消重）)；⚠️ FLAG 平行交付未决 2026-11-26（bw10 `05c581c` 登记）：bw14-script-host `3ced450`（crates/server-runtime/src/login_tuning.rs 115 行+login_baseline.rs 扩展登录排队尾延迟对比，lane-only）vs main 落地 bw15 `790332b` 单遍排水（fleet.rs O(n²)→O(n)+benches/login_surge.rs），异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `790332b` 面（fleet.rs 单遍排水，A/B drain_512 9.65× 零交叉在树）为本行交付面；bw14 `3ced450`（login_tuning.rs）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：择 main `790332b` 面（fleet.rs 单遍排水 9.65×）为本行交付面；本席 lane-only `3ced450`（login_tuning.rs 排队尾延迟对比）转存档记录。
-- [x] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。(2026-11-26 lane/bw15-platform efabd67→main 6ffd9af+bench 6318f61→bdf1327+证据 5c37709→c23987a：data_download.rs 装配 segments.concat()→assemble() 先按总长 with_capacity 一次分配再按值逐段 move 拷入——concat 峰值活数据=2×流长（完整结果+全部段并存）按值消费恒=1×流长，并发下载同刻完成时进程峰值 RSS 结构性减半；新测钉 capacity==6 精确一次分配+空段臂，其余 7 行为测不动（到达序拼接语义不变）；bench download_assembly complete_64/512；A/B 钉核交错 6 轮：complete_64 0.918/complete_512 0.845 轮间交叉=墙钟噪声内无可靠收益，**诚实判读=内存半边结构性 0.5、传输时长半边被 bundle 分块契约钉死（ServerDownloads::add_to_bundle 每 mini-tick 一 bundle，与参考一致，对照结论非优化项）**；本席 main 树 sr lib 1734 绿+bench 跑通，clippy 净)；⚠️ FLAG 平行交付未决 2026-11-26 两路：bw14-script-host `3e4839c`（crates/server-runtime/src/download_tuning.rs 263 行下载时长+内存对比，lane-only）与 bw16-18 `42d6686`+`238aab3`（crates/server-runtime/src/server_download.rs drain 直排+benches/download_drain.rs+legacy_queue.rs+tests/download_drain_alloc.rs+证据页 download-drain-server-side.md+TSV，lane-only）vs main 落地 bw15 `6ffd9af` assemble 预装配（data_download.rs 峰值活数据 2×→1×），三面异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `6ffd9af` 面（data_download.rs 客户端组装，峰值活数据 2×→1× 在树）为本行交付面；bw16-18 `42d6686` 服务器侧排出面（其页自报 drain_256 0.69-0.72×）与 bw14 `3e4839c` 对比面均记为补充/备选 lane-only 归档不删——三者异文件零重叠，如需并入补充面或置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：三路择 main `6ffd9af` 面（data_download.rs 预装配）为本行交付面；本席 lane-only `3e4839c`（download_tuning.rs 263 行）与 bw16-18 `42d6686`+`238aab3`（server_download.rs drain 直排）均转存档记录。
-- [x] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。(2026-11-26 lane/bw15-platform 838a54a→main 2f27440：复跑行零代码改动三条面全绿判一致——①重复登录 duplicate_auth.rs 5/5（同账号二次登录原位改写唯一映射/并发拒不污染/checkout 中拒不计尝试/logoff 后仍单记录/自定义扩展可重复）；②重连 -- relogon relogin 28/28（relogon.rs 9 态机回复码族+baseapp_relogon.rs 13 web/proxy 复用族+log_on_records 2+login_entity 2+headless_client 1，load 重连链 3 测+reconnect.xml 场景加载）；③旧客户端 loginapp.rs 版本面 10/10（三旧版本 BadProtocolVersion 且先于凭据参数拒/supports 严格相等/截断流 MalformedRequest/线上序反自然序回放）；ci/load.sh 4 lane PASS 6/6 场景入带；本席 main 树复核=同组腿本机重跑同数全绿)；⚠️ FLAG 平行交付未决 2026-11-26（bw10 `05c581c` 登记）：bw14-script-host `da80f8e`（crates/server-runtime/src/login_rerun.rs 422 行重复登录+重连复跑面，lane-only）vs main 落地 bw15 `2f27440` 复跑一致性面，异路径真平行，主席择一，未决前本行保持勾态。→ **主席裁定 2026-11-26**：择 main `2f27440` 面（复跑一致性三面全绿在树）为本行交付面；bw14 `da80f8e`（login_rerun.rs 422 行）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 主席裁定 2026-11-26（main 行内）：择 main `2f27440` 面（复跑一致性）为本行交付面；本席 lane-only `da80f8e`（login_rerun.rs 422 行复跑面）转存档记录。
+- [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。
+- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
+- [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
+- [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
 
 ### OPT-07-01 备份和归档基线
 
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
-- [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。19c4d4d（backup_baseline.rs 48 实体种子舰队过真实备份面：带宽逐 tick 1396/1410/1412×4 共 8454 字节 6 tick 清队列、收发队列峰各 48、接管 48/48 恢复且属性全等、归档恢复耗时 8 tick 重持久化 24/24 且逐实体往返核等；4 测 98.31% 行 100% 区域）
-- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。9abf58e（backup_tuning.rs BackupTuning seam(Default=逐位复现由测钉)同种子同负载双跑：slice 8→16+period 8→4，队列 6→3 tick、恢复 8→4 tick，代价=每 tick 带宽峰翻倍(1412→2824)但字节总恒等 8454(方向断言诚实)；same_load 钉同舰队/同持久集/同字节/同恢复；4 测 100% 行）
-- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。4c19ee7（shared_data_baseline.rs+shared_data_tuning.rs 96 变更过真实双 mgr 链(set/del 四 scope+forward/relay 环 4 BaseApp+3 CellApp)：shipped 575 消息(base284/cell219/fwd24/relay48) vs 抑制 no-op 写 444(216/174/17/37)=省 131(−22.8%)，21 次 no-op 放大为全链腿消去(全局 set=5/转发 set=9/cell=3)；终态三权威图逐位相等(same_load 钉)；跨种子形状钉；9 测 baseline 98.58%+tuning 100%）
-- [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。2fbfcf8（takeover_rerun.rs 12 实体种子舰队过真实备份面后源亡接管 restore 12/12 属性全等；16 变更建双 mgr 权威图后按 count+pairs 恢复流形状落盘、全新 mgr 对经真实 recover_shared_data_from_stream 读回=四图逐位等(2/4/2/4 条目)；跨种子形状钉；4 测 99.65% 行 100% 区域，唯一缺行=属性不匹配假臂被断言正确性排除）
-
+- [ ] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。
+- [ ] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。
+- [ ] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。
+- [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。
 
 ### OPT-08-01 密集 AOI 基线
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
-- [x] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。已交付 eee8fde：crates/server-runtime/src/aoi_baseline.rs 全 shipped 栈逐 tick 接线（cross 范围列表 move_entity shuffle ±0.75m 确定步/AoI trigger 跨界喂 witness add_to_aoi→flush→EnterAoI→request_entity_update 回应→CreateEntity/vision trigger 喂 vision_update 1.2rad 锥 28m 每 tick 清晰地形/Witness::update 预算调度 setWitnessCapacity(64000,10)=772B/tick 密集下绑定）。120 实体 10×12 格 4m 间距单观察者：账本=48+16 tick、tick0 创建爆发 289 消息 2704B（120 EnterAoI+120 CreateEntity）、tick1 首见爆发 44 starts、稳态窗(8..48) 4654B ≈116B/tick 预算绑死、总广播 5708 消息 9188B、AoI 跨界 120 进 0 出、seeing churn 77/31；迁移腿=handover 46 可见→目的地静默种子 46→真新 id 重公告 12、重复公告 0(diff 契约)、2 tick 收敛到 native 观察者集合(42)。断言全结构性（爆发一次性/稳态不超预算且恒发/种子无声/start 永不命中已持有 id/收敛 native/全账本逐 tick 复跑恒等）；墙钟探针(seeing 4.0ms/scheduling 392ms over 64 tick)只打印。面发现：目的地 vision trigger 必须由 vision_start_real 新建——预建 trigger 令 restore 的 set_vision(None→Some) 走清空路径、entities_in_vision_range 留空种子盲走；迁移实体 startReal 重建 trigger 正是 range 填充正确的机理。docs/review/opt-08-01-01-dense-aoi-baseline.md。门禁 server-runtime lib 1748 绿/fmt/clippy 净。
-- [x] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。已交付 98725ed：crates/server-runtime/src/aoi_tuning.rs 同负载双比较（OPT-08-01-01 种子/轨迹/120 实体场全 same-load）。①扇区预过滤索引=seeing pass 前按水平角>vision_angle+0.25rad 丢弃目标（水平朝向下 3D 锥角≤水平角⇒保守不过判）：48 tick 走行 5760→2471 行=省 57.1% 内圈、可见集/seeing-start 逐 tick 零失配(48/48 恒等)、探针墙钟 2.645→1.917ms；范围列表已索引距离故收益有界=仅去背向扇区。②Witness 调度扫描=调度器操作面 setWitnessCapacity 64000/128000/256000 bps(772/1572/3172B)：覆盖期预算绑死(爆发 2704B 赤字回扣)4×带宽 3→2 tick；稳态广播量对带宽不敏感(~116B/tick ≪ 772B 预算)——MAX_PRIORITY_DELTA 窗[front,front+5.0) 先于预算清空=稳态限流者是窗宽不是链路；两容量全覆盖(窗饿死人无)单调性断言；per-entity 覆盖从 bundle EntityUpdate id 观测。等值/单调全 assert、墙钟只打印。docs/review/opt-08-01-02-aoi-index-witness-scheduling.md。门禁 server-runtime lib 1750 绿/fmt/clippy 净。
-- [x] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。(2026-11-26 本席 lane/bw14-script-host 5e4181c:space_parallel.rs 复用 BW-08-05-01 decide_offload/collect_offload 实面,120 实体密场按 x=16m 分裂面两侧驻扎,AoI 基线同款 ±0.75m 步表真跨面;台账 crossings=2/offloads=2(逐 crossing 恰一次,落点=p_cell_at 所含侧)/stays=118,check_ms≈0.009-0.012 probe 打印不断言;分支规则 coordinate<position 把分界平面判给右子(x/z 双轴实证,骑面者归左必迁 OffloadTo(FAR));四 Stay 门(未创建/死通道/缺通道项=死/删除挂起)+disabled cell_should_offload 全 Stay;重跑台账恒等;4 测,lib 1754 全绿;review=docs/review/opt-08-01-03-space-parallel.md)
-- [x] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。(2026-11-26 本席 lane/bw14-script-host 616a885:aoi_rerun.rs 复跑密场景两遍逐 tick 审计,TickLedger 增有序 starts/stops/enters/leaves+整份 bundle 发送序;状态正确=视距触发器布点=窗谓词 (sub-range<x≤sub+range) 双轴、可见集=扫描锥真值(update gate 读控制器公开 tick 计数,run tick 用现位置/skip tick 恒等携带集)、start/stop 差分自洽(starts 只打未见 id/stops 只打持有 id/差分复现 visible_entities)、EnterAoI/LeaveAoI 消息=触发器跨越、witness AoI 映=500m 窗、bundle 逐实体序 EnterAoI→CreateEntity→EntityUpdate 更新不先于创建;迁移腿 destination+native 双世界 16 tick 全审,seed 静默 46→46、held 重报=0、终态 visible 42/range 布点/AoI 映三层全等 native;坑=client bundle 是客户端面向 AoI 态唯一重放源,tick 0 120 条 EnterAoI=120 跨越,二次重放会重复计数——两视图须对账不能叠加;2 测,lib 1756 全绿;review=docs/review/opt-08-01-04-aoi-rerun-state.md)
-
+- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。
+- [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。
+- [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。
+- [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。
 
 ### OPT-09-01 分别采集 MySQL 与 PostgreSQL 基线
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
-- [x] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。（opt-09-db-baseline 席 `da4e411`，lane/opt-09-db-baseline，main=`e59ca31`：crates/db-postgres/tests/store_baseline.rs 6 测=512 行确定性语料同一数据集落 MySQL（DDL 对照参考 db_storage_mysql 布局+值类型逐 kind 对）与 PostgreSQL（JSONB 嵌套列 codec 往返）双后端，schema/确定性/嵌套列各单测；TSV docs/review/fixtures/store-baseline/store-baseline.tsv 22 行，证据页 docs/review/opt-09-01-01-store-baseline.md；workspace 新增 `mysql` 依赖（minimal-rust）；本席 main 复测 6 绿。⚠️ 与 bw14-script-host `7024fb1` 平行交付 FLAG 待主席择一）→ **主席裁定 2026-11-26**：择 main `e59ca31` 面（lane/opt-09-db-baseline `da4e411` 收编形，512 行单数据集双后端在树）为本行交付面；bw14 `7024fb1` lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 本席 lane-only 交付存档（2026-11-26 主席裁定择 main `e59ca31` 面，opt-09-db-baseline `da4e411` 收编形）：本席 `7024fb1`（baseline_dataset.sql 双真机采集）转存档记录。
-- [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。（opt-09-db-baseline 席 `da9a135`，lane/opt-09-db-baseline，main=`04f5d37`：crates/db-postgres/tests/store_pool_candidates.rs 3 测=连接池与预编译语句候选对照（参考 `numConnections_` 默认 5 长连会话+每线程一连接+启动期预编译实体 SQL 模板两形），各后端延迟与吞吐逐形报告且回读恒等；TSV docs/review/fixtures/store-pool/pool-candidates.tsv 48 行，证据页 docs/review/opt-09-01-02-store-pool.md；本席 main 复测 3 绿）
-  - 本席 lane-only 交付存档（main 面=opt-09 lane `da9a135`→`04f5d37`）：本席 `9dda748`（pool_merge_eval.rs 三执行形状真 PG 对比）转存档记录。
-- [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。（opt-09-db-baseline 席 `cb65282`，lane/opt-09-db-baseline，main=`8b1fb8a`：crates/db-postgres/tests/store_commit_candidates.rs 4 测=实体写缓冲进 Transaction 按归档周期一 `COMMIT`（参考 sqlite_database.cpp 131-177+db_config 5s 默认）与显式 WRITE_EXPLICIT 两臂提交时长+归档整合恢复时长报告，落库回读逐字段等；TSV docs/review/fixtures/store-commit/commit-candidates.tsv 16 行，证据页 docs/review/opt-09-01-03-store-commit.md；本席 main 复测 4 绿）
-  - 本席 lane-only 交付存档（main 面=opt-09 lane `cb65282`→`8b1fb8a`）：本席 `01d391c`（archive_batch_eval.rs 三写形真 PG 对比）转存档记录。
-- [x] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。（opt-09-db-baseline 席 `7663701`，lane/opt-09-db-baseline，main=`3a7b9d0`：crates/db-postgres/tests/store_recovery.rs 3 测=参考 MySqlBackgroundTask::doBackgroundTask 契约复跑——可重试失败恰一次重试（attempts 2/on_retry 1）、回滚批零幸存行、事务外断连恰一次自动恢复+事务内手动重连；恢复后数据一致计数钉死；TSV docs/review/fixtures/store-recovery/recovery.tsv 21 行，证据页 docs/review/opt-09-01-04-store-recovery.md；本席 main 复测 3 绿）
-  - 本席 lane-only 交付存档（main 面=opt-09 lane `7663701`→`3a7b9d0`）：本席 `f09727b`（rerun_recovery.rs 三腿复跑）转存档记录。
+- [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。
+- [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
+- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
+- [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
 
 ### OPT-10-01 地图加载和查询基线
 
 优化空间流式装载、碰撞走查和导航缓存。比较峰值内存、场景冷启动和查询尾延迟，核对坐标与碰撞结果。
 
-- [x] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。(2026-11-26 本席 lane/bw14-script-host 37ec32a:crates/chunk/tests/map_load_baseline.rs 对原版夹具空间(docs/review/fixtures/chunk_space 18×2 网格)走全套流式面=解析 mapping→gather_chunks 枚举 37 候选→load_and_bind 绑 6 个 .chunk→focus→双半板地形 slab 过 focussed add_obstacle 门,整段冷启动计数分配器(OPT-01-01-01 同款 thread-local)+VmRSS 包夹;保存:冷启 1.6-2.5ms/2025 allocs/163790 bytes/rss Δ≈428kB,find_chunk_from_point 100 探针 p50 0.53µs/p99 1.7µs,collide findDropPoint 形 100 射线(50m→-10m 止于 10m 板) p50 1.8µs/p99 18.7µs;结构账断言且重跑恒等:绑集=6 文件、逐探针命中属主 chunk、逐射线 40m 处止板(±1e-3)、绑序/答案/距离/分配数全复现(2025/163790 双跑);墙钟与内存 probe 打印不断言;chunk 188 测全绿;review=docs/review/opt-10-01-01-map-load-baseline.md)
-  - main 已收（台账席，2026-11-26）：本席 `37ec32a`→main `5d88b28`（逐字节镜像，patch-id 同），本席勾保持。
-- [x] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。（2026-11-26 lane/bw14-script-host 7fc6d76：crates/chunk/tests/map_stream_opt.rs 走 shipped scan 卸两格重载全周期，候选=BwResource 段缓存 LRU 同 load_and_bind 解析面 vs 原始读+解析基线；峰值内存=计数分配器 LIVE 高水位 PEAK 单元，报告见 docs/review/opt-10-01-02-map-stream-opt.md——冷缓存填付 write_to_string 尺寸化 +469 allocs 更慢，重载 3.77ms/759 vs 原始 10.46ms/931，热全空间 1.50ms/1132 vs 冷 2.97ms/2025；结构面断言：缓存段 PartialEq 同树、双侧 bound/reloaded/finds/dists 全等、周期复跑恒等；墙钟探针数据只印不断言，allocs/peak 复跑精确复现；chunk 门禁 190 绿）
-  - main 已收（台账席，2026-11-26）：本席 `7fc6d76`→main `ac2d93d`（逐字节镜像），本席勾保持。
-- [x] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。（2026-11-26 lane/bw14-script-host bfde122：crates/client/tests/query_cache_opt.rs 双腿——导航=六单点集 permissive 链全 outside chunk，缓存面 find_path ReadWriteCache 骑成员 NavigatorCache 逐跳 vs 重算面 navigate_path_points/findFullPath 每调 scratch 缓存，同一批起点；碰撞=find_drop_point 打 BW-10-07-04 clientquery 夹具世界六 RAY 探针×40 重复；报告 docs/review/opt-10-01-03-query-cache-opt.md——缓存填跳 47 allocs 后四跳各 8 allocs（set path 尺寸 [6,5,4,3,2] 弹尽=命中臂逐跳行使），缓存总 79 vs 重算总 281（3.6× 省），复跑账 [47,8,8,8,8] 精确恒等；碰撞尾 p50 1.7-6.8µs/p99 至 26.3µs（GHOLED 格走查跨柱界），40 重复逐探针位级恒等（距离/落点/三角形/miss）；结构断言：逐跳进一格、末跳答终点、重算路线=共享穿越序列+隐藏穿越+裁剪终点（面发现：findPath 末跳换原始 dst 藏终点集穿越 vs findFullPath 保留+裁剪，两面对比共享序列各钉自己终点）、缓存侧分配严格更少；墙钟 probe 只印不断言；client 门禁 868 绿）
-  - main 已收（台账席，2026-11-26）：本席 `bfde122`→main `fafbe51`（逐字节镜像），本席勾保持。
-- [x] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。（2026-11-26 lane/bw14-script-host eb163d4：crates/client/tests/map_rerun_fixtures.rs 双腿复跑——路径=BW-10-07-03 genmap 双 chunk 世界按真相绑序重绑，五条 XPATH 探针对走 find_path ReadWriteCache 缓存步进面，源集侧逐跳钉在真相链上有序子序列（平滑可抽直不可绕），终点=真相解析终点（ACROSS 绕洞/RAMP 上坡/AROUND/SEAM A 侧 [wp0,wp4,wp3]+终点 B wp7/SEAMBA 终点 A wp3），五条复跑恒等；碰撞=chunk_space 夹具图走 OPT-10-01-02 缓存解析面 load_and_bind 绑 6 文件+参考地形 slab 过 focussed 门，100 探针格走客户端 findDropPoint 全部 40m 处止 10m 板±1e-3+格心解析属主 chunk，第二遍位级恒等；面发现两条：远侧跳=walk 面自有 for_destination 目标解析可落在原始 A* 链外邻点（源集侧才是夹具实质故严钉）、TOUR 不入走查（XPATHNONE 钉一次性 A* 面=genmap_load 已复放，walk 面每调只跨一门按构造可合法走完）——见 docs/review/opt-10-01-04-map-rerun-fixtures.md；client 门禁 870 绿）
-  - main 已收（台账席，2026-11-26）：本席 `eb163d4`→main `93a1576`（逐字节镜像），本席勾保持。
-
+- [ ] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。
+- [ ] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。
+- [ ] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。
+- [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
 
 ### OPT-11-01 三端固定镜头基线
 
 优化各端 GPU 上传、渲染批次、资源流与客户端帧调度。比较帧时间和显存，用固定镜头做视觉回归。
 
-- [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。(2026-11-26 lane/bw14-script-host 877e016：crates/client/tests/render_baseline_opt.rs 三端(linux/windows/macos=BW-11-04-07 可比集)各走同一固定镜头=DeviceConfig::default() 640×480 RGBA8 +64 帧 check_device→scene.step→present shipped 设备面；帧时间=每帧 Instant 只印不断言（本机 debug 面 p50 18.8-19.5ms/帧=307200 set_pixel+FNV，逐端逐帧 192 行 FRAME-TIME 落 docs/review/opt-11-01-01-render-baseline.md）；显存=计数分配器 LIVE+PEAK 高水位（OPT-10-01-02 变体）结构账断言：设备创建 2 allocs/1228848 bytes（640×480×4=1228800 背板+48 bytes 计数器 Arc），逐帧 0 allocs/0 bytes（present 原地画+摘要无上载抖动），整程峰值=创建足迹 1228848 恒不涨；固定镜头两证=新设备直接步进到帧序号复现该帧摘要（1/7/31/64）+全账复跑恒等；三端摘要逐帧全等+分配账全等；saved 基线钉 1..=8+64 帧摘要常量+整程内存账常量（光栅/场景/设备内存任一变化即触发，OPT-11-01-04 复跑同钉）；client 门禁 872 绿）
-- [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。(2026-11-26 lane/bw14-script-host 5313db6：crates/client/tests/render_batch_opt.rs 双面上传评估——shipped 面=TestScene::draw 逐像素 set_pixel（640×480 每帧 307200 次写）vs 批量候选=同像素数学走 shipped 批原语（整幅 fill 背景+标记列块逐行 slice fill，每帧 481 次写=1+480）；三端(linux/windows/macos)各 64 帧画+摘要分开计时对比（FRAME-TIME 逐帧 192 行+BATCH-TAIL 落 docs/review/opt-11-01-02-render-batch-opt.md）：批量面画半 p50 1.97-2.10ms vs shipped 15.05-17.36ms=7-8× 省，帧时间整体 ~20ms→~6.6ms，摘要半与面无关（同像素同 FNV，两端面在每端内一致本身即可比性验证）；结构断言：逐帧全像素向量相等（64 帧×3 端）+摘要相等+Device::present 真设备面摘要步走=计时面所骑 shipped walk+双面零分配+连续帧摘要必异（固定镜头下动画真实）+三端账逐帧全等+复跑恒等；墙钟 probe 只印不断言；评估结论=整段画半收益全在写形状 307200→481，批量候选不换契约（像素恒等）不加内存（仍零分配），OPT-11-01-01 saved 摘要钉两面都须答；client 门禁 874 绿）
-- [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。(2026-11-26 lane/bw14-script-host 5535b86：crates/client/tests/render_stream_sched_opt.rs 基线固定镜头(640×480, 64 帧)走 shipped 帧调度面 FrameLoop::run_frame（Tick→UpdateAnimations→Draw 逐帧 canonical+hooks 按相序断言，64 帧×3 端），六个排程切图帧(8/16/24/32/40/48)走 shipped load_and_bind 把参考夹具图 37 候选按扫描序分六批流进活空间；单 tracked 区跨全程=逐帧 allocs 增量+live 轨迹连续；切图报告（结构断言）：切图帧恰落在排程帧、并集=probe 全集 6 chunk、逐切图帧 allocs 954/32/32/32/32/128 严格大于全部稳帧(≤9)——分配账即切图/长帧的结构识别；内存=总 1729 allocs/峰值 1281573/终 live 1280327（流进的空间骑在设备 1228848 基线上），复跑恒等；长帧报告（probe 只印不断言）：本调试 runner 墙钟尾被 OS 抖动主导（最慢帧是稳帧 allocs=8 达 27-76ms 非切图帧），逐帧 192 行+切图行+每端 top-5 落 docs/review/opt-11-01-03-render-stream-sched-opt.md；夹具发现=第六绑 chunk 是分隔块 001x000x/sep/00110000o（标识符是路径非格胞，格胞中心解析只盖四个 hex 外块）；收尾四外块 find_chunk_from_point 各自格胞中心归位；client 门禁 876 绿）
-- [x] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。(2026-11-26 lane/bw14-script-host 96d8f67：crates/client/tests/render_visual_rerun.rs 三端复跑 OPT-11-01-01 saved 基线固定镜头（640×480, 64 帧）：钉帧 1..=8+64 摘要逐帧对上 saved 记录（首走+复走双验）；容差=复走间钉帧逐像素 differing_pixels=0 断言位级相等（确定性面容差下限=位，不设预算）——连 OPT-11-01-02 批量候选面也同满足：64 帧逐帧答 walked 摘要+钉帧批量像素 vs shipped 背板差 0；内存账复跑=saved 数字（走查区内 2 allocs/峰值 1228848，帧仍不抬高）；截图面（ScreenCopy::capture→TGA，BW-11-04-07 通道）钉帧 1/8/64 逐帧捕获=18 字节头+1228800 帧体，三端逐帧字节相等+第二遍复跑字节恒等（视觉回归产物自身复现）；OPT-11-01 簇收官——基线/上传批次/流与调度/视觉回归四面互相咬合（saved 摘要钉三行共答）；client 门禁 878 绿）
-
+- [ ] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。
+- [ ] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。
+- [ ] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。
+- [ ] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。
 
 ### OPT-12-01 各观测通道开销
 
 降低日志、Watcher、Profiler 的观测成本。验证背压、关闭观测后的开销及新旧工具查询兼容。
 
-- [x] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。(661e12a)
-- [x] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。(9a74213)
-- [x] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。(f4fce4f)
-
+- [ ] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。
+- [ ] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。
+- [ ] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。
 
 ### OPT-13-01 冷构建、增量与编辑器加载
 
 优化依赖缓存、并行转换和编辑器加载。比较冷构建、增量构建与大地图编辑时间，校验可复现产物。
 
-- [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。(1fd4739)
-- [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。(663dc8c)
-- [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。(`827ed8e`)
-- [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。(2026-11-26 补勾（交付 b981ae7 已在树，勾行遗漏）：crates/asset-pipeline/tests/asset_hash_format.rs 四测复跑 4/4 绿——hash64 五向量钉原版 bw_hash64.cpp FNV-1a 含 LE-integer+combine 契约（combined 0x85562B3F62384861）；SpaceConverter 真 space 两次独立转换逐字节+摘要全等（213B/3 sections，原版读者树读回 models/box.model|models/spikes.model）；DependencyList 精确哈希 4 输入 1 输出（primary 0x3A31A0D27AFBDAAB/full 0x39F4CDF311678C81）；res_packer 夹具两跑逐字节全等（177B×2）+原版 EL7 产物 bw.packed 经本包读者树读回全等（tree_equal=true）；墙钟 ASSET-FMT 只印不断言；docs/review/opt-13-01-04-asset-hash-format.md 补档）
-
+- [ ] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。
+- [ ] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。
+- [ ] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。
+- [ ] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。
 
 ### OPT-14-01 发布包尺寸及首次运行
 
@@ -10902,44 +10600,34 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（Linux 腿已在 main：bw15-platform 56c2673→f6107e8，platform io_timer_baseline.rs 1 测：写 30.33µs/读 9.04µs/replace 55.81µs/定时器分辨率 1µs/wakeup 0.95µs；bw14-script-host 另起平行实现 7081674→未进 main，patch-id 与 main 版不同——主席择一；Windows/macOS 腿未齐故行保持开）→ **主席裁定 2026-11-26**：Linux 腿择 main `f6107e8` 面为准；bw14 `7081674` 平行实现 lane-only 归档不删；行仍开待 Windows/macOS 腿，全腿到齐后按行验收勾。
-  - 主席裁定 2026-11-26（main 行内）：Linux 腿择 main `f6107e8` 面（bw15 `56c2673`）为准，行保持开待 Windows/macOS 腿；本席 lane-only `7081674`（13 probe+tests/baseline 目录）转存档记录，随 lane 并入由主席处置。
-  - 注记（2026-11-26，台账席）：Linux 腿已落——bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿。行保持开——「各平台」待 Windows/macOS 腿（三端 runner，BW-15-05-01）后补测再勾。
-- [x] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。(2026-11-26 lane/bw14-script-host 2f77126→main 25e40c7：crates/client/tests/render_backend_baseline.rs 按后端登记表采集三问——新树唯一出货像素后端=Device 下软件光栅器（参照侧 D3D9/OpenGL/cocos2d/Awesomium 四后端仅 BW-15-06-01 事实非移植，BACKENDS 留位即插）；设备面结构断言 SoftwareDevice 640×480 adapter=0 307200px RGBA8+帧序 1..=64 单设备对象+status=Ok+leaked()=0；驱动面=执行环境文本（CPU/核/OS/内核 probe 只印不断言）；帧时=固定镜头 check_device→step→present 64 帧逐帧 FRAME-TIME+FRAME-TAIL 报告，min/median/p99/max 记运行值不断言；结构契约逐相邻帧摘要异+帧 1..=8/64 复现 OPT-11-01-01 saved 钉+帧 1/7/31/64 纯帧序号复现+复跑恒等；提交目录 tests/baseline/render-backend-baseline.tsv 十列 linux-x86_64=measured，macos-arm64/windows-x86_64=pending rows 带 BW-15-04/BW-15-03 blocker 不编数字，语法检查拒 pending 带测量/未知后端/重复对/非数字/测量平台缺行；client 861 绿+集成全绿，clippy 净；本机 2 测绿)
-  - main 已收（台账席，2026-11-26）：本席 `2f77126`→main `25e40c7`（cherry-pick，取本席版非 bw15 腿），本席勾保持为交付记录。
-- [x] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。(2026-11-26 lane/bw14-script-host 3761c24→main 117a588：crates/platform/tests/platform_opt_parity.rs——同套协议场景两臂比结果：泛化 sendto/recvfrom 逐数据报 vs 批 sendmmsg/recvmmsg 逐窗口，同一 loopback UDP 对共发送套接字源三元组可比；256 数据报逐报字节+序恒等（内嵌大端序号=自身下标）+源 port/addr 网络序恒等+变长 16..=1200 抓聚合拆裂+批臂 8 send+8 recv vs 泛化 256+256；边沿同答：空批/空收 0/静默非阻塞两臂同 -1+EAGAIN（libc 约定，sendmmsg 注释"-errno"与实态不符如实登记）/8 槽收 5 排队恰 5 槽序字节恒等/单批同 sendto；自揭两发现=drained 错误形与槽宽=批容量（4 槽收 5 留队未丢，独立 C repro）；platform 64 lib+io_timer 1+parity 2+signal_call_sites 全绿，本机 2 测绿)
-  - main 已收（台账席，2026-11-26）：本席 `3761c24`→main `117a588`（cherry-pick，取本席版非 bw15 腿），本席勾保持为交付记录。
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
+- [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
 ### OPT-16-01 采集依赖与增量构建基线
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 d11c3d2(ci/build-baseline.sh)+96009f9(asset-pipeline/tests/dependency_rebuild_baseline.rs) 已 cherry-pick 入本树 c64444b/d4b764e 并复跑绿——build-baseline self-test：install-module/layout/upgrade/uninstall 四 PASS+build-fanout PASS(重编源定位=foundation 19 直接依赖者)+build-cold 196.77s+build-incremental 67.51s/12 crate 重编；dependency_rebuild_baseline 测试绿；fixture tsv 入 docs/review/fixtures/dep-graph/)
-- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 8c37171(asset-pipeline/tests/split_evaluation.rs+fixtures/dep-graph/split-*) 已 cherry-pick 入本树 0ddb5e0 并复跑绿，asset-pipeline 门禁 384 lib+集成含 split_evaluation 2 测全绿)
-- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 870ad04(asset-pipeline/tests/install_path_recheck.rs+fixtures/install-recheck/) 已 cherry-pick 入本树 5e99e3a 并复跑绿——the_load_and_install_paths_stay_compatible PASS+本树连带复跑 install-layout 全 PASS+package-baseline verify 3 平台语法净)
-
+- [ ] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。
+- [ ] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。
+- [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
 
-- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。(2026-11-26 跨席复测勾：他席 main 交付 38b99db(profiler/tests/long_stability_collection.rs+fixtures/long-stability/long-stability.tsv+docs/review/opt-23-01-01-long-stability-collection.md) 已 cherry-pick 入本树 5bb641c 并复跑绿，profiler 门禁 43 lib+集成全绿)
-- [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。(2026-11-26 跨席复测勾：他席 main 交付 2a26627(profiler/tests/buffer_export_evaluation.rs+fixtures/buffer-export/+docs/review/opt-23-01-02-buffer-export.md) 已 cherry-pick 入本树 98bec50 并复跑绿)
-- [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。(2026-11-26 跨席复测勾：他席 main 交付 0ee4b28(profiler/tests/collection_integrity_regression.rs+fixtures/collection-regression/+docs/review/opt-23-01-03-collection-integrity.md) 已 cherry-pick 入本树 28c1da9 并复跑绿)
-
+- [ ] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。
+- [ ] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。
+- [ ] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。
 
 ### OPT-26-01 固定事件回放并采集查询基线
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（opt26-db 席 `4c75e00`，lane/opt-26-db，main=`6973092`：crates/db-postgres/tests/event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账，钉定样本报表（四级窗口+五查询形计数）为 01-04 复算基线；TSV docs/review/fixtures/event-query/event-query.tsv 39 行，证据页 docs/review/opt-26-01-01-event-query-baseline.md；本席 main 复测 6 绿，TSV 复捕墙钟行随负载漂（结构计数行恒等）只记录不设带；⚠️ FLAG 2026-11-26：bw15-platform `8f42e4c` 平行交付（crates/message_logger/tests/qlog_replay_baseline.rs 523 行 20000 条固定事件回放+11 查询面墙钟+样本报表，与 main 6973092 db-postgres 侧 patch-id 不同=真平行非镜像，lane-only 待主席择一））→ **主席裁定 2026-11-26**：择 main `4c75e00` 面（6973092 收编形，event_query_baseline 6 测在树）为本行交付面；bw15 `8f42e4c`（qlog_replay_baseline.rs 523 行）lane-only 归档不删；如需置换须全量复测并用户另令。
-  - 本席跨席复测存档（2026-11-26 主席裁定择 `4c75e00` 面，main=`6973092`）：本席 cherry-pick `e34dacd`/`013f573`/`c578a23`/`7a1867c` 四行复测全绿（db-postgres 25 套）。
-- [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。（opt26-db 席 `40b58e0`，lane/opt-26-db，main=`027c6c0`：crates/db-postgres/tests/import_batch_candidates.rs 3 测=同 512 行语料五种事务形（每 1/16/64/256 行一提交+整库一事务）各报墙/吞吐/计数分配器峰值且逐形回读恒等；TSV docs/review/fixtures/import-batch/import-batch.tsv 30 行，证据页 docs/review/opt-26-01-02-import-batch.md；本席 main 复测 3 绿（批 64+ 后吞吐平坦 620-640 rows/s，批 1 最慢=每行一提交））
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `40b58e0`（main 已收 `027c6c0`）：导入批大小评估（64 行 commit 裁定+内存平坦）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
-- [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。（opt26-db 席 `bf335b5`，lane/opt-26-db，main=`5df3486`：crates/db-postgres/tests/query_aggregation_candidates.rs 3 测=一全扫建 name→id（512）+level→ids（200 键）两聚合图，同 128 名抽样网格前后对照——基线 name 查询 ~14× 键控 get，聚合后网格解析走图不走扫；TSV docs/review/fixtures/query-aggr/query-aggr.tsv 21 行，证据页 docs/review/opt-26-01-03-query-aggregation.md；本席 main 复测 3 绿（加速比两跑 8350×/4746×=负载敏感记录行，128 网格断言恒等））
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `bf335b5`（main 已收 `5df3486`）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
-- [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。（opt26-db 席 `b34554a`，lane/opt-26-db，main=`1590095`：crates/db-postgres/tests/sample_report_rerun.rs 3 测=同固定事件流重放后从**存储语料**复算样本报表，对照盘上 docs/review/fixtures/event-query/event-query.tsv 基线（四级窗口+五查询形计数逐项等），再在每项优化（64 行批导入/两聚合图）后各复算一次仍等；证据页 docs/review/opt-26-01-04-sample-report-rerun.md；本席 main 复测 3 绿）
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `b34554a`（main 已收 `1590095`）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+- [ ] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。
+- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。
+- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。
+- [ ] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。
 
 ## 5. 实施顺序与里程碑
 
