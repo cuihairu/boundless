@@ -2930,7 +2930,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。他席双交付未并 main，本行保持开：bw15-platform `56c2673`（该席行仍开=三端 runner 缺，crates/platform/tests/io_timer_baseline.rs 225 行统一负载 512 ops@64KiB——顺序写 30.33µs/读 9.04µs/atomic_replace 55.81µs fsync 大头/mmap 单遍 ~1µs/时钟分辨率 1µs/1ms sleep 均值 1.0864ms/wakeup 0.95µs；断言数据面往返/映射内容/节拍±10%，墙钟只印；windows 卡 mercury 无 Windows 臂 BW-15-03、macOS 卡 darwin SDK；夹具 io-timer-linux.tsv）+勾 `d79a1cf`；bw14-script-host `7081674`（该席行已勾 `9af8980`，同 crates/platform/tests/io_timer_baseline.rs 476 行 13 探针统一负载——clock 读 272ns/粒度 1µs、Instant 195ns/59ns、sleep 1/2/5/10ms 实际 1.081/2.088/5.084/10.084ms 且 enforced actual≥requested、file write/read 4k 9.18/5.44µs、atomic_replace 25.45µs、wakeup 797ns、poller 1ms 1.081ms；三端目录 linux measured+macos/windows pending 无编造数字，语法检查拒 pending 行有测量值/缺 13 探针；证据 61 行+tests/baseline/platform-baseline.tsv 16 行）。两席口径不同（bw15 512×64KiB 大负载 vs bw14 4KiB/13 探针三端目录），主席择一，未决前行保持开。
 - [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
@@ -4494,7 +4494,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。他席双交付未并 main，本行保持开：bw15-platform `56c2673`（该席行仍开=三端 runner 缺，crates/platform/tests/io_timer_baseline.rs 225 行统一负载 512 ops@64KiB——顺序写 30.33µs/读 9.04µs/atomic_replace 55.81µs fsync 大头/mmap 单遍 ~1µs/时钟分辨率 1µs/1ms sleep 均值 1.0864ms/wakeup 0.95µs；断言数据面往返/映射内容/节拍±10%，墙钟只印；windows 卡 mercury 无 Windows 臂 BW-15-03、macOS 卡 darwin SDK；夹具 io-timer-linux.tsv）+勾 `d79a1cf`；bw14-script-host `7081674`（该席行已勾 `9af8980`，同 crates/platform/tests/io_timer_baseline.rs 476 行 13 探针统一负载——clock 读 272ns/粒度 1µs、Instant 195ns/59ns、sleep 1/2/5/10ms 实际 1.081/2.088/5.084/10.084ms 且 enforced actual≥requested、file write/read 4k 9.18/5.44µs、atomic_replace 25.45µs、wakeup 797ns、poller 1ms 1.081ms；三端目录 linux measured+macos/windows pending 无编造数字，语法检查拒 pending 行有测量值/缺 13 探针；证据 61 行+tests/baseline/platform-baseline.tsv 16 行）。两席口径不同（bw15 512×64KiB 大负载 vs bw14 4KiB/13 探针三端目录），主席择一，未决前行保持开。
 - [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
@@ -6019,7 +6019,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。他席双交付未并 main，本行保持开：bw15-platform `56c2673`（该席行仍开=三端 runner 缺，crates/platform/tests/io_timer_baseline.rs 225 行统一负载 512 ops@64KiB——顺序写 30.33µs/读 9.04µs/atomic_replace 55.81µs fsync 大头/mmap 单遍 ~1µs/时钟分辨率 1µs/1ms sleep 均值 1.0864ms/wakeup 0.95µs；断言数据面往返/映射内容/节拍±10%，墙钟只印；windows 卡 mercury 无 Windows 臂 BW-15-03、macOS 卡 darwin SDK；夹具 io-timer-linux.tsv）+勾 `d79a1cf`；bw14-script-host `7081674`（该席行已勾 `9af8980`，同 crates/platform/tests/io_timer_baseline.rs 476 行 13 探针统一负载——clock 读 272ns/粒度 1µs、Instant 195ns/59ns、sleep 1/2/5/10ms 实际 1.081/2.088/5.084/10.084ms 且 enforced actual≥requested、file write/read 4k 9.18/5.44µs、atomic_replace 25.45µs、wakeup 797ns、poller 1ms 1.081ms；三端目录 linux measured+macos/windows pending 无编造数字，语法检查拒 pending 行有测量值/缺 13 探针；证据 61 行+tests/baseline/platform-baseline.tsv 16 行）。两席口径不同（bw15 512×64KiB 大负载 vs bw14 4KiB/13 探针三端目录），主席择一，未决前行保持开。
 - [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
@@ -7544,7 +7544,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。他席双交付未并 main，本行保持开：bw15-platform `56c2673`（该席行仍开=三端 runner 缺，crates/platform/tests/io_timer_baseline.rs 225 行统一负载 512 ops@64KiB——顺序写 30.33µs/读 9.04µs/atomic_replace 55.81µs fsync 大头/mmap 单遍 ~1µs/时钟分辨率 1µs/1ms sleep 均值 1.0864ms/wakeup 0.95µs；断言数据面往返/映射内容/节拍±10%，墙钟只印；windows 卡 mercury 无 Windows 臂 BW-15-03、macOS 卡 darwin SDK；夹具 io-timer-linux.tsv）+勾 `d79a1cf`；bw14-script-host `7081674`（该席行已勾 `9af8980`，同 crates/platform/tests/io_timer_baseline.rs 476 行 13 探针统一负载——clock 读 272ns/粒度 1µs、Instant 195ns/59ns、sleep 1/2/5/10ms 实际 1.081/2.088/5.084/10.084ms 且 enforced actual≥requested、file write/read 4k 9.18/5.44µs、atomic_replace 25.45µs、wakeup 797ns、poller 1ms 1.081ms；三端目录 linux measured+macos/windows pending 无编造数字，语法检查拒 pending 行有测量值/缺 13 探针；证据 61 行+tests/baseline/platform-baseline.tsv 16 行）。两席口径不同（bw15 512×64KiB 大负载 vs bw14 4KiB/13 探针三端目录），主席择一，未决前行保持开。
 - [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
@@ -9108,7 +9108,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。他席双交付未并 main，本行保持开：bw15-platform `56c2673`（该席行仍开=三端 runner 缺，crates/platform/tests/io_timer_baseline.rs 225 行统一负载 512 ops@64KiB——顺序写 30.33µs/读 9.04µs/atomic_replace 55.81µs fsync 大头/mmap 单遍 ~1µs/时钟分辨率 1µs/1ms sleep 均值 1.0864ms/wakeup 0.95µs；断言数据面往返/映射内容/节拍±10%，墙钟只印；windows 卡 mercury 无 Windows 臂 BW-15-03、macOS 卡 darwin SDK；夹具 io-timer-linux.tsv）+勾 `d79a1cf`；bw14-script-host `7081674`（该席行已勾 `9af8980`，同 crates/platform/tests/io_timer_baseline.rs 476 行 13 探针统一负载——clock 读 272ns/粒度 1µs、Instant 195ns/59ns、sleep 1/2/5/10ms 实际 1.081/2.088/5.084/10.084ms 且 enforced actual≥requested、file write/read 4k 9.18/5.44µs、atomic_replace 25.45µs、wakeup 797ns、poller 1ms 1.081ms；三端目录 linux measured+macos/windows pending 无编造数字，语法检查拒 pending 行有测量值/缺 13 探针；证据 61 行+tests/baseline/platform-baseline.tsv 16 行）。两席口径不同（bw15 512×64KiB 大负载 vs bw14 4KiB/13 探针三端目录），主席择一，未决前行保持开。
 - [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
@@ -10633,7 +10633,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。他席双交付未并 main，本行保持开：bw15-platform `56c2673`（该席行仍开=三端 runner 缺，crates/platform/tests/io_timer_baseline.rs 225 行统一负载 512 ops@64KiB——顺序写 30.33µs/读 9.04µs/atomic_replace 55.81µs fsync 大头/mmap 单遍 ~1µs/时钟分辨率 1µs/1ms sleep 均值 1.0864ms/wakeup 0.95µs；断言数据面往返/映射内容/节拍±10%，墙钟只印；windows 卡 mercury 无 Windows 臂 BW-15-03、macOS 卡 darwin SDK；夹具 io-timer-linux.tsv）+勾 `d79a1cf`；bw14-script-host `7081674`（该席行已勾 `9af8980`，同 crates/platform/tests/io_timer_baseline.rs 476 行 13 探针统一负载——clock 读 272ns/粒度 1µs、Instant 195ns/59ns、sleep 1/2/5/10ms 实际 1.081/2.088/5.084/10.084ms 且 enforced actual≥requested、file write/read 4k 9.18/5.44µs、atomic_replace 25.45µs、wakeup 797ns、poller 1ms 1.081ms；三端目录 linux measured+macos/windows pending 无编造数字，语法检查拒 pending 行有测量值/缺 13 探针；证据 61 行+tests/baseline/platform-baseline.tsv 16 行）。两席口径不同（bw15 512×64KiB 大负载 vs bw14 4KiB/13 探针三端目录），主席择一，未决前行保持开。
 - [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
