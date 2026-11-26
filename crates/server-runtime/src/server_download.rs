@@ -123,9 +123,10 @@ impl Download {
 
     /// `DataDownload::addToBundle` (`data_downloads.cpp:422`): queue as much of
     /// this download as fits in `remaining`, reducing it by what was queued.
-    fn add_to_bundle(&mut self, remaining: &mut i32) -> Vec<ServerChunk> {
-        let mut chunks = Vec::new();
-
+    /// The chunks go straight into the caller's vector: the drained download
+    /// needs no staging buffer of its own, so a stampede-sized call costs one
+    /// fewer allocation and copy per download (OPT-06-01-03).
+    fn add_to_bundle_into(&mut self, chunks: &mut Vec<ServerChunk>, remaining: &mut i32) {
         if let Some(description) = self.description.take() {
             // The header: id plus the length-prefixed description. The
             // reference charges `sizeof(uint16) + 1 + descLen`
@@ -138,19 +139,19 @@ impl Download {
             });
             *remaining -= cost;
             if *remaining <= 0 {
-                return chunks;
+                return;
             }
         }
 
         if self.available() == 0 {
-            return chunks;
+            return;
         }
 
         // The fragment: id, seq, done flag, then the payload
         // (`data_downloads.cpp:468`, `:482`).
         *remaining -= 4;
         if *remaining <= 0 {
-            return chunks;
+            return;
         }
 
         let payload_size = std::cmp::min(*remaining as usize, self.available());
@@ -167,7 +168,6 @@ impl Download {
             done,
             payload,
         });
-        chunks
     }
 
     /// `read` (`data_downloads.cpp:85`): copy `nBytes` out of the payload.
@@ -283,9 +283,7 @@ impl ServerDownloads {
                 continue;
             }
 
-            result
-                .chunks
-                .extend(self.downloads[index].add_to_bundle(&mut remaining));
+            self.downloads[index].add_to_bundle_into(&mut result.chunks, &mut remaining);
 
             if self.downloads[index].done() {
                 let id = self.downloads[index].id;
@@ -538,6 +536,103 @@ mod tests {
 
         // The reclaimed id is handed out again.
         assert_eq!(server.stream(Vec::new(), vec![1], u16::MAX), Some(0));
+    }
+
+    /// A stampede that finishes every download in one call reports the ids in
+    /// queue order and reclaims the lowest one for the next stream.
+    #[test]
+    fn a_stampede_finishes_in_queue_order_and_reclaims_the_lowest_id() {
+        let mut server = ServerDownloads::new();
+        let count = 64;
+        for _ in 0..count {
+            server
+                .stream(b"f".to_vec(), vec![7u8; 16], u16::MAX)
+                .unwrap();
+        }
+        assert_eq!(server.len(), count);
+
+        // Header (2 + 1 + 1) plus fragment overhead 4 and payload 16: 24
+        // bytes per download.
+        let result = server.add_to_bundle((count * 24) as i32);
+        assert_eq!(result.finished.len(), count);
+        assert_eq!(
+            result
+                .finished
+                .iter()
+                .map(|finish| finish.id)
+                .collect::<Vec<_>>(),
+            (0..count as u16).collect::<Vec<_>>()
+        );
+        assert!(result.finished.iter().all(|finish| finish.success));
+        assert_eq!(result.chunks.len(), count * 2);
+        assert!(server.is_empty());
+        assert_eq!(server.free_id(), 0);
+        assert_eq!(server.stream(Vec::new(), vec![1], u16::MAX), Some(0));
+    }
+
+    /// A budget that runs out mid-queue leaves the later downloads untouched:
+    /// their headers are not consumed, so the next bundle streams them first.
+    #[test]
+    fn an_exhausted_budget_leaves_later_headers_unsent() {
+        let mut server = ServerDownloads::new();
+        let a = server.stream(b"a".to_vec(), vec![1, 2], u16::MAX).unwrap();
+        let b = server.stream(b"a".to_vec(), vec![3, 4], u16::MAX).unwrap();
+        let c = server.stream(b"a".to_vec(), vec![5, 6], u16::MAX).unwrap();
+
+        // The first download takes exactly 10 bytes: header 4 + fragment
+        // overhead 4 + payload 2. The second download's header does not fit.
+        let result = server.add_to_bundle(10);
+        assert_eq!(
+            result.finished,
+            vec![DownloadFinish {
+                id: a,
+                success: true
+            }]
+        );
+        assert_eq!(server.len(), 2);
+        assert_eq!(server.free_id(), a);
+
+        // The next bundle streams the second download from its header on.
+        let result = server.add_to_bundle(64);
+        assert_eq!(
+            result.chunks,
+            vec![
+                ServerChunk::Header {
+                    id: b,
+                    description: b"a".to_vec()
+                },
+                ServerChunk::Fragment {
+                    id: b,
+                    seq: 0,
+                    done: true,
+                    payload: vec![3, 4]
+                },
+                ServerChunk::Header {
+                    id: c,
+                    description: b"a".to_vec()
+                },
+                ServerChunk::Fragment {
+                    id: c,
+                    seq: 0,
+                    done: true,
+                    payload: vec![5, 6]
+                },
+            ]
+        );
+        assert_eq!(
+            result.finished,
+            vec![
+                DownloadFinish {
+                    id: b,
+                    success: true
+                },
+                DownloadFinish {
+                    id: c,
+                    success: true
+                }
+            ]
+        );
+        assert!(server.is_empty());
     }
 
     /// A requested id already in use is rejected.

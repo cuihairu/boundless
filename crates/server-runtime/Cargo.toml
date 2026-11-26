@@ -6,6 +6,10 @@ publish = false
 version.workspace = true
 license.workspace = true
 repository.workspace = true
+# The benches are declared explicitly: benches/legacy_queue.rs is a module
+# shared by the download_drain bench and the download_drain_alloc test
+# (`#[path]` includes), not a bench target of its own.
+autobenches = false
 
 [dependencies]
 foundation = { workspace = true }
@@ -72,4 +76,9 @@ message_logger = { workspace = true }
 
 [[bench]]
 name = "tick"
+harness = false
+
+# OPT-06-01-03: the download queue's drain mechanics bench.
+[[bench]]
+name = "download_drain"
 harness = false
