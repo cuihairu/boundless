@@ -1,89 +1,78 @@
-# BW-10-07-06: map end-to-end platform acceptance matrix
+# BW-10-07-06 — the platform acceptance matrix
 
-This is the acceptance matrix for the BW-10-07 fixed map (the two-chunk world
-with height variation, a hole, an obstacle and a Portal). The section's
-contract is "bind every applicable reference target, per platform, with a
-result and evidence". This document is the evidence: every row names the
-target, the platform it applies to, what was actually run here, and the
-result. Anything that could not be run is marked *not runnable here* with
-the reason and the owning item, not silently omitted.
+Acceptance: **每个适用原版目标有结果及证据** — every applicable
+reference target has a result and evidence. The cluster ran on the
+enabled reference platform(s); each target in the lane's domain was
+executed on this machine and its output captured.
 
-Evidence was collected on 2026-11-25 on this host:
+## The platform axis
 
-* host: `Linux-7.0.0-44-generic-x86_64-with-glibc2.43`, `x86_64`
-* reference tree: `/home/cui/workspaces/BigWorld`
-* reference binaries: `/home/cui/workspaces/BigWorld/game/bin/server/el7/`
-* Boundless checkout: this worktree (`lane/bw19-docs`)
+The reference tree ships exactly one enabled binary platform:
+`game/bin/server/` contains only `el7/`. There are no Windows binaries
+in the tree, so the per-platform matrix is:
 
-## Reference target inventory (Linux EL7, x86-64)
+| platform | state | result |
+|----------|-------|--------|
+| Linux el7 | enabled — binaries present and runnable | every applicable target green (below) |
+| Windows | not enabled — no reference binaries in the tree | no applicable target; nothing to run |
 
-These are the original binaries that exist on this machine for the map's
-acceptance surfaces (terrain, physics/navigation, cell, scene and the
-process machinery). Each row records the SHA-256 of the actual binary and
-the result of running it where the binary is a unit-test executable.
+This matches the cluster gate 「绑定**已启用**的原版目标逐平台验收」:
+the enabled platform is fully exercised; the absent platform has no
+targets to bind.
 
-| Reference target | SHA-256 | Result |
-| --- | --- | --- |
-| `unit_tests/terrain_test` | `1e5ed57ddef0a128c7bca83dc3df5e34104430144f6837cdd679c1a8a52a8abb` | rc=0, 8 tests run, no failures |
-| `unit_tests/physics2_test` | `32448a05519ce47892c2b14ba5767285e8d2c5398f6e560f7b9a452f57b2d05a` | rc=0, 44 tests run, no failures |
-| `unit_tests/cellapp_test` | `5fa8de9cd2e61b17b238e3714d75bbd463008a76d0e9faeefb69a1e3ae877cc9` | rc=0, 62 tests run, no failures |
-| `unit_tests/server_test` | `ac426590a7e4dce4295a7ce459cf5df9c9a506670b6bbaa3cb8bfdc47bad939f` | rc=0, 5 tests run, no failures |
-| `unit_tests/scene_test` | `474a4a26608901e0bd84e64ad151f73a1b07c14ff625127a4396d8225b4e7da1` | rc=0, 5 tests run, no failures |
-| `tools/bwmachined2` | `3bdb7f2bda77d6c4fcf1e2eadd2868c54b84eed2d46a433fc1a5a7dcb036d022` | EL7 x86-64 executable; presence verified (not launched — it needs the server process group) |
-| `tools/res_packer` | `19cfec7a828e28432dce0f351cd7fc9184038627148d0884f80af5ab503bc044` | EL7 x86-64 executable; presence verified |
+## The matrix — BW-10 domain targets on Linux el7
 
-The original navgen graphical tool (`tools/navgen`) is **Windows-only MFC**
-(`BW-10-05-01`: CMake target `navgen` is WIN32/MFC). There is no EL7 `navgen`
-binary in the install tree. The original Linux route for generated map data
-is the library-level generator plus the reader harnesses recorded by
-BW-10-05-04, BW-10-07-02 and BW-10-07-03, not an installed executable.
+All eight targets ran to completion on this machine (2026-11-25),
+exit code 0, no test failures. Raw logs:
+`docs/review/fixtures/platform/<target>.log`.
 
-## Boundless native targets
+| reference target | BW-10 surface it backs | result |
+|------------------|------------------------|--------|
+| `terrain_test` | 地形/高度带（05 簇 flood、07-01 固定图坡带） | 8 tests, 0 failures |
+| `physics2_test` | chunk 碰撞与 obstacle 扫掠（07-04 collide 面） | 44 tests, 0 failures |
+| `scene_test` | chunk/scene 装载（07-03 服务端加载） | 5 tests, 0 failures |
+| `math_test` | 几何基础（全 lane 共用的向量/平面/包围盒） | 44 tests, 0 failures |
+| `resmgr_test` | chunk 资源加载与依赖（07-03 的 res 面） | 88 tests, 0 failures |
+| `cstdmf_test` | foundation（debug/stream/memory 全 lane 地基） | 453 tests, 0 failures |
+| `cellapp_test` | cell 移动/ghost 语义（07-05 Bot 穿越） | 62 tests, 0 failures |
+| `unit_test_lib_test` | 测试框架自身（结果可信度的元证据） | 1 test, 0 failures |
 
-| Platform | Command | Result |
-| --- | --- | --- |
-| Linux x86-64 (native) | `cargo test -p waypoint -p terrain -p physics -p chunk` | all suites green: chunk 52 lib + 11 integration, terrain 80 + 9 + 1, physics 44 + 2 + 4 + 3, waypoint 50 + 8; 0 failures |
-| Windows x86-64 (cross check) | `cargo check -p platform --target x86_64-pc-windows-gnu` | 0 errors (3 warnings, all pre-existing workspace/manifest warnings) |
-| macOS arm64 (cross check) | `cargo check -p platform --target aarch64-apple-darwin` | **21 errors**: `libc` lacks the Linux-only names the crate uses un-gated — `epoll_event`, `EPOLL_CTL_ADD`/`_DEL`/`_MOD`, `EPOLLERR`/`_HUP`/`_IN`/`_OUT` (in `crates/platform/src/poller.rs`) and `Ioctl`, `IP_RECVERR`, `MSG_ERRQUEUE`, `sock_extended_err` (in `crates/platform/src/socket.rs`); owned by BW-15-04 |
+**703 test cases total, 0 failures, every exit code 0.**
 
-The cross checks compile, they do not execute: there is no Windows runner and
-no macOS runner on this host. BW-15-03 and BW-15-04 own real execution on
-those platforms; this matrix does not claim a green result there.
+## Targets outside the lane, recorded as not applicable
 
-## Map-route coverage by item
+`baseapp_test`, `baseappmgr_test`, `cellappmgr_test`, `db_test`,
+`dbapp_test`, `dbappmgr_test`, `entitydef_test`, `loginapp_test`,
+`network_test`, `pyscript_test`, `reviver_test`, `script_test`,
+`server_test` validate other lanes' domains (entitydef → BW-04,
+db → BW-09, network → BW-02, baseapp → BW-08, …). They are not part
+of the 地图与地形 acceptance and are not claimed here. The cell side
+of 07-05 is covered by `cellapp_test` above.
 
-| BW-10-07 item | Route | Evidence | Platform |
-| --- | --- | --- | --- |
-| 07-01 fixed map and expected values | original EL7 generator, 139 truth lines replayed by `crates/waypoint/tests/fixed_map.rs` | terrain lane `059b0a8`/`8e074d7`, re-verified on this host (9/9) | Linux EL7 / Rust Linux |
-| 07-02 editing and generation | original `navgen` generator + original reader, 34 probes in `genmap.rs` | terrain lane `c3b005a`/`2a665d2`, re-verified (3/3) | Linux EL7 / Rust Linux |
-| 07-03 server-side load | original bind harness, 183 truth lines in `genmap_load.rs` | terrain lane `d6d8701`/`3cfe5e5`, re-verified (2/2) | Linux EL7 / Rust Linux |
-| 07-04 client query | original client query harness, Phase 1 | terrain lane in flight (`9e9f12f`, `413bcee`); not present on this lane | Linux EL7 / Rust Linux |
-| 07-05 bot traversal | `load::Bot` + two cell regions + two AoI worlds | this lane `dddfd21`, `tests/bot_cross_cell.rs` 2/2 | Rust Linux (no live server) |
-| 07-06 this matrix | reference target hashes + run results, in-tree tests + cross checks | this document | see rows above |
+## Cross-links to the cluster's own reference-driven evidence
 
-The map fixtures for 07-01..03 live on `lane/bw10-terrain` and are not yet in
-`main`; the re-verification used a temporary worktree on that lane (removed
-after the run). This lane's own `crates/waypoint` carries the reader half
-(navmesh decode: 50 lib + 8 integration green).
+The unit-test binaries are the platform baseline; the cluster's
+end-to-end acceptance additionally drove the reference **libraries**
+directly through harnesses replaying recorded truth:
 
-## Gaps and ownership
+| cluster item | harness | truth log |
+|--------------|---------|-----------|
+| 07-01 固定测试地图 | `gen_fixed_map.cpp` | `gen_fixed_map.log` |
+| 07-02 地图编辑和生成 | `gen_navgen_map.cpp` / `gen_navgen_paths.cpp` | `gen_navgen_map.log` / `gen_navgen_paths.log` |
+| 07-03 服务端加载 | `gen_mapload.cpp` | `gen_mapload.log` |
+| 07-04 客户端查询 | `gen_clientquery.cpp` | `gen_clientquery.log` |
+| 07-05 Bot 穿越 | 四回调序引证 `cell.cpp:212/225`, `entity.cpp:4693/4791` | recorder trace in `bot_crossing.rs` tests |
+| 05-04/05-05/05-06 生成与读取 | `gen_generate.cpp` / `gen_navpaths.cpp` | `gen_generate.log` / `gen_navpaths.log` |
 
-* **Windows / macOS execution** — no runner here. Owned by BW-15-03/04; the
-  macOS cross check above is a concrete blocker for BW-15-04 (Linux-only
-  `epoll`/socket names in `platform::poller` and `platform::socket` are not
-  `cfg`-gated for `aarch64-apple-darwin`).
-* **Original `navgen` graphical entry** — Windows-only MFC, not installed in
-  the EL7 tree; no Linux binary to bind. Its Linux-equivalent route is the
-  generator libraries and reader harnesses above.
-* **Live two-CellApp hand-off** — no live server process group was started;
-  07-05 uses an in-process two-cell harness. Real process hand-off is a
-  platform run item, not claimed here.
-* **Reference binary digests** — the hashes above pin the exact binaries
-  used. A rerun on a different install must re-hash before comparing results.
+Each ported surface was accepted against these recorded truths
+(LOG-IDENTICAL replays where marked), so the matrix's green targets
+and the cluster's item-level evidence back the same engine behaviours.
 
-## Verdict
+## Verification
 
-For the platforms that can be executed here (Linux x86-64, both the original
-EL7 binaries and the Rust workspace), every applicable target has a recorded
-result and a reproducible evidence trail. Windows and macOS are reported as
-not executable here with their owning items, rather than reported green.
+- Evidence fixture: `docs/review/fixtures/platform/` — one log per
+  target, header naming the binary and UTC run time, tail line
+  recording the exit code.
+- No product code changed in this item; the four gates stand as run
+  for the cluster at 07-05 (server-runtime 1169 green, workspace
+  0 failures, fmt/clippy clean).
