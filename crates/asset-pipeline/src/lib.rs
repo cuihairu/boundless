@@ -84,11 +84,34 @@
 //!   `ensureModelValid` judgement, the save/save-as flows and the metadata
 //!   block they refresh, against the `lib/model` read contract
 //!   (`tools/modeleditor_core/Models/`, `lib/gizmo/meta_data*`);
+//! - [`animation_exporter`] — the Max animation exporter's portable core:
+//!   the node tree, include munging and root sorting, the per-frame
+//!   sampling/decompose pipeline and the `.animation` binary writer
+//!   (type 1/4 node channels, type 6 cue track)
+//!   (`tools/animationexporter`, `lib/math/blend_transform.cpp`);
 //! - [`material_editor`] — the ModelEditor's material editing face: the
 //!   material/dye/tint census, mfm instantiation and overloading, the
 //!   clean/property/naming/feed/flag moves and the shader gates
-//!   (`tools/modeleditor_core/Models/mutant_materials.cpp`).
+//!   (`tools/modeleditor_core/Models/mutant_materials.cpp`);
+//! - [`visual_exporter`] — the Max visual exporter's portable core: the
+//!   `ExportSettings` IO, the `BloatVertex`/`Triangle`/`Material` model
+//!   and the `VisualMesh::save` pipeline (dedup, sorting, primitive
+//!   groups, the `xyznuv`/`xyznuvi` vertex streams and the `.visual`
+//!   XML) with the Max-plugin host seams documented
+//!   (`tools/visualexporter/`);
+//! - [`maya_visual_exporter`] — the Maya visual exporter's portable core:
+//!   the exporter settings round-trip, the scene records the Maya
+//!   traversal produces, the mesh save chain into a `.visual` plus its
+//!   `.primitives`, the hierarchy/world-space handling, and the custom
+//!   hull and boundary faces
+//!   (`tools/mayavisualexporter/`);
+//! - [`world_machine_import`] — the World Machine height importer: the
+//!   `SpaceHelper` space.settings reader, the chunk `.cdata` height-map
+//!   decode and the `BWHeightImport` resample into a World Machine
+//!   height field, with the framework seam documented
+//!   (`tools/bw_world_machine_import/`).
 
+pub mod animation_exporter;
 pub mod asset_compiler;
 pub mod asset_compiler_options;
 pub mod asset_processor;
@@ -111,6 +134,7 @@ pub mod hierarchical_config;
 pub mod hierarchical_config_converter;
 pub mod jit_compiler;
 pub mod material_editor;
+pub mod maya_visual_exporter;
 pub mod model_editor;
 pub mod offline_processor;
 pub mod plugin_loader;
@@ -126,4 +150,6 @@ pub mod texformat_converter;
 pub mod texture_converter;
 pub mod texture_detail_level;
 pub mod vertex_format;
+pub mod visual_exporter;
 pub mod visual_processor;
+pub mod world_machine_import;

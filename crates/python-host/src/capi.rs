@@ -376,6 +376,12 @@ pub const Py_tp_dealloc: c_int = 52;
 pub const Py_tp_getattro: c_int = 58;
 /// `Py_tp_free` (`typeslots.h`).
 pub const Py_tp_free: c_int = 74;
+/// `Py_tp_base` (`typeslots.h`): the type's base, a borrowed type object.
+pub const Py_tp_base: c_int = 48;
+/// `Py_TPFLAGS_BASETYPE` (`object.h`): the type is an acceptable base for
+/// script `class` statements -- the flag every `Py_Header` type carries
+/// (`pyobject_base.hpp:59`).
+pub const Py_TPFLAGS_BASETYPE: std::os::raw::c_uint = 1 << 10;
 /// `Py_TPFLAGS_HAVE_GC` (`object.h`): the type's instances are collector
 /// tracked and their teardown must untrack before freeing.
 pub const Py_TPFLAGS_HAVE_GC: std::os::raw::c_ulong = 1 << 14;
@@ -591,6 +597,7 @@ unsafe extern "C" {
     ) -> c_int;
     pub fn PyDict_DelItemString(dict: *mut PyObject, key: *const c_char) -> c_int;
     pub fn PyDict_Clear(dict: *mut PyObject);
+    pub fn PyDict_New() -> *mut PyObject;
     pub fn PyDict_Update(dict: *mut PyObject, other: *mut PyObject) -> c_int;
     pub fn PyDict_Next(
         dict: *mut PyObject,

@@ -1764,4 +1764,73 @@ mod tests {
         assert_eq!(own("signed_wrap").own_type(), SectionType::STRING);
         assert_eq!(own("signed_wrap").as_string(), "-5k");
     }
+
+    // ------------------------------------------------------------------
+    // EL7 interop: bytes produced by the reference res_packer binary.
+    // ------------------------------------------------------------------
+
+    /// The EL7 `res_packer` output for the fixture `server/bw.xml`
+    /// (`scripts/el7-interop/run-el7-res-packer.sh` records the
+    /// invocation). A reference-tool artifact, the same way the waypoint
+    /// navmesh bins are fixtures.
+    fn el7_packed_bw_xml() -> Vec<u8> {
+        std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/review/fixtures/el7_res_packer/bw.packed"
+        ))
+        .expect("the EL7 fixture is in the repo")
+    }
+
+    fn compare_with_xml(
+        xml: &DataSection,
+        packed: &PackedSection,
+        path: &str,
+        mismatches: &mut usize,
+    ) {
+        if xml.section_name() != packed.section_name() {
+            println!("name mismatch at {path}");
+            *mismatches += 1;
+        }
+        if xml.count_children() != packed.count_children() {
+            println!(
+                "child count mismatch at {path}: xml {} packed {}",
+                xml.count_children(),
+                packed.count_children()
+            );
+            *mismatches += 1;
+            return;
+        }
+        if xml.count_children() == 0 && xml.as_string() != packed.as_string() {
+            println!(
+                "value mismatch at {path}: xml {:?} packed {:?}",
+                xml.as_string(),
+                packed.as_string()
+            );
+            *mismatches += 1;
+        }
+        for i in 0..xml.count_children() {
+            let x = xml.open_child(i).expect("xml child");
+            let p = packed.open_child(i).expect("packed child");
+            compare_with_xml(x, p, &format!("{}/{}", path, x.section_name()), mismatches);
+        }
+    }
+
+    #[test]
+    fn an_el7_res_packer_file_reads_back_identical_to_its_xml_source() {
+        let data = el7_packed_bw_xml();
+        assert!(
+            PackedSection::is_packed_file(&data),
+            "the EL7 magic matches ours"
+        );
+        let packed = PackedSection::parse("bw.xml", &data);
+        let raw = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/review/fixtures/fantasydemo_def/res/server/bw.xml"
+        ))
+        .expect("the xml source fixture is in the repo");
+        let xml = crate::datasection::parse("bw.xml", &raw).expect("the xml source parses");
+        let mut mismatches = 0;
+        compare_with_xml(&xml, &packed, "", &mut mismatches);
+        assert_eq!(mismatches, 0, "every node reads back identical");
+    }
 }

@@ -17,14 +17,16 @@
 use std::collections::BTreeMap;
 
 use foundation::math::{PlaneEq, Vector3};
+use physics::QuadTree;
 
 use crate::chunk::Chunk;
 use crate::hulltree::HullTree;
+use crate::obstacle::{ChunkObstacle, OBSTACLE_TREE_DEPTH, calculate_qt_range};
 
-/// `BaseChunkSpace::Column` (`base_chunk_space.cpp:377-391`): an empty
-/// column owns no tree; the reference also allocates an obstacle tree,
-/// which has no port-side face here (BW-10-03 collision) and is registered.
-#[derive(Debug, Default, Clone)]
+/// `BaseChunkSpace::Column` (`base_chunk_space.cpp:377-391`): the hull
+/// tree of the inside chunks overlapping it, the owning outside chunk,
+/// and the obstacle tree the collide sweep walks.
+#[derive(Debug, Clone)]
 pub struct Column {
     /// `pChunkTree_`: the inside chunks' hull tree.
     tree: Option<HullTree>,
@@ -39,11 +41,55 @@ pub struct Column {
     /// uses to avoid re-adding a chunk's hull to a column that has it.
     seen: Vec<String>,
     shut_to: Option<String>,
+    /// `pObstacleTree_` — `new ObstacleTree(pSpace->gridToPoint(x),
+    /// pSpace->gridToPoint(z), obstacleTreeDepth(), pSpace->gridSize())`,
+    /// with `gridToPoint = grid * gridSize`.
+    obstacle_tree: QuadTree,
 }
 
 impl Column {
-    pub fn new() -> Self {
-        Self::default()
+    /// `BaseChunkSpace::Column::Column` (`base_chunk_space.cpp:377-387`):
+    /// the obstacle tree is allocated eagerly (the reference ctor always
+    /// makes one); the depth is the shipped 5.
+    pub fn new(grid_x: i32, grid_z: i32, grid_size: f32) -> Self {
+        Self {
+            tree: None,
+            outside: None,
+            holdings: Vec::new(),
+            seen: Vec::new(),
+            shut_to: None,
+            obstacle_tree: QuadTree::new(
+                grid_x as f32 * grid_size,
+                grid_z as f32 * grid_size,
+                OBSTACLE_TREE_DEPTH,
+                grid_size,
+            ),
+        }
+    }
+
+    /// `Column::obstacles` (`base_chunk_space.hpp:142`).
+    pub fn obstacles(&self) -> &QuadTree {
+        &self.obstacle_tree
+    }
+
+    /// `BaseChunkSpace::Column::addObstacle` (`base_chunk_space.cpp`):
+    /// a column shut to a chunk refuses that chunk's obstacles. The
+    /// reference refcounts through `heldObstacles_` — the port's obstacle
+    /// arena in the owning space owns the lifetime instead (registered);
+    /// the tree stores the arena index and computes the range off the
+    /// obstacle, exactly like the reference's tree add does.
+    pub fn add_obstacle(&mut self, obstacle: &ChunkObstacle, index: u32) {
+        if self.shut_to.as_deref() == obstacle.chunk() {
+            return;
+        }
+
+        let range = calculate_qt_range(
+            obstacle,
+            self.obstacle_tree.origin(),
+            self.obstacle_tree.range(),
+            self.obstacle_tree.depth(),
+        );
+        self.obstacle_tree.add(index, range);
     }
 
     /// `Column::addChunk` (`base_chunk_space.cpp:423-465`).
@@ -274,6 +320,8 @@ impl ColumnGrid {
 mod tests {
     use super::*;
     use crate::mapping::{GeometryMapping, GridBounds};
+    use crate::obstacle::test_bsp::slab_obstacle;
+    use foundation::math::vector::Vector2;
 
     fn box_border(min: Vector3, max: Vector3) -> Vec<PlaneEq> {
         // inward normals, the chunk border convention (`chunk.cpp:675-807`)
@@ -330,7 +378,7 @@ mod tests {
 
     #[test]
     fn an_outside_chunk_takes_the_empty_column() {
-        let mut column = Column::new();
+        let mut column = Column::new(0, 0, 100.0);
         let chunk = outside_chunk("00000000o", 0.0, 1);
         let border = box_border(chunk.bounding_box.min, chunk.bounding_box.max);
         column.add_chunk(&border, &chunk);
@@ -379,7 +427,7 @@ mod tests {
 
     #[test]
     fn a_larger_outside_chunk_replaces_the_holder() {
-        let mut column = Column::new();
+        let mut column = Column::new(0, 0, 100.0);
         let small = outside_chunk("00000000o", 0.0, 1);
         column.add_chunk(
             &box_border(small.bounding_box.min, small.bounding_box.max),
@@ -414,7 +462,7 @@ mod tests {
         );
         inside.is_loaded = true;
 
-        let mut column = Column::new();
+        let mut column = Column::new(0, 0, 100.0);
         let outside = outside_chunk("00000000o", 0.0, 1);
         column.add_chunk(
             &box_border(outside.bounding_box.min, outside.bounding_box.max),
@@ -452,7 +500,7 @@ mod tests {
         let outside = outside_chunk("00000000o", 0.0, 1);
 
         let chunks = chunk_map(vec![outside, inside]);
-        let mut column = Column::new();
+        let mut column = Column::new(0, 0, 100.0);
         let border = box_border(
             Vector3::new(10.0, 0.0, 10.0),
             Vector3::new(20.0, 10.0, 20.0),
@@ -517,7 +565,7 @@ mod tests {
         );
         small.is_loaded = true;
 
-        let mut column = Column::new();
+        let mut column = Column::new(0, 0, 100.0);
         assert_eq!(column.outside_chunk(), None);
 
         // a hull whose chunk is gone from the map: its tag is skipped
@@ -566,7 +614,7 @@ mod tests {
 
     #[test]
     fn the_seen_bookkeeping_guards_re_adds() {
-        let mut column = Column::new();
+        let mut column = Column::new(0, 0, 100.0);
         column.open_and_see("a");
         assert!(column.shut_to.is_none());
         column.shut_if_seen("a");
@@ -588,7 +636,7 @@ mod tests {
     fn the_grid_window_moves_and_drops_columns() {
         let mut grid = ColumnGrid::new();
         grid.rect(0, 0, 2, 2, &mut Vec::new());
-        grid.set(1, 1, Some(Column::new()));
+        grid.set(1, 1, Some(Column::new(0, 0, 100.0)));
         assert!(grid.in_span(1, 1));
         assert!(!grid.in_span(2, 1));
         assert!(grid.get(1, 1).is_some());
@@ -603,11 +651,71 @@ mod tests {
         // shift the window: the surviving column moves with its cell
         let mut grid = ColumnGrid::new();
         grid.rect(0, 0, 2, 1, &mut Vec::new());
-        grid.set(1, 0, Some(Column::new()));
+        grid.set(1, 0, Some(Column::new(0, 0, 100.0)));
         let mut dropped = Vec::new();
         grid.rect(1, 0, 2, 1, &mut dropped);
         assert!(dropped.is_empty());
         assert!(grid.get(1, 0).is_some());
         assert_eq!(grid.span(), (1, 0, 2, 1));
+    }
+
+    /// Every element a line through the column's tree (1,*,1)-(3,*,3)
+    /// touches — the slab obstacle's cells.
+    fn tree_elements(column: &Column) -> Vec<u32> {
+        let mut out = Vec::new();
+        let mut traversal = column.obstacles().traverse(
+            &Vector3::new(1.0, 0.0, 1.0),
+            &Vector3::new(3.0, 0.0, 3.0),
+            0.0,
+        );
+        while let Some(element) = traversal.next() {
+            out.push(element);
+        }
+        out
+    }
+
+    /// The obstacle tree is the reference ctor's: placed at the column's
+    /// grid cell in world coordinates, shipped depth, the space's grid
+    /// size as its range.
+    #[test]
+    fn the_ctor_builds_the_obstacle_tree_at_the_grid_point() {
+        let column = Column::new(3, -2, 100.0);
+
+        assert_eq!(column.obstacles().origin(), Vector2::new(300.0, -200.0));
+        assert_eq!(column.obstacles().depth(), OBSTACLE_TREE_DEPTH);
+        assert_eq!(column.obstacles().range(), 100.0);
+        assert!(tree_elements(&column).is_empty());
+    }
+
+    /// `Column::addObstacle`: the arena index lands in the tree, computed
+    /// off the obstacle's world box.
+    #[test]
+    fn add_obstacle_lands_the_arena_index() {
+        let mut column = Column::new(0, 0, 100.0);
+        let obstacle = slab_obstacle(Some("001x000x"));
+
+        column.add_obstacle(&obstacle, 7);
+
+        assert_eq!(tree_elements(&column), vec![7]);
+    }
+
+    /// A column shut to a chunk refuses that chunk's obstacles — and
+    /// still takes another chunk's.
+    #[test]
+    fn a_column_shut_to_the_chunk_refuses_its_obstacles() {
+        let mut column = Column::new(0, 0, 100.0);
+        column.open_and_see("001x000x");
+        column.shut_if_seen("001x000x");
+
+        column.add_obstacle(&slab_obstacle(Some("001x000x")), 1);
+        assert!(tree_elements(&column).is_empty());
+
+        column.add_obstacle(&slab_obstacle(Some("00000000i")), 2);
+        assert_eq!(tree_elements(&column), vec![2]);
+
+        // a column with no shutoff takes every obstacle
+        let mut open = Column::new(0, 0, 100.0);
+        open.add_obstacle(&slab_obstacle(Some("001x000x")), 3);
+        assert_eq!(tree_elements(&open), vec![3]);
     }
 }

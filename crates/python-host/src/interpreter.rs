@@ -436,6 +436,11 @@ fn create_big_world_module(component: &str) {
             // `addEventListener` / `removeEventListener` faces.
             crate::script_events::install(module);
         }
+        // The script class bases join the module per app set, the
+        // registration split of the reference's four sites: `Entity` on
+        // the client, the cell app and the bots tool, `Base` and `Proxy`
+        // on the base app alone (`script_types.rs`).
+        crate::script_types::install(module, component);
     }
 }
 

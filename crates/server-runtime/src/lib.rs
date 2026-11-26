@@ -7,6 +7,7 @@ pub mod base_backup;
 pub mod base_write_db;
 pub mod baseapp_continuation;
 pub mod baseapp_relogon;
+pub mod baseapp_scripts;
 pub mod baseappmgr;
 pub mod billing;
 pub mod billing_creator;

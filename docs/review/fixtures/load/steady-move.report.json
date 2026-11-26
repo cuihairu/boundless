@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "scenario": "steady-move",
+  "generator": "load 0.1.0",
+  "topology": "linux-offline-harness",
+  "seed": 314159,
+  "values": {
+    "bots_online": 4,
+    "sample_period": 0.10000000149011612,
+    "trajectory_sum": 396.2326774597168
+  }
+}

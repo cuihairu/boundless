@@ -7,16 +7,6 @@
 //! The PostgreSQL port keeps the same shape: `INSERT ... ON CONFLICT
 //! ("id") DO UPDATE` replaces the row, and `get_entity` reads the columns
 //! back in the schema's visit order, one [`PropertyValue`] per column.
-//!
-//! The DBID allocation follows the reference's `putEntity` create leg:
-//! `PutEntityTask` takes `insertNew` when the key carries no id
-//! (`tasks/put_entity_task.cpp:60-98`), the generated statement lists
-//! the property columns only (`utils.cpp:48-76`), and the caller reads
-//! the DB's own choice back with `LAST_INSERT_ID` (`wrapper.hpp:75`).
-//! The id column is the table's `AUTO_INCREMENT` (`column_type.hpp:144-146`,
-//! `mysql_table_initialiser.cpp:366-369`), which is this backend's
-//! identity column: the reference has no DBID watermark table of its own,
-//! so the guarantee is the DBMS sequence's.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -30,7 +20,9 @@ use postgres::error::SqlState;
 use postgres::types::ToSql;
 
 use crate::json;
-use crate::schema::{ColumnKind, EntitySchema, ID_COLUMN, column_name, quote_ident};
+use crate::schema::{
+    ColumnKind, EntitySchema, ID_COLUMN, column_name, entity_table_name, quote_ident,
+};
 
 /// Maps a backend error to the storage contract. A unique-key violation is
 /// the contract's duplicate outcome (BW-09-06-03: the accounts table's
@@ -49,25 +41,46 @@ fn error_message(error: &postgres::Error) -> String {
 }
 
 pub fn map_db_error(error: postgres::Error) -> DbError {
-    map_unique_violation(error, DbError::DuplicateAccount)
-}
-
-/// Maps the error of an entity write: an entity table's only unique
-/// constraint is its id, so a unique violation there is a duplicate
-/// DBID — the contract's `AlreadyExists`, not the accounts table's
-/// duplicate-name outcome.
-pub fn map_write_error(error: postgres::Error) -> DbError {
-    map_unique_violation(error, DbError::AlreadyExists)
-}
-
-fn map_unique_violation(error: postgres::Error, duplicate: DbError) -> DbError {
+    // The lock conditions are the retryable ones
+    // (`database_exception.cpp:35-40`: `ER_LOCK_DEADLOCK` and
+    // `ER_LOCK_WAIT_TIMEOUT`; retry.rs:96-98). PostgreSQL spells them
+    // 40P01 `deadlock_detected` and 55P03 `lock_not_available`.
+    let is_retryable_lock = error.code().is_some_and(|code| {
+        *code == SqlState::T_R_DEADLOCK_DETECTED || *code == SqlState::LOCK_NOT_AVAILABLE
+    });
     let is_duplicate = error
         .code()
         .is_some_and(|code| *code == SqlState::UNIQUE_VIOLATION);
+    if is_retryable_lock {
+        return DbError::Retry;
+    }
     if is_duplicate {
-        duplicate
+        return DbError::DuplicateAccount;
+    }
+    // The connection-level family — `DatabaseException::isLostConnection`
+    // (`database_exception.cpp:43-53`, the four `CR_*` codes): a closed
+    // client or a bare I/O failure, neither of which carries a server
+    // error. `DbError::LostConnection` is what the reconnect leg of
+    // BW-09-06-09 answers to.
+    if error.is_closed() || error.as_db_error().is_none() {
+        return DbError::LostConnection;
+    }
+    DbError::Storage(error_message(&error))
+}
+
+/// Maps a backend error on an *entity* table. Entity tables carry no other
+/// unique key than the primary id, so a unique violation there is the
+/// duplicate-id outcome of `insertExplicit`
+/// (`put_entity_task.cpp:93-97`) — [`DbError::AlreadyExists`]. The
+/// account tables keep [`DbError::DuplicateAccount`].
+fn map_entity_db_error(error: postgres::Error) -> DbError {
+    if error
+        .code()
+        .is_some_and(|code| *code == SqlState::UNIQUE_VIOLATION)
+    {
+        DbError::AlreadyExists
     } else {
-        DbError::Storage(error_message(&error))
+        map_db_error(error)
     }
 }
 
@@ -77,29 +90,35 @@ fn uint_to_bigint(value: u64) -> Result<i64, DbError> {
         .map_err(|_| DbError::Storage(format!("uint64 value {value} exceeds BIGINT")))
 }
 
-/// Validates a record against its schema before any SQL runs: the values
-/// must be the schema's columns in visit order, and the DBID must be
-/// assigned — a pending id is not a row key, the create leg takes one.
-fn validate_put(schema: &EntitySchema, record: &EntityRecord) -> Result<(), DbError> {
-    validate_values(schema, &record.values)?;
-    if record.db_id < 0 {
+/// Validates a record's values against its schema before any SQL runs:
+/// the values must be the schema's columns in visit order and every `Uint`
+/// must fit `BIGINT`.
+fn validate_put_values(schema: &EntitySchema, record: &EntityRecord) -> Result<(), DbError> {
+    if record.values.len() != schema.columns.len() {
         return Err(DbError::Storage(format!(
-            "record for {} still has a pending database id",
-            schema.type_name
+            "record for {} carries {} values but the schema lists {} columns",
+            schema.type_name,
+            record.values.len(),
+            schema.columns.len()
         )));
+    }
+    for value in &record.values {
+        if let PropertyValue::Uint(n) = value {
+            uint_to_bigint(*n)?;
+        }
     }
     Ok(())
 }
 
-/// Validates a value run against its schema's arity: one value per column,
-/// in visit order.
-fn validate_values(schema: &EntitySchema, values: &[PropertyValue]) -> Result<(), DbError> {
-    if values.len() != schema.columns.len() {
+/// `validate_put_values` plus the rule for a row that already has a
+/// DatabaseID: a pending one (the reference's `PENDING_DATABASE_ID`,
+/// `-1`) means the table has not handed the entity a DBID out yet.
+fn validate_put(schema: &EntitySchema, record: &EntityRecord) -> Result<(), DbError> {
+    validate_put_values(schema, record)?;
+    if record.db_id < 0 {
         return Err(DbError::Storage(format!(
-            "record for {} carries {} values but the schema lists {} columns",
-            schema.type_name,
-            values.len(),
-            schema.columns.len()
+            "record for {} still has a pending database id",
+            schema.type_name
         )));
     }
     Ok(())
@@ -123,13 +142,210 @@ fn put_entity_sql(schema: &EntitySchema) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO UPDATE SET {}",
+        "INSERT INTO {} ({}) OVERRIDING SYSTEM VALUE VALUES ({}) ON CONFLICT ({}) DO UPDATE SET {}",
         schema.quoted_table(),
         schema.quoted_columns().join(", "),
         placeholders,
         quote_ident(ID_COLUMN),
         assignments
     )
+}
+
+/// One placeholder per property column, numbered from `first`.
+fn placeholders_from(schema: &EntitySchema, first: usize) -> Vec<String> {
+    schema
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(index, (_, kind))| nested_placeholder(first + index, kind))
+        .collect()
+}
+
+/// The explicit-id insert: the reference's `insertExplicit`
+/// (`put_entity_task.cpp:89-97`) is a plain INSERT, so a duplicate primary
+/// key fails the statement ([`DbError::AlreadyExists`]) and the original
+/// row survives — the upsert ([`put_entity_sql`]) would overwrite instead.
+fn insert_explicit_entity_sql(schema: &EntitySchema) -> String {
+    let mut placeholders = vec!["$1".to_string()];
+    placeholders.extend(placeholders_from(schema, 2));
+    format!(
+        "INSERT INTO {} ({}) OVERRIDING SYSTEM VALUE VALUES ({})",
+        schema.quoted_table(),
+        schema.quoted_columns().join(", "),
+        placeholders.join(", ")
+    )
+}
+
+/// The same write for an entity the table has not given a DBID to: the
+/// id column is left out so the identity column allocates one, and the
+/// statement reads it back. This is the reference's shape — the buffered
+/// task path turns a `PENDING_DATABASE_ID` into `0` before the insert, so
+/// the table's `AUTO_INCREMENT` key column is what supplies the value.
+fn put_new_entity_sql(schema: &EntitySchema) -> String {
+    format!(
+        "INSERT INTO {} ({}) VALUES ({}) RETURNING {}",
+        schema.quoted_table(),
+        schema.quoted_property_columns().join(", "),
+        placeholders_from(schema, 1).join(", "),
+        quote_ident(ID_COLUMN)
+    )
+}
+
+/// The logon-record statements. `bigworldLogOns` is a fixed table — the
+/// database initialisation creates it — and `entity_type_mapping.cpp`
+/// carries the reference's queries. A relogon overwrites: `addLogOnQuery`
+/// is `INSERT ... ON DUPLICATE KEY UPDATE`
+/// (entity_type_mapping.cpp:749-758), so the port is an `ON CONFLICT`
+/// upsert on the same two-column key.
+fn add_logon_sql() -> String {
+    "INSERT INTO \"bigworldLogOns\" (\"databaseID\", \"typeID\", \"objectID\", \"ip\", \"port\", \"salt\") \
+     VALUES ($1, $2, $3, $4, $5, $6) \
+     ON CONFLICT (\"typeID\", \"databaseID\") DO UPDATE SET \
+     \"objectID\" = EXCLUDED.\"objectID\", \"ip\" = EXCLUDED.\"ip\", \
+     \"port\" = EXCLUDED.\"port\", \"salt\" = EXCLUDED.\"salt\""
+        .to_string()
+}
+
+/// `getLogOnQuery` (entity_type_mapping.cpp:764-766): the holder of an
+/// entity, if any.
+fn get_logon_sql() -> String {
+    "SELECT \"objectID\", \"ip\", \"port\", \"salt\" \
+     FROM \"bigworldLogOns\" WHERE \"databaseID\" = $1 AND \"typeID\" = $2"
+        .to_string()
+}
+
+/// `removeLogOnQuery` (entity_type_mapping.cpp:527-529): the reference
+/// deletes unconditionally, so releasing nothing held is fine.
+fn remove_logon_sql() -> String {
+    "DELETE FROM \"bigworldLogOns\" WHERE \"databaseID\" = $1 AND \"typeID\" = $2".to_string()
+}
+
+/// `updateLogOnAutoLoadQuery` (entity_type_mapping.cpp:793-795): the
+/// auto-load status of an entity's log-on mapping. A row-less entity
+/// matches nothing and the update stays silent (MySQL UPDATE semantics).
+fn update_auto_load_sql() -> String {
+    "UPDATE \"bigworldLogOns\" SET \"shouldAutoLoad\" = $1 \
+     WHERE \"databaseID\" = $2 AND \"typeID\" = $3"
+        .to_string()
+}
+
+/// `autoLoadEntities`' cleanup leg (mysql_database.cpp:674-675): the
+/// sessions of the entities that must not auto-load are stale at a
+/// restart and go first.
+fn clear_non_autoload_sql() -> String {
+    "DELETE FROM \"bigworldLogOns\" WHERE NOT \"shouldAutoLoad\"".to_string()
+}
+
+/// `autoLoadEntities`' listing leg (mysql_database.cpp:677-683): the
+/// flagged entities joined with the meta table for the running-server
+/// type id (`typeID` is the id used internally by the database,
+/// `bigworldID` the one used by a running server).
+fn auto_load_list_sql() -> String {
+    "SELECT logOn.\"databaseID\", entityType.\"bigworldID\" \
+     FROM \"bigworldLogOns\" logOn, \"bigworldEntityTypes\" entityType \
+     WHERE logOn.\"typeID\" = entityType.\"typeID\" AND logOn.\"shouldAutoLoad\""
+        .to_string()
+}
+
+/// `autoLoadEntities`' holder leg (mysql_database.cpp:702): the restart
+/// hands every loaded entity to a fresh base, so the stored addresses
+/// are stale — they zero, while `objectID` and `salt` stay.
+fn clear_holders_sql() -> String {
+    "UPDATE \"bigworldLogOns\" SET \"ip\" = 0, \"port\" = 0".to_string()
+}
+
+/// `addEntityTypeQuery`/`setEntityTypeIDQuery`/`getEntityTypeIDQuery`
+/// (bw_meta_data.cpp:13-21): the `bigworldEntityTypes` row the auto-load
+/// join resolves through. The reference inserts with `typeID` `NULL` and
+/// lets the database assign its internal id; the port keeps one type-id
+/// space (`EntityTypeId`), so both columns carry the caller's value.
+fn add_entity_type_sql() -> String {
+    "INSERT INTO \"bigworldEntityTypes\" (\"typeID\", \"bigworldID\", \"name\") \
+     VALUES ($1, $1, $2)"
+        .to_string()
+}
+
+fn set_entity_type_id_sql() -> String {
+    // The reference's `setEntityTypeIDQuery` updates `bigworldID` alone:
+    // its internal `typeID` is stable, so old log-on records keep
+    // joining after a re-point. The port's one type-id space carries the
+    // running-server id in both columns, so both move together — the
+    // join keeps resolving through the new id.
+    "UPDATE \"bigworldEntityTypes\" SET \"typeID\" = $1, \"bigworldID\" = $1 \
+     WHERE \"name\" = $2"
+        .to_string()
+}
+
+fn get_entity_type_id_sql() -> &'static str {
+    "SELECT \"bigworldID\" FROM \"bigworldEntityTypes\" WHERE \"name\" = $1"
+}
+
+/// The reference stores the base address in network byte order:
+/// `htonl(mailbox.addr.ip)` and `htons(mailbox.addr.port)` go in
+/// (`addLogOnRecord`, entity_type_mapping.cpp:779-781) and `ntohl`/`ntohs`
+/// come back (`getLogOnRecord`, :815-816) — a byte swap on both legs,
+/// which the port keeps.
+fn stored_ip(ip: u32) -> i64 {
+    i64::from(ip.swap_bytes())
+}
+
+fn stored_port(port: u16) -> i32 {
+    i32::from(port.swap_bytes())
+}
+
+fn read_ip(raw: i64) -> u32 {
+    (raw as u32).swap_bytes()
+}
+
+fn read_port(raw: i32) -> u16 {
+    (raw as u16).swap_bytes()
+}
+
+/// The reference's `salt` column is `SMALLINT UNSIGNED`, and the ported
+/// address type carries a `u16` salt — the INTEGER column holds it whole.
+fn stored_salt(salt: u16) -> i32 {
+    i32::from(salt)
+}
+
+fn read_salt(raw: i32) -> u16 {
+    raw as u16
+}
+
+/// MySQL's `AUTO_INCREMENT` counter climbs past explicit ids — after an
+/// `insertExplicit` of 5 the next created entity gets 6 — while a
+/// PostgreSQL identity sequence does not move for `OVERRIDING SYSTEM
+/// VALUE` inserts and would later collide with the explicit row. The port
+/// re-seats the sequence past the explicit id before the insert.
+/// `nextval` first means the call never lowers the sequence, and the
+/// reference's counter moves on refused inserts too, so the bump runs
+/// before the insert's outcome is known.
+fn bump_identity_sql() -> String {
+    "SELECT setval(pg_get_serial_sequence($1, 'id')::regclass, \
+     GREATEST($2, nextval(pg_get_serial_sequence($1, 'id')::regclass)), true)"
+        .to_string()
+}
+
+/// The row-existence check the update leg and the checkout run first: the
+/// upsert would create a missing row instead of failing it, and no
+/// log-on record ever points at a missing entity
+/// (`put_entity_task.cpp:103-108` checks existence first).
+fn row_exists_sql(schema: &EntitySchema) -> String {
+    format!(
+        "SELECT 1 FROM {} WHERE {} = $1",
+        schema.quoted_table(),
+        quote_ident(ID_COLUMN)
+    )
+}
+
+/// One placeholder for a property column. Nested values bind as text and
+/// cast server-side: an un-annotated `CAST` would type-infer the parameter
+/// itself as `jsonb`, which the text binding then cannot serialize.
+fn nested_placeholder(number: usize, kind: &ColumnKind) -> String {
+    let placeholder = format!("${number}");
+    match kind {
+        ColumnKind::Nested => format!("CAST({placeholder}::text AS JSONB)"),
+        _ => placeholder,
+    }
 }
 
 /// A bound parameter (the id first, then one per column).
@@ -141,33 +357,20 @@ type PutParam = Box<dyn ToSql + Sync>;
 fn put_entity_params(
     schema: &EntitySchema,
     record: &EntityRecord,
+    include_db_id: bool,
 ) -> Result<(Vec<PutParam>, Vec<String>), DbError> {
-    validate_put(schema, record)?;
-    let (values, nested_texts) = value_params(&record.values)?;
-    let mut params: Vec<PutParam> = Vec::with_capacity(values.len() + 1);
-    params.push(Box::new(record.db_id));
-    params.extend(values);
-    Ok((params, nested_texts))
-}
-
-/// Builds the parameter list for a create: one placeholder per property,
-/// in the schema's visit order, and no id parameter — the statement leaves
-/// the column out for the identity to fill in.
-fn create_entity_params(
-    schema: &EntitySchema,
-    values: &[PropertyValue],
-) -> Result<(Vec<PutParam>, Vec<String>), DbError> {
-    validate_values(schema, values)?;
-    value_params(values)
-}
-
-/// The bound parameters for one run of property values. A `Uint` must fit
-/// `BIGINT`, and nested values bind as their JSON text — the returned texts
-/// keep that text alive for the borrow.
-fn value_params(values: &[PropertyValue]) -> Result<(Vec<PutParam>, Vec<String>), DbError> {
-    let mut params: Vec<PutParam> = Vec::with_capacity(values.len());
+    if include_db_id {
+        validate_put(schema, record)?;
+    } else {
+        validate_put_values(schema, record)?;
+    }
+    let mut params: Vec<PutParam> = if include_db_id {
+        vec![Box::new(record.db_id)]
+    } else {
+        Vec::new()
+    };
     let mut nested_texts: Vec<String> = Vec::new();
-    for value in values {
+    for value in &record.values {
         match value {
             PropertyValue::Int(n) => params.push(Box::new(*n)),
             PropertyValue::Uint(n) => params.push(Box::new(uint_to_bigint(*n)?)),
@@ -251,18 +454,25 @@ fn create_entity_sql(schema: &EntitySchema) -> String {
 /// Builds the select statement for a schema: the id column first, then one
 /// quoted column per property in visit order, JSONB columns cast to their
 /// canonical JSON text.
-fn get_entity_sql(schema: &EntitySchema) -> String {
-    let mut select_columns = vec![quote_ident(ID_COLUMN)];
-    select_columns.extend(schema.columns.iter().map(|(prop, kind)| {
+fn select_columns(schema: &EntitySchema) -> Vec<String> {
+    let mut columns = vec![quote_ident(ID_COLUMN)];
+    columns.extend(schema.columns.iter().map(|(prop, kind)| {
         let name = quote_ident(&column_name(prop));
         match kind {
             ColumnKind::Nested => format!("({name})::text"),
             _ => name,
         }
     }));
+    columns
+}
+
+/// Builds the select statement for a schema: the id column first, then one
+/// quoted column per property in visit order, JSONB columns cast to their
+/// canonical JSON text.
+fn get_entity_sql(schema: &EntitySchema) -> String {
     format!(
         "SELECT {} FROM {} WHERE {} = $1",
-        select_columns.join(", "),
+        select_columns(schema).join(", "),
         schema.quoted_table(),
         quote_ident(ID_COLUMN)
     )
@@ -865,7 +1075,7 @@ impl PostgresStorage {
     /// columns in visit order.
     pub fn put_entity(&self, schema: &EntitySchema, record: &EntityRecord) -> Result<(), DbError> {
         let sql = put_entity_sql(schema);
-        let (params, nested_texts) = put_entity_params(schema, record)?;
+        let (params, nested_texts) = put_entity_params(schema, record, true)?;
         let refs: Vec<&(dyn ToSql + Sync)> = params.iter().map(|p| p.as_ref()).collect();
         self.client
             .borrow_mut()
@@ -892,10 +1102,10 @@ impl PostgresStorage {
     pub fn create_entity(
         &self,
         schema: &EntitySchema,
-        values: &[PropertyValue],
-    ) -> Result<DatabaseId, DbError> {
-        let sql = create_entity_sql(schema);
-        let (params, nested_texts) = create_entity_params(schema, values)?;
+        record: &EntityRecord,
+    ) -> Result<i64, DbError> {
+        let sql = put_new_entity_sql(schema);
+        let (params, nested_texts) = put_entity_params(schema, record, false)?;
         let refs: Vec<&(dyn ToSql + Sync)> = params.iter().map(|p| p.as_ref()).collect();
         let row = self
             .client
@@ -1217,11 +1427,10 @@ mod tests {
         let err = validate_put(&schema(), &record(-1)).unwrap_err();
         assert!(err.to_string().contains("pending database id"));
 
-        // A uint64 over BIGINT cannot bind; that check lives where the
-        // parameters are built, and the create leg runs it the same way.
+        // A uint64 over BIGINT cannot bind.
         let mut huge = record(1);
         huge.values[1] = PropertyValue::Uint(u64::MAX);
-        let err = put_entity_params(&schema(), &huge).unwrap_err();
+        let err = validate_put(&schema(), &huge).unwrap_err();
         assert!(err.to_string().contains("exceeds BIGINT"));
     }
 
@@ -1248,59 +1457,8 @@ mod tests {
     }
 
     #[test]
-    fn create_sql_leaves_the_id_column_out() {
-        // `insertNew`: the property columns only, and the id read back.
-        let sql = create_entity_sql(&schema());
-        assert_eq!(
-            sql,
-            concat!(
-                "INSERT INTO \"tbl_Account\" ",
-                "(\"sm_name\", \"sm_level\", \"sm_secret\") ",
-                "VALUES ($1, $2, $3) RETURNING \"id\""
-            )
-        );
-    }
-
-    #[test]
-    fn create_sql_casts_nested_placeholders_to_jsonb() {
-        let values = vec![
-            PropertyValue::String("cui".into()),
-            PropertyValue::Sequence(vec![PropertyValue::Int(2)]),
-        ];
-        let schema = EntitySchema::for_record("Monster", &["name", "loot"], &values).unwrap();
-        assert_eq!(
-            create_entity_sql(&schema),
-            "INSERT INTO \"tbl_Monster\" (\"sm_name\", \"sm_loot\") \
-             VALUES ($1, CAST($2::text AS JSONB)) RETURNING \"id\""
-        );
-    }
-
-    #[test]
-    fn a_propertyless_table_inserts_a_default_row() {
-        let schema = EntitySchema::for_record("Empty", &[], &[]).unwrap();
-        assert_eq!(
-            create_entity_sql(&schema),
-            "INSERT INTO \"tbl_Empty\" DEFAULT VALUES RETURNING \"id\""
-        );
-    }
-
-    #[test]
-    fn create_params_carry_the_values_without_an_id() {
-        // One parameter per column: the statement has no id placeholder, so
-        // the numbering starts where the put statement's properties begin.
-        let (params, nested) = create_entity_params(&schema(), &record(0).values).unwrap();
-        assert_eq!(params.len(), 3);
-        assert!(nested.is_empty());
-
-        let mut short = record(0);
-        short.values.truncate(1);
-        let err = create_entity_params(&schema(), &short.values).unwrap_err();
-        assert!(err.to_string().contains("carries 1 values"));
-    }
-
-    #[test]
     fn put_params_bind_the_id_then_each_value() {
-        let (params, nested) = put_entity_params(&schema(), &record(41)).unwrap();
+        let (params, nested) = put_entity_params(&schema(), &record(41), true).unwrap();
         assert_eq!(params.len(), 4);
         assert!(nested.is_empty());
         // A schema with a nested column proves the nested-text leg.
@@ -1309,7 +1467,7 @@ mod tests {
         let mut nested_record = EntityRecord::new(0);
         nested_record.db_id = 2;
         nested_record.values = values.clone();
-        let (params, nested) = put_entity_params(&schema, &nested_record).unwrap();
+        let (params, nested) = put_entity_params(&schema, &nested_record, true).unwrap();
         assert_eq!(params.len(), 2);
         assert_eq!(nested, vec!["{\"d\":null}".to_string()]);
     }

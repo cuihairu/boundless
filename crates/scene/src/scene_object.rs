@@ -97,6 +97,24 @@ impl SceneObject {
         let global = crate::type_system::object_context().get_global_id(self.type_id);
         fetch_type_name(global)
     }
+
+    /// `bigworld.natvis`'s `<DisplayString>` for `BW::SceneObject`,
+    /// migrated: `Object: {handle_} of type: {type_,u} ({typeName},s)`.
+    ///
+    /// The type name runs the same lookup the reference natvis reaches
+    /// through `s_typeNameLookup[objectTypeContext.externalMapping_[
+    /// type_ - 1]]`; an id that resolves to no name (the natvis expression
+    /// would dereference past the table) leaves the parenthesised suffix
+    /// off.
+    pub fn debug_view_string(&self) -> String {
+        match self.type_name() {
+            Some(name) => format!(
+                "Object: {} of type: {} ({})",
+                self.handle, self.type_id, name
+            ),
+            None => format!("Object: {} of type: {}", self.handle, self.type_id),
+        }
+    }
 }
 
 impl Default for SceneObject {
@@ -319,5 +337,42 @@ mod tests {
         assert!(!set.contains(&a), "differing flags hash differently");
         set.insert(a.clone());
         assert!(set.contains(&a));
+    }
+
+    #[test]
+    fn the_debug_view_string_migrates_the_natvis_display_string() {
+        // Registered type: `Object: <handle> of type: <type> (<name>)`.
+        let object = SceneObject::typed::<EntityBody>(42, SceneObjectFlags::new());
+        let name = object.type_name().unwrap();
+        assert_eq!(
+            object.debug_view_string(),
+            format!("Object: 42 of type: {} ({})", object.type_id(), name)
+        );
+
+        // An unregistered local id answers no name: the view drops the
+        // parenthesised suffix rather than dereferencing past the table.
+        let mut untyped = SceneObject::new();
+        untyped.set_handle(7);
+        assert_eq!(
+            untyped.debug_view_string(),
+            format!("Object: 7 of type: {}", untyped.type_id())
+        );
+    }
+
+    #[test]
+    fn the_migrated_debug_view_assets_name_the_rust_type() {
+        // The natvis asset keeps the reference's Type/Handle expansion items
+        // on the migrated type name.
+        let natvis = include_str!("bigworld.natvis");
+        assert!(
+            natvis.contains("<Type Name=\"scene::SceneObject\">"),
+            "{}",
+            natvis
+        );
+        assert!(natvis.contains("<Item Name=\"Type\">type_id</Item>"));
+        assert!(natvis.contains("<Item Name=\"Handle\">handle</Item>"));
+
+        // The GDB face registers the same type.
+        assert!(include_str!("bigworld_gdb.py").contains(r"^scene::SceneObject$"));
     }
 }

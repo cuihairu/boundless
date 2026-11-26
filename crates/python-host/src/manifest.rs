@@ -53,6 +53,18 @@ pub enum Scope {
     Tool,
     /// No engine source; the project resource tree supplies the module.
     Supplied,
+    /// The app set whose scripts define entity classes: the client, the
+    /// cell app and the bots tool each register `BigWorld.Entity` from
+    /// their own source file (`client/script_bigworld.cpp:987`,
+    /// `server/cellapp/cellapp.cpp:3889`,
+    /// `server/tools/bots/entity_type.cpp:110`). Neither the coarse
+    /// [`Scope::Client`] nor [`Scope::Server`] can say this without
+    /// over-claiming: the cell app carries it while the base app does not.
+    EntityApps,
+    /// The base app alone: `server/baseapp/script_bigworld.cpp:2140-2143`
+    /// is the only site that registers `BigWorld.Base` and
+    /// `BigWorld.Proxy` (and `Service`, not yet ported).
+    BaseApp,
 }
 
 impl Scope {
@@ -65,6 +77,8 @@ impl Scope {
             Scope::Server => "server",
             Scope::Tool => "tool",
             Scope::Supplied => "supplied",
+            Scope::EntityApps => "entity-apps",
+            Scope::BaseApp => "baseapp",
         }
     }
 }
@@ -568,6 +582,41 @@ static BIG_WORLD_ITEMS: &[Item] = &[
         "material kinds (owned reference)",
         "TypeError from the auto argument parse",
         "common/py_physics2.cpp:63",
+    ),
+    // The script class bases: each app registers them right after the module
+    // comes up, and every demo script's `class X(...)` names one. Direct
+    // construction stays refused -- in the reference the engine owns every
+    // instance (the scripts only subclass).
+    item(
+        "Entity",
+        Kind::Class,
+        Scope::EntityApps,
+        Status::Ported,
+        "engine-owned; direct construction refused",
+        "the entity script base type",
+        "TypeError on direct construction",
+        "client/script_bigworld.cpp:987 / server/cellapp/cellapp.cpp:3889 / \
+         server/tools/bots/entity_type.cpp:110",
+    ),
+    item(
+        "Base",
+        Kind::Class,
+        Scope::BaseApp,
+        Status::Ported,
+        "engine-owned; direct construction refused",
+        "the base script type (Py_Header(Base, PyObjectPlus))",
+        "TypeError on direct construction",
+        "server/baseapp/script_bigworld.cpp:2140",
+    ),
+    item(
+        "Proxy",
+        Kind::Class,
+        Scope::BaseApp,
+        Status::Ported,
+        "engine-owned; direct construction refused",
+        "the proxy script type, subclassing Base (Py_Header(Proxy, Base))",
+        "TypeError on direct construction",
+        "server/baseapp/script_bigworld.cpp:2142",
     ),
 ];
 
@@ -1457,11 +1506,13 @@ impl Mismatch {
 /// claims neither face). This is the runtime shape of the reference's
 /// compile-time gate, and [`crate::timers`] applies the same split to the
 /// method tables it installs.
-fn carries_role(scope: Scope, component: &str) -> bool {
+pub fn carries_role(scope: Scope, component: &str) -> bool {
     match scope {
         Scope::Both | Scope::Tool | Scope::Supplied => true,
         Scope::Server => is_server_component(component),
         Scope::Client => matches!(component, "client" | "editor"),
+        Scope::EntityApps => matches!(component, "client" | "cell" | "bot"),
+        Scope::BaseApp => component == "base",
     }
 }
 
@@ -1530,7 +1581,10 @@ fn audit(
             if surface.status != Status::Ported {
                 continue;
             }
-            let gated = matches!(surface.scope, Scope::Client | Scope::Server);
+            let gated = matches!(
+                surface.scope,
+                Scope::Client | Scope::Server | Scope::EntityApps | Scope::BaseApp
+            );
             if gated && !role(surface.scope) {
                 // The absence is the contract here; a leak is the failure.
                 if carries(entry.module, surface.name) {
@@ -1748,18 +1802,31 @@ mod tests {
     /// The per-role visible surface (BW-03-04-01/02) pinned as the strings
     /// the scenarios compare live `dir(BigWorld)` against: the server
     /// builds carry the listener pair, the timer trio and the mode marker,
-    /// the client and the editor carry the callback pair, and an unknown or
-    /// empty name carries only the shared faces.
+    /// the client and the editor carry the callback pair, the script class
+    /// bases follow their registration sites (`Entity` on the client, the
+    /// cell app and the bots tool, `Base`/`Proxy` on the base app alone),
+    /// and an unknown or empty name carries only the shared faces.
     #[test]
     fn the_role_visible_surface_is_pinned() {
         let server = "addEventListener, addFrequentTask, addTimer, component, \
                       delTimer, fetchURL, removeEventListener, serverMode";
+        let entity_apps = "Entity, addEventListener, addFrequentTask, addTimer, \
+                           component, delTimer, fetchURL, removeEventListener, \
+                           serverMode";
         for (component, expected) in [
-            ("base", server),
-            ("cell", server),
+            (
+                "base",
+                "Base, Proxy, addEventListener, addFrequentTask, \
+                      addTimer, component, delTimer, fetchURL, \
+                      removeEventListener, serverMode",
+            ),
+            ("cell", entity_apps),
             ("database", server),
-            ("bot", server),
-            ("client", "callback, cancelCallback, component, fetchURL"),
+            ("bot", entity_apps),
+            (
+                "client",
+                "Entity, callback, cancelCallback, component, fetchURL",
+            ),
             ("editor", "callback, cancelCallback, component, fetchURL"),
             ("watcher", "component, fetchURL"),
             ("", "component, fetchURL"),
@@ -1808,6 +1875,31 @@ mod tests {
             assert!(carries_role(scope, "client"), "{scope:?}");
             assert!(carries_role(scope, "cell"), "{scope:?}");
             assert!(carries_role(scope, ""), "{scope:?}");
+        }
+        // The entity-class registration split: the client, the cell app and
+        // the bots tool carry `Entity`; the base app carries `Base`/`Proxy`
+        // alone -- and notably not the database app, whose `BigWorld` never
+        // gets either (`dbapp.cpp` only imports the module).
+        for entity in ["client", "cell", "bot"] {
+            assert!(
+                carries_role(Scope::EntityApps, entity),
+                "Entity face on {entity}"
+            );
+            assert!(
+                !carries_role(Scope::BaseApp, entity),
+                "baseapp face on {entity}"
+            );
+        }
+        assert!(carries_role(Scope::BaseApp, "base"), "baseapp face on base");
+        for outside in ["database", "editor", "watcher", ""] {
+            assert!(
+                !carries_role(Scope::EntityApps, outside),
+                "Entity face on {outside}"
+            );
+            assert!(
+                !carries_role(Scope::BaseApp, outside),
+                "baseapp face on {outside}"
+            );
         }
     }
 
@@ -1867,6 +1959,9 @@ mod tests {
                 "delTimer",
                 "addFrequentTask",
                 "serverMode",
+                "Entity",
+                "Base",
+                "Proxy",
             ]
         );
         let math = find("Math").unwrap();
@@ -1950,6 +2045,8 @@ mod tests {
             (Scope::Server, "server"),
             (Scope::Tool, "tool"),
             (Scope::Supplied, "supplied"),
+            (Scope::EntityApps, "entity-apps"),
+            (Scope::BaseApp, "baseapp"),
         ] {
             assert_eq!(scope.as_str(), word);
         }

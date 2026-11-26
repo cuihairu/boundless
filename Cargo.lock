@@ -114,11 +114,13 @@ checksum = "175571dd1d178ced59193a6fc02dde1b972eb0bc56c892cde9beeceac5bf0f6b"
 name = "asset-pipeline"
 version = "0.1.0"
 dependencies = [
+ "client",
  "compiled-space",
  "foundation",
  "physics",
  "regex",
  "resources",
+ "terrain",
 ]
 
 [[package]]
@@ -301,6 +303,7 @@ name = "chunk"
 version = "0.1.0"
 dependencies = [
  "foundation",
+ "physics",
  "resources",
  "terrain",
 ]
@@ -361,9 +364,12 @@ checksum = "e0921b3876b3a1df8a1c9f912e7f94342458022c2e84288015893d83c4d62a79"
 name = "client"
 version = "0.1.0"
 dependencies = [
+ "chunk",
  "flate2",
  "foundation",
+ "physics",
  "resources",
+ "waypoint",
  "winit",
 ]
 
@@ -999,6 +1005,13 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "launcher"
+version = "0.1.0"
+dependencies = [
+ "resources",
 ]
 
 [[package]]
@@ -2014,6 +2027,7 @@ dependencies = [
  "mercury",
  "physics",
  "platform",
+ "python-host",
  "regex",
  "resources",
  "sha2 0.10.9",
@@ -2194,6 +2208,8 @@ dependencies = [
 name = "test-support"
 version = "0.1.0"
 dependencies = [
+ "asset-pipeline",
+ "chunk",
  "foundation",
  "libc",
  "platform",

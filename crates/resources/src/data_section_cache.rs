@@ -17,12 +17,24 @@ use std::sync::Arc;
 /// `DEFAULT_CACHE_SIZE`: 100 KiB.
 pub const DEFAULT_CACHE_SIZE: usize = 100 * 1024;
 
+/// A chain slot. Slots live in the arena vector; freed slots are threaded
+/// onto an intrusive free chain through `next_older` and reused by the
+/// next `add`, so LRU relinks (`find` on a hit, purges) never allocate —
+/// the reference's `moveToHead` relinks raw list nodes the same way.
+/// `NONE` marks an absent neighbour.
 struct CacheNode<T> {
+    /// Path copy: `purgeLRU` knows only the slot index, and chain walks
+    /// (`lru_order`) need names without a reverse map. Allocated once at
+    /// `add`, alongside the map key.
+    name: String,
     bytes: usize,
-    section: Arc<T>,
+    /// `None` only while the slot sits on the free chain — the section is
+    /// dropped when the entry is freed, like the reference deleting the
+    /// node. Live slots always hold `Some`.
+    section: Option<Arc<T>>,
     /// newer -> older; the head is the most recently used entry.
-    prev_to_newer: Option<String>,
-    next_older: Option<String>,
+    prev_to_newer: usize,
+    next_older: usize,
 }
 
 /// `DataSectionCache`: LRU of sections keyed by full resource path.
@@ -31,10 +43,21 @@ pub struct DataSectionCache<T> {
     current_bytes: usize,
     hits: usize,
     misses: usize,
-    map: HashMap<String, CacheNode<T>>,
-    head: Option<String>,
-    tail: Option<String>,
+    /// Path -> arena slot. Each entry costs two Strings at `add` (the
+    /// key and the slot's `name` copy) and nothing afterwards.
+    map: HashMap<String, usize>,
+    /// The arena. Slots are recycled through the free chain — chain
+    /// indices stay valid because a slot is unlinked before it is freed.
+    slots: Vec<CacheNode<T>>,
+    /// Head of the intrusive free chain (dead slots threaded through
+    /// `next_older`); `NONE` when no slot is free.
+    free: usize,
+    head: usize,
+    tail: usize,
 }
+
+/// Absent neighbour / no entry.
+const NONE: usize = usize::MAX;
 
 impl<T> Default for DataSectionCache<T> {
     fn default() -> Self {
@@ -62,8 +85,10 @@ impl<T> DataSectionCache<T> {
             hits: 0,
             misses: 0,
             map: HashMap::new(),
-            head: None,
-            tail: None,
+            slots: Vec::new(),
+            free: NONE,
+            head: NONE,
+            tail: NONE,
         }
     }
 
@@ -75,62 +100,85 @@ impl<T> DataSectionCache<T> {
             return;
         }
 
-        while self.head.is_some() && self.current_bytes + bytes > self.max_bytes {
+        while self.head != NONE && self.current_bytes + bytes > self.max_bytes {
             self.purge_lru();
         }
 
-        if let Some(node) = self.map.get_mut(name) {
+        if let Some(&slot) = self.map.get(name) {
+            let node = &mut self.slots[slot];
             self.current_bytes -= node.bytes;
             node.bytes = bytes;
-            node.section = section;
+            node.section = Some(section);
             self.current_bytes += bytes;
             return;
         }
 
-        let node = CacheNode {
-            bytes,
-            section,
-            prev_to_newer: None,
-            next_older: self.head.clone(),
-        };
-        if let Some(head) = &self.head {
-            self.map.get_mut(head).unwrap().prev_to_newer = Some(name.to_string());
+        let slot = if self.free != NONE {
+            let slot = self.free;
+            self.free = self.slots[slot].next_older;
+            let node = &mut self.slots[slot];
+            node.name = name.to_string();
+            node.bytes = bytes;
+            node.section = Some(section);
+            node.prev_to_newer = NONE;
+            node.next_older = self.head;
+            slot
         } else {
-            self.tail = Some(name.to_string());
+            self.slots.push(CacheNode {
+                name: name.to_string(),
+                bytes,
+                section: Some(section),
+                prev_to_newer: NONE,
+                next_older: self.head,
+            });
+            self.slots.len() - 1
+        };
+        if self.head != NONE {
+            self.slots[self.head].prev_to_newer = slot;
+        } else {
+            self.tail = slot;
         }
-        self.head = Some(name.to_string());
-        self.map.insert(name.to_string(), node);
+        self.head = slot;
+        self.map.insert(name.to_string(), slot);
         self.current_bytes += bytes;
     }
 
     /// `find`: hit returns the section and moves it to the head; miss
     /// counts a miss and returns `None`.
     pub fn find(&mut self, name: &str) -> Option<Arc<T>> {
-        if self.map.contains_key(name) {
-            self.move_to_head(name);
-            self.hits += 1;
-            self.map.get(name).map(|node| Arc::clone(&node.section))
-        } else {
-            self.misses += 1;
-            None
-        }
+        let slot = match self.map.get(name) {
+            Some(&slot) => slot,
+            None => {
+                self.misses += 1;
+                return None;
+            }
+        };
+        self.move_to_head(slot);
+        self.hits += 1;
+        Some(Arc::clone(
+            self.slots[slot].section.as_ref().expect("live slot"),
+        ))
     }
 
     /// `remove`: drops one entry (the `BWResource::purge` core).
     pub fn remove(&mut self, name: &str) {
-        if self.unlink(name) {
+        if let Some(&slot) = self.map.get(name) {
             // unlink leaves the totals alone (moveToHead shares it), so
             // the caller settles the bytes like the reference's remove.
-            self.current_bytes -= self.map[name].bytes;
+            self.current_bytes -= self.slots[slot].bytes;
+            self.unlink(slot);
             self.map.remove(name);
+            self.free_slot(slot);
         }
     }
 
     /// `clear`: empties the cache and resets every statistic.
     pub fn clear(&mut self) {
         self.map.clear();
-        self.head = None;
-        self.tail = None;
+        self.slots.clear();
+        self.free = NONE;
+        self.head = NONE;
+        self.tail = NONE;
         self.current_bytes = 0;
         self.hits = 0;
         self.misses = 0;
@@ -138,61 +186,72 @@ impl<T> DataSectionCache<T> {
 
     /// `purgeLRU`: drops the least recently used entry.
     pub fn purge_lru(&mut self) {
-        if let Some(tail) = self.tail.clone() {
-            self.current_bytes -= self.map[&tail].bytes;
-            self.unlink(&tail);
-            self.map.remove(&tail);
+        if self.tail == NONE {
+            return;
         }
+        let tail = self.tail;
+        self.current_bytes -= self.slots[tail].bytes;
+        self.map.remove(self.slots[tail].name.as_str());
+        self.unlink(tail);
+        self.free_slot(tail);
     }
 
     /// `moveToHead`.
-    fn move_to_head(&mut self, name: &str) {
-        if self.head.as_deref() == Some(name) {
+    fn move_to_head(&mut self, slot: usize) {
+        if self.head == slot {
             return;
         }
-        self.unlink(name);
-        let head = self.head.clone().unwrap();
-        self.map.get_mut(&head).unwrap().prev_to_newer = Some(name.to_string());
-        let node = self.map.get_mut(name).unwrap();
-        node.prev_to_newer = None;
-        node.next_older = Some(head);
-        self.head = Some(name.to_string());
+        self.unlink(slot);
+        let head = self.head;
+        self.slots[head].prev_to_newer = slot;
+        let node = &mut self.slots[slot];
+        node.prev_to_newer = NONE;
+        node.next_older = head;
+        self.head = slot;
     }
 
     /// `unlinkNode`: detaches a node from the chain by position -- only
     /// node, head, tail, or middle. Byte totals are the callers' job (the
     /// reference subtracts in `remove`/`purgeLRU` only, so `moveToHead`'s
-    /// relink keeps the accounting). Returns whether the node existed.
-    fn unlink(&mut self, name: &str) -> bool {
-        if !self.map.contains_key(name) {
-            return false;
-        }
+    /// relink keeps the accounting).
+    fn unlink(&mut self, slot: usize) {
         // Case 1: only node.
-        if self.head.as_deref() == Some(name) && self.tail.as_deref() == Some(name) {
-            self.head = None;
-            self.tail = None;
+        if self.head == slot && self.tail == slot {
+            self.head = NONE;
+            self.tail = NONE;
         }
         // Case 2: head of the chain (a newer entry exists below it).
-        else if self.head.as_deref() == Some(name) {
-            let older = self.map[name].next_older.clone().unwrap();
-            self.head = Some(older.clone());
-            self.map.get_mut(&older).unwrap().prev_to_newer = None;
+        else if self.head == slot {
+            let older = self.slots[slot].next_older;
+            self.head = older;
+            self.slots[older].prev_to_newer = NONE;
         }
         // Case 3: tail of the chain (a newer entry exists above it).
-        else if self.tail.as_deref() == Some(name) {
-            let newer = self.map[name].prev_to_newer.clone().unwrap();
-            self.tail = Some(newer.clone());
-            self.map.get_mut(&newer).unwrap().next_older = None;
+        else if self.tail == slot {
+            let newer = self.slots[slot].prev_to_newer;
+            self.tail = newer;
+            self.slots[newer].next_older = NONE;
         }
         // Case 4: in the middle; a non-head non-tail node always has both
         // neighbours, so rejoin them directly.
         else {
-            let older = self.map[name].next_older.clone().unwrap();
-            let newer = self.map[name].prev_to_newer.clone().unwrap();
-            self.map.get_mut(&older).unwrap().prev_to_newer = Some(newer.clone());
-            self.map.get_mut(&newer).unwrap().next_older = Some(older);
+            let older = self.slots[slot].next_older;
+            let newer = self.slots[slot].prev_to_newer;
+            self.slots[older].prev_to_newer = newer;
+            self.slots[newer].next_older = older;
         }
-        true
+    }
+
+    /// Pushes a slot onto the free chain: clears the name (the capacity
+    /// stays for the next resident), drops the section, and threads the
+    /// slot through `next_older`. Never allocates.
+    fn free_slot(&mut self, slot: usize) {
+        let node = &mut self.slots[slot];
+        node.name.clear();
+        node.section = None;
+        node.prev_to_newer = NONE;
+        node.next_older = self.free;
+        self.free = slot;
     }
 
     /// Current budget (`cache/maximum bytes`).
@@ -228,11 +287,11 @@ impl<T> DataSectionCache<T> {
     /// Chain order for tests/debugging: head (most recent) first.
     pub fn lru_order(&self) -> Vec<(String, usize)> {
         let mut order = Vec::with_capacity(self.map.len());
-        let mut cursor = self.head.clone();
-        while let Some(name) = cursor {
-            let node = &self.map[&name];
-            order.push((name.clone(), node.bytes));
-            cursor = node.next_older.clone();
+        let mut cursor = self.head;
+        while cursor != NONE {
+            let node = &self.slots[cursor];
+            order.push((node.name.clone(), node.bytes));
+            cursor = node.next_older;
         }
         order
     }
