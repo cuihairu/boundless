@@ -648,6 +648,10 @@ pub struct Witness {
     /// plain vector with swap-pop removal keeps the same behaviour. The real
     /// heap ordering arrives with BW-08-03-03.
     entity_queue: Vec<EntityId>,
+    /// Cached minimum priority over `entity_queue` — `None` when unknown
+    /// (stale after any removal or queued-priority change). `add_to_seen`'s
+    /// join-at-minimum read is O(1) while it stays valid.
+    queue_min: Option<f64>,
     /// `freeAliases_` — LIFO pool; slot 0xff is reserved for `NO_ID_ALIAS`,
     /// so the filled pool is 0..254 ascending and allocation pops the back.
     free_aliases: Vec<u8>,
@@ -708,6 +712,7 @@ impl Witness {
             entities,
             aoi_map: HashMap::new(),
             entity_queue: Vec::new(),
+            queue_min: None,
             free_aliases: (0..=254u8).collect(),
             bundle: Vec::new(),
             warnings: Vec::new(),
@@ -946,14 +951,22 @@ impl Witness {
         let initial_priority = if self.entity_queue.is_empty() {
             0.0
         } else {
-            self.entity_queue
-                .iter()
-                .filter_map(|qid| self.aoi_map.get(qid).map(|c| c.priority()))
-                .fold(f64::INFINITY, f64::min)
+            match self.queue_min {
+                Some(min) => min,
+                None => {
+                    let min = self
+                        .entity_queue
+                        .iter()
+                        .filter_map(|qid| self.aoi_map.get(qid).map(|c| c.priority()))
+                        .fold(f64::INFINITY, f64::min);
+                    self.queue_min = Some(min);
+                    min
+                }
+            }
         };
 
         self.cache_mut(id).set_priority(initial_priority);
-        self.entity_queue.push(id);
+        self.queue_push(id);
     }
 
     /// `Witness::requestEntityUpdate` — the client replied to our enterAoI;
@@ -1161,6 +1174,9 @@ impl Witness {
             self.send_create(id);
             let entity = self.entities.get(&id).cloned().expect("entity in AoI");
             self.cache_mut(id).update_priority(&entity, origin);
+            // The entry stays queued and its priority rose: the cached
+            // minimum may now be stale-low.
+            self.queue_min = None;
             false
         } else if self.cache_mut(id).has_flag(REFRESH) {
             self.cache_mut(id).clear_flag(REFRESH);
@@ -1185,20 +1201,19 @@ impl Witness {
         })
     }
 
-    /// `std::pop_heap` — take the front out of the queue.
-    fn queue_pop(&mut self) -> Option<EntityId> {
-        let front = self.queue_front()?;
-        let index = self
-            .entity_queue
-            .iter()
-            .position(|id| *id == front)
-            .expect("front still queued");
-        self.entity_queue.swap_remove(index);
-        Some(front)
-    }
-
-    /// `std::push_heap` / `std::make_heap` — (re)join the queue.
+    /// `std::push_heap` / `std::make_heap` — (re)join the queue. A push can
+    /// only lower the cached minimum, so a valid cache folds the new member
+    /// in; an unknown cache stays unknown (the next `add_to_seen` scan
+    /// recomputes it).
     fn queue_push(&mut self, id: EntityId) {
+        if let Some(min) = self.queue_min {
+            let priority = self
+                .aoi_map
+                .get(&id)
+                .map(|cache| cache.priority())
+                .unwrap_or(f64::INFINITY);
+            self.queue_min = Some(min.min(priority));
+        }
         self.entity_queue.push(id);
     }
 
@@ -1639,13 +1654,29 @@ impl Witness {
         // the reference.
         let mut popped: Vec<(EntityId, bool)> = Vec::new();
 
-        while let Some(id) = self.queue_front() {
+        // The queue only shrinks during the pass — every priority mutation
+        // below hits an already-popped id — so one sort reproduces exactly
+        // the min-first sequence the per-pop linear scans produced
+        // (`queue_front` is a total order: priority bits then id). Pops
+        // advance a cursor; the visited prefix is drained afterwards.
+        self.entity_queue.sort_by_key(|id| {
+            let priority = self
+                .aoi_map
+                .get(id)
+                .map(|cache| cache.priority())
+                .unwrap_or(f64::INFINITY);
+            (priority.to_bits(), *id)
+        });
+
+        let mut cursor = 0usize;
+        while cursor < self.entity_queue.len() {
+            let id = self.entity_queue[cursor];
             let front_priority = self.aoi_map.get(&id).map(|c| c.priority()).unwrap_or(0.0);
             if front_priority >= max_priority || self.bundle_bytes as i32 >= desired_packet_size - 2
             {
                 break;
             }
-            self.queue_pop();
+            cursor += 1;
             let was_prioritised = self
                 .aoi_map
                 .get(&id)
@@ -1692,6 +1723,11 @@ impl Witness {
                 popped.push((id, was_prioritised));
             }
         }
+
+        // The visited prefix left the queue; the minimum is unknown until
+        // the next scan (or is re-established by the requeue pushes below).
+        self.entity_queue.drain(..cursor);
+        self.queue_min = None;
 
         // Pay back any budget overshoot next tick.
         self.bandwidth_deficit = (self.bundle_bytes as i32 - desired_packet_size).max(0);
@@ -1774,6 +1810,7 @@ impl Witness {
             if !cache.is_updatable() && self.apply_state_change(id, origin) {
                 // the reference swap-pops the vacated slot
                 self.entity_queue.swap_remove(i);
+                self.queue_min = None;
             } else {
                 i += 1;
             }
