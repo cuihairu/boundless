@@ -44,8 +44,10 @@ pub fn layer_of(crate_name: &str) -> Option<Layer> {
         | "db-postgres" | "asset-pipeline" | "plugin-host" | "chunk" | "load"
         | "compiled-space" | "physics" | "watcher" | "scene" | "waypoint" | "waypoint-gen"
         | "terrain" | "profiler" | "launcher" => Some(LAYER_DOMAIN),
-        "server-runtime" => Some(LAYER_ROLE_RUNTIME),
-        "boundless-server" | "bots" | "client" | "test-support" => Some(LAYER_APPLICATION),
+        "server-runtime" | "client" => Some(LAYER_ROLE_RUNTIME),
+        "boundless-server" | "bots" | "boundless-client" | "boundless-editor" | "test-support" => {
+            Some(LAYER_APPLICATION)
+        }
         _ => None,
     }
 }
