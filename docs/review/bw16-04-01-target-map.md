@@ -87,6 +87,8 @@ BW-00-03-05）承载：
 | `mayavisualexporter` | `crates/asset-pipeline/src/maya_visual_exporter.rs`（5893 行） | 内联（48 测） | `0538e8c` 在树；lane/bw15-platform `maya_exporter.rs`（`c37ba81`，MayaIo trait 面）同项双交付，主席择一 |
 | `bw_world_machine_import` | `crates/asset-pipeline/src/world_machine_import.rs`（1355 行） | 内联（19 测） | `a14093c`（=`8322e9d` cherry-pick）并轨入库（2026-11-26） |
 | `launcher`（tools/bwlauncher） | `crates/launcher` | `crates/launcher/tests.rs` + 内联（45 测） | `e18dc94`（BW-13-05-05，100%）并轨入库（2026-11-26） |
+| `visual_studio`（调试器字段视图，勘误迁移） | `crates/scene/src/{bigworld.natvis,bigworld_gdb.py}` + `SceneObject::debug_view_string()` | 内联 2 测（asset 保真+字符串核，scene 40 测全绿） | BW-13-06-04 `06ea15d`；`lib.rs` `debugger_visualizer` 真接线，2026-11-26 自 §2 迁入 |
+| `exporter_common`（无独立构建目标，源并入导出器） | `crates/asset-pipeline/src/{visual_exporter,maya_visual_exporter,world_machine_import}.rs` | 导出器内联 98 测（19/31/48） | BW-13-06-02 `8e9b8d0` 登记+导出器模块承载，2026-11-26 自 §2 迁入 |
 | `client`（可执行入口，Linux 腿） | `apps/client`（`boundless-client`） | `crates/client/tests/map_display_baseline.rs`（2 测） | `02bedbb`（BW-15-02-03 固定地图显示：map_view+软件设备+TGA，六绑/8 帧二跑同） |
 | `modeleditor`/`worldeditor`（可执行外壳，Linux 腿） | `apps/editor`（`boundless-editor`） | `apps/editor/tests/edit_reload.rs`（2 测） | `02bedbb`（BW-15-02-03 固定地图编辑：ed_save 移 tree00 模型+重载验证，二跑逐字节同；Windows/macOS 外壳仍待 BW-15-03/04） |
 

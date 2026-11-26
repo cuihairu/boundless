@@ -11,6 +11,8 @@
 
 pub mod flood;
 pub mod generator;
+pub mod navmesh_cache;
+pub mod navmesh_processor;
 pub mod view;
 pub mod workflow;
 
