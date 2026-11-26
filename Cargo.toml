@@ -103,3 +103,8 @@ terrain = { path = "crates/terrain" }
 [profile.release]
 opt-level = 3
 debug = true
+# OPT-14-01-02: the packaged server shipped 111 MiB of debuginfo in a
+# 116 MiB binary; strip it from the installed artifact. Symbols are useful
+# in a local debug build, not in the shipped tarball — the baseline and
+# first-run measurements are in docs/review/opt-14-01-02-package-layout.md.
+strip = "symbols"
