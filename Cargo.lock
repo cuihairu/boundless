@@ -2026,6 +2026,7 @@ dependencies = [
  "libc",
  "md-5 0.10.6",
  "mercury",
+ "message_logger",
  "physics",
  "platform",
  "python-host",
