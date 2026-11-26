@@ -2890,14 +2890,14 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。他席已交付并勾行未进 main：bw14-script-host `37ec32a`+勾 `9dcd2db`（chunk/tests/map_load_baseline.rs 对原版夹具 chunk_space 18×2 网格走全套流式面 mapping→gather_chunks 37 候选→load_and_bind 6 chunk→focus→双半板 slab 过 add_obstacle 门，冷启动计数分配器+VmRSS 包夹：冷启 1.6-2.5ms/2025 allocs）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。他席已交付并勾行未进 main：bw14-script-host `7fc6d76`+勾 `7c6aea6`（chunk/tests/map_stream_opt.rs shipped scan 卸两格重载全周期：候选=BwResource 段缓存 LRU 同 load_and_bind 解析面 vs 原始读+解析基线，峰值内存=计数分配器 LIVE 高水位 PEAK 单元，报告 opt-10-01-02-map-stream-opt.md）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。他席已交付并勾行未进 main：bw14-script-host `bfde122`+勾 `b7b3bf7`（client/tests/query_cache_opt.rs 双腿：导航=六单点集 permissive 链 outside chunk，find_path ReadWriteCache 骑成员 NavigatorCache 逐跳 vs 重算面每调 scratch，同批起点；碰撞=find_drop_point 打 BW-10-07-04 clientquery 夹具世界六 RAY 探针×40）；主席并入后按勾行态处理，本行保持开。
-- [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
+- [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。他席已交付未进 main：bw14-script-host `eb163d4`+勾 `76f33f0`（crates/client/tests/map_rerun_fixtures.rs 双腿复跑——路径=BW-10-07-03 genmap 双 chunk 世界五条 XPATH 探针缓存步进对真相链恒等；碰撞=100 探针格走客户端 findDropPoint 全部 40m 处止 10m 板 ±1e-3+第二遍位级恒等）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-11-01 三端固定镜头基线
 
 优化各端 GPU 上传、渲染批次、资源流与客户端帧调度。比较帧时间和显存，用固定镜头做视觉回归。
 
-- [ ] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。
-- [ ] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。
+- [ ] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。他席已交付未进 main：bw14-script-host `877e016`+勾 `09ec792`（crates/client/tests/render_baseline_opt.rs 三端 linux/windows/macos 同一固定镜头 64 帧，帧时间逐帧 192 行落 opt-11-01-01-render-baseline.md；显存=计数分配器结构账——设备创建 2 allocs/1228848 bytes 恒不涨、逐帧 0 allocs）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。他席已交付未进 main：bw14-script-host `5313db6`+勾 `cc9797e`（crates/client/tests/render_batch_opt.rs 双面上传评估——批量候选 481 写/帧 vs shipped 307200 写/帧=7-8× 省，帧时间 ~20ms→~6.6ms，三端各 64 帧逐帧全像素向量相等+摘要相等）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。
 - [ ] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。
 
@@ -4454,14 +4454,14 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。他席已交付并勾行未进 main：bw14-script-host `37ec32a`+勾 `9dcd2db`（chunk/tests/map_load_baseline.rs 对原版夹具 chunk_space 18×2 网格走全套流式面 mapping→gather_chunks 37 候选→load_and_bind 6 chunk→focus→双半板 slab 过 add_obstacle 门，冷启动计数分配器+VmRSS 包夹：冷启 1.6-2.5ms/2025 allocs）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。他席已交付并勾行未进 main：bw14-script-host `7fc6d76`+勾 `7c6aea6`（chunk/tests/map_stream_opt.rs shipped scan 卸两格重载全周期：候选=BwResource 段缓存 LRU 同 load_and_bind 解析面 vs 原始读+解析基线，峰值内存=计数分配器 LIVE 高水位 PEAK 单元，报告 opt-10-01-02-map-stream-opt.md）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。他席已交付并勾行未进 main：bw14-script-host `bfde122`+勾 `b7b3bf7`（client/tests/query_cache_opt.rs 双腿：导航=六单点集 permissive 链 outside chunk，find_path ReadWriteCache 骑成员 NavigatorCache 逐跳 vs 重算面每调 scratch，同批起点；碰撞=find_drop_point 打 BW-10-07-04 clientquery 夹具世界六 RAY 探针×40）；主席并入后按勾行态处理，本行保持开。
-- [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
+- [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。他席已交付未进 main：bw14-script-host `eb163d4`+勾 `76f33f0`（crates/client/tests/map_rerun_fixtures.rs 双腿复跑——路径=BW-10-07-03 genmap 双 chunk 世界五条 XPATH 探针缓存步进对真相链恒等；碰撞=100 探针格走客户端 findDropPoint 全部 40m 处止 10m 板 ±1e-3+第二遍位级恒等）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-11-01 三端固定镜头基线
 
 优化各端 GPU 上传、渲染批次、资源流与客户端帧调度。比较帧时间和显存，用固定镜头做视觉回归。
 
-- [ ] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。
-- [ ] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。
+- [ ] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。他席已交付未进 main：bw14-script-host `877e016`+勾 `09ec792`（crates/client/tests/render_baseline_opt.rs 三端 linux/windows/macos 同一固定镜头 64 帧，帧时间逐帧 192 行落 opt-11-01-01-render-baseline.md；显存=计数分配器结构账——设备创建 2 allocs/1228848 bytes 恒不涨、逐帧 0 allocs）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。他席已交付未进 main：bw14-script-host `5313db6`+勾 `cc9797e`（crates/client/tests/render_batch_opt.rs 双面上传评估——批量候选 481 写/帧 vs shipped 307200 写/帧=7-8× 省，帧时间 ~20ms→~6.6ms，三端各 64 帧逐帧全像素向量相等+摘要相等）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。
 - [ ] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。
 
@@ -5979,14 +5979,14 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。他席已交付并勾行未进 main：bw14-script-host `37ec32a`+勾 `9dcd2db`（chunk/tests/map_load_baseline.rs 对原版夹具 chunk_space 18×2 网格走全套流式面 mapping→gather_chunks 37 候选→load_and_bind 6 chunk→focus→双半板 slab 过 add_obstacle 门，冷启动计数分配器+VmRSS 包夹：冷启 1.6-2.5ms/2025 allocs）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。他席已交付并勾行未进 main：bw14-script-host `7fc6d76`+勾 `7c6aea6`（chunk/tests/map_stream_opt.rs shipped scan 卸两格重载全周期：候选=BwResource 段缓存 LRU 同 load_and_bind 解析面 vs 原始读+解析基线，峰值内存=计数分配器 LIVE 高水位 PEAK 单元，报告 opt-10-01-02-map-stream-opt.md）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。他席已交付并勾行未进 main：bw14-script-host `bfde122`+勾 `b7b3bf7`（client/tests/query_cache_opt.rs 双腿：导航=六单点集 permissive 链 outside chunk，find_path ReadWriteCache 骑成员 NavigatorCache 逐跳 vs 重算面每调 scratch，同批起点；碰撞=find_drop_point 打 BW-10-07-04 clientquery 夹具世界六 RAY 探针×40）；主席并入后按勾行态处理，本行保持开。
-- [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
+- [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。他席已交付未进 main：bw14-script-host `eb163d4`+勾 `76f33f0`（crates/client/tests/map_rerun_fixtures.rs 双腿复跑——路径=BW-10-07-03 genmap 双 chunk 世界五条 XPATH 探针缓存步进对真相链恒等；碰撞=100 探针格走客户端 findDropPoint 全部 40m 处止 10m 板 ±1e-3+第二遍位级恒等）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-11-01 三端固定镜头基线
 
 优化各端 GPU 上传、渲染批次、资源流与客户端帧调度。比较帧时间和显存，用固定镜头做视觉回归。
 
-- [ ] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。
-- [ ] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。
+- [ ] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。他席已交付未进 main：bw14-script-host `877e016`+勾 `09ec792`（crates/client/tests/render_baseline_opt.rs 三端 linux/windows/macos 同一固定镜头 64 帧，帧时间逐帧 192 行落 opt-11-01-01-render-baseline.md；显存=计数分配器结构账——设备创建 2 allocs/1228848 bytes 恒不涨、逐帧 0 allocs）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。他席已交付未进 main：bw14-script-host `5313db6`+勾 `cc9797e`（crates/client/tests/render_batch_opt.rs 双面上传评估——批量候选 481 写/帧 vs shipped 307200 写/帧=7-8× 省，帧时间 ~20ms→~6.6ms，三端各 64 帧逐帧全像素向量相等+摘要相等）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。
 - [ ] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。
 
@@ -7504,14 +7504,14 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。他席已交付并勾行未进 main：bw14-script-host `37ec32a`+勾 `9dcd2db`（chunk/tests/map_load_baseline.rs 对原版夹具 chunk_space 18×2 网格走全套流式面 mapping→gather_chunks 37 候选→load_and_bind 6 chunk→focus→双半板 slab 过 add_obstacle 门，冷启动计数分配器+VmRSS 包夹：冷启 1.6-2.5ms/2025 allocs）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。他席已交付并勾行未进 main：bw14-script-host `7fc6d76`+勾 `7c6aea6`（chunk/tests/map_stream_opt.rs shipped scan 卸两格重载全周期：候选=BwResource 段缓存 LRU 同 load_and_bind 解析面 vs 原始读+解析基线，峰值内存=计数分配器 LIVE 高水位 PEAK 单元，报告 opt-10-01-02-map-stream-opt.md）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。他席已交付并勾行未进 main：bw14-script-host `bfde122`+勾 `b7b3bf7`（client/tests/query_cache_opt.rs 双腿：导航=六单点集 permissive 链 outside chunk，find_path ReadWriteCache 骑成员 NavigatorCache 逐跳 vs 重算面每调 scratch，同批起点；碰撞=find_drop_point 打 BW-10-07-04 clientquery 夹具世界六 RAY 探针×40）；主席并入后按勾行态处理，本行保持开。
-- [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
+- [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。他席已交付未进 main：bw14-script-host `eb163d4`+勾 `76f33f0`（crates/client/tests/map_rerun_fixtures.rs 双腿复跑——路径=BW-10-07-03 genmap 双 chunk 世界五条 XPATH 探针缓存步进对真相链恒等；碰撞=100 探针格走客户端 findDropPoint 全部 40m 处止 10m 板 ±1e-3+第二遍位级恒等）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-11-01 三端固定镜头基线
 
 优化各端 GPU 上传、渲染批次、资源流与客户端帧调度。比较帧时间和显存，用固定镜头做视觉回归。
 
-- [ ] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。
-- [ ] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。
+- [ ] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。他席已交付未进 main：bw14-script-host `877e016`+勾 `09ec792`（crates/client/tests/render_baseline_opt.rs 三端 linux/windows/macos 同一固定镜头 64 帧，帧时间逐帧 192 行落 opt-11-01-01-render-baseline.md；显存=计数分配器结构账——设备创建 2 allocs/1228848 bytes 恒不涨、逐帧 0 allocs）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。他席已交付未进 main：bw14-script-host `5313db6`+勾 `cc9797e`（crates/client/tests/render_batch_opt.rs 双面上传评估——批量候选 481 写/帧 vs shipped 307200 写/帧=7-8× 省，帧时间 ~20ms→~6.6ms，三端各 64 帧逐帧全像素向量相等+摘要相等）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。
 - [ ] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。
 
@@ -9068,14 +9068,14 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。他席已交付并勾行未进 main：bw14-script-host `37ec32a`+勾 `9dcd2db`（chunk/tests/map_load_baseline.rs 对原版夹具 chunk_space 18×2 网格走全套流式面 mapping→gather_chunks 37 候选→load_and_bind 6 chunk→focus→双半板 slab 过 add_obstacle 门，冷启动计数分配器+VmRSS 包夹：冷启 1.6-2.5ms/2025 allocs）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。他席已交付并勾行未进 main：bw14-script-host `7fc6d76`+勾 `7c6aea6`（chunk/tests/map_stream_opt.rs shipped scan 卸两格重载全周期：候选=BwResource 段缓存 LRU 同 load_and_bind 解析面 vs 原始读+解析基线，峰值内存=计数分配器 LIVE 高水位 PEAK 单元，报告 opt-10-01-02-map-stream-opt.md）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。他席已交付并勾行未进 main：bw14-script-host `bfde122`+勾 `b7b3bf7`（client/tests/query_cache_opt.rs 双腿：导航=六单点集 permissive 链 outside chunk，find_path ReadWriteCache 骑成员 NavigatorCache 逐跳 vs 重算面每调 scratch，同批起点；碰撞=find_drop_point 打 BW-10-07-04 clientquery 夹具世界六 RAY 探针×40）；主席并入后按勾行态处理，本行保持开。
-- [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
+- [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。他席已交付未进 main：bw14-script-host `eb163d4`+勾 `76f33f0`（crates/client/tests/map_rerun_fixtures.rs 双腿复跑——路径=BW-10-07-03 genmap 双 chunk 世界五条 XPATH 探针缓存步进对真相链恒等；碰撞=100 探针格走客户端 findDropPoint 全部 40m 处止 10m 板 ±1e-3+第二遍位级恒等）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-11-01 三端固定镜头基线
 
 优化各端 GPU 上传、渲染批次、资源流与客户端帧调度。比较帧时间和显存，用固定镜头做视觉回归。
 
-- [ ] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。
-- [ ] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。
+- [ ] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。他席已交付未进 main：bw14-script-host `877e016`+勾 `09ec792`（crates/client/tests/render_baseline_opt.rs 三端 linux/windows/macos 同一固定镜头 64 帧，帧时间逐帧 192 行落 opt-11-01-01-render-baseline.md；显存=计数分配器结构账——设备创建 2 allocs/1228848 bytes 恒不涨、逐帧 0 allocs）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。他席已交付未进 main：bw14-script-host `5313db6`+勾 `cc9797e`（crates/client/tests/render_batch_opt.rs 双面上传评估——批量候选 481 写/帧 vs shipped 307200 写/帧=7-8× 省，帧时间 ~20ms→~6.6ms，三端各 64 帧逐帧全像素向量相等+摘要相等）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。
 - [ ] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。
 
@@ -10593,14 +10593,14 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [ ] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。他席已交付并勾行未进 main：bw14-script-host `37ec32a`+勾 `9dcd2db`（chunk/tests/map_load_baseline.rs 对原版夹具 chunk_space 18×2 网格走全套流式面 mapping→gather_chunks 37 候选→load_and_bind 6 chunk→focus→双半板 slab 过 add_obstacle 门，冷启动计数分配器+VmRSS 包夹：冷启 1.6-2.5ms/2025 allocs）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。他席已交付并勾行未进 main：bw14-script-host `7fc6d76`+勾 `7c6aea6`（chunk/tests/map_stream_opt.rs shipped scan 卸两格重载全周期：候选=BwResource 段缓存 LRU 同 load_and_bind 解析面 vs 原始读+解析基线，峰值内存=计数分配器 LIVE 高水位 PEAK 单元，报告 opt-10-01-02-map-stream-opt.md）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。他席已交付并勾行未进 main：bw14-script-host `bfde122`+勾 `b7b3bf7`（client/tests/query_cache_opt.rs 双腿：导航=六单点集 permissive 链 outside chunk，find_path ReadWriteCache 骑成员 NavigatorCache 逐跳 vs 重算面每调 scratch，同批起点；碰撞=find_drop_point 打 BW-10-07-04 clientquery 夹具世界六 RAY 探针×40）；主席并入后按勾行态处理，本行保持开。
-- [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
+- [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。他席已交付未进 main：bw14-script-host `eb163d4`+勾 `76f33f0`（crates/client/tests/map_rerun_fixtures.rs 双腿复跑——路径=BW-10-07-03 genmap 双 chunk 世界五条 XPATH 探针缓存步进对真相链恒等；碰撞=100 探针格走客户端 findDropPoint 全部 40m 处止 10m 板 ±1e-3+第二遍位级恒等）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-11-01 三端固定镜头基线
 
 优化各端 GPU 上传、渲染批次、资源流与客户端帧调度。比较帧时间和显存，用固定镜头做视觉回归。
 
-- [ ] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。
-- [ ] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。
+- [ ] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。他席已交付未进 main：bw14-script-host `877e016`+勾 `09ec792`（crates/client/tests/render_baseline_opt.rs 三端 linux/windows/macos 同一固定镜头 64 帧，帧时间逐帧 192 行落 opt-11-01-01-render-baseline.md；显存=计数分配器结构账——设备创建 2 allocs/1228848 bytes 恒不涨、逐帧 0 allocs）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。他席已交付未进 main：bw14-script-host `5313db6`+勾 `cc9797e`（crates/client/tests/render_batch_opt.rs 双面上传评估——批量候选 481 写/帧 vs shipped 307200 写/帧=7-8× 省，帧时间 ~20ms→~6.6ms，三端各 64 帧逐帧全像素向量相等+摘要相等）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。
 - [ ] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。
 
