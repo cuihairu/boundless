@@ -1,0 +1,33 @@
+foundation	19
+resources	12
+physics	6
+platform	5
+entitydef	3
+mercury	3
+asset-pipeline	2
+chunk	2
+client	2
+db	2
+profiler	2
+server-runtime	2
+terrain	2
+watcher	2
+waypoint	2
+compiled-space	1
+contracts	1
+db-postgres	1
+load	1
+message_logger	1
+python-host	1
+scene	1
+waypoint-gen	1
+bots	0
+boundless-server	0
+launcher	0
+plugin-host	0
+python-module	0
+test-support	0
+metric	cold_s	incremental_s	recompiled_crates	leg
+release_boundless-server	220.59	96.25	11	touch crates/foundation/src/lib.rs
+debug_boundless-server	53.47	3.81	11	touch crates/foundation/src/lib.rs
+recompiled_chain	foundation	platform resources contracts physics waypoint mercury entitydef db server-runtime boundless-server	11	release+debug same 11 crates
