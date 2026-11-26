@@ -8,10 +8,12 @@
 //! chain are initialised from the command line before the role runs. The
 //! return values are dropped exactly as the reference does
 //! (BW-01-04-03): a missing `bw.xml` is not fatal -- the options fall back
-//! to their defaults and the failure is only logged. Until the role apps
-//! land (BW-04/BW-02), the chain's resolution is the observable: a located
-//! config logs nothing, an unlocated one logs the reference's "Could not
-//! find" / "No configuration section" lines.
+//! to their defaults and the failure is only logged. The chain the loop
+//! resolves is observable on stderr either way: a located config logs
+//! nothing, an unlocated one logs the reference's "Could not find" /
+//! "No configuration section" lines. The config tree is then handed to
+//! the role loop, whose `bwMainT` body reads the `internalInterface`
+//! chain from it (`bwservice.hpp:120-121`).
 
 use resources::bwresource::BwResource;
 use server_runtime::config::BwConfig;
@@ -26,7 +28,7 @@ fn main() -> ExitCode {
     let mut config = BwConfig::new();
     let _ = config.init_from_args(&resource, &args);
 
-    match server_runtime::app::run(role) {
+    match server_runtime::app::run(role, &config) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("boundless-server: {err}");

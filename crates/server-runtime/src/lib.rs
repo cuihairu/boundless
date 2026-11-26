@@ -54,6 +54,8 @@ pub mod login_entity;
 pub mod login_gate;
 pub mod login_request;
 pub mod loginapp;
+pub mod loginapp_interface;
+pub mod loginapp_login;
 pub mod machined;
 pub mod mailbox_call;
 pub mod message_redirect;

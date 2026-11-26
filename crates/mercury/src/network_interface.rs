@@ -203,6 +203,27 @@ impl NetworkInterface {
         shared
     }
 
+    /// The owner-dispatcher variant of [`NetworkInterface::new`]: the
+    /// reference constructor takes its owner's main dispatcher
+    /// (`network_interface.cpp:95` `NetworkInterface( EventDispatcher *
+    /// pMainDispatcher, ... )`), and in the role loop that owner is the
+    /// `bwMainT` dispatcher (`bwservice.hpp:123-125`). Same body as
+    /// [`NetworkInterface::new`] -- receiver, listening socket, attach --
+    /// over the given dispatcher instead of a fresh one, so the
+    /// interface's timers and its poller ride the loop that drives it.
+    pub fn new_on_dispatcher(
+        interface_type: InterfaceType,
+        dispatcher: Rc<EventDispatcher>,
+        listening_port: u16,
+        listening_interface: &str,
+    ) -> (Rc<NetworkInterface>, Rc<PacketReceiver>) {
+        let shared = Self::new_with_dispatcher(interface_type, dispatcher);
+        let receiver = PacketReceiver::new();
+        shared.recreate_listening_socket(&receiver, listening_port, listening_interface);
+        receiver.attach_interface(&shared);
+        (shared, receiver)
+    }
+
     /// `recreateListeningSocket` (network_interface.cpp:339): discard the
     /// current socket and create a new one on the requested interface.
     /// True on success; a not-good interface afterwards means failure.
@@ -1323,6 +1344,26 @@ mod tests {
             "the advertised ip is the default route's, not 0"
         );
         assert_ne!(interface.address().port, 0);
+        let fd = interface.udp_socket().fileno();
+        assert!(interface.poller().is_registered(fd, true));
+    }
+
+    /// The owner-dispatcher constructor shares the given dispatcher (the
+    /// reference ctor's `pMainDispatcher` coupling) and binds a live
+    /// socket the same way `new` does over its own.
+    #[test]
+    fn new_on_dispatcher_shares_the_owner_dispatcher() {
+        let dispatcher = Rc::new(EventDispatcher::new());
+        let (interface, _receiver) = NetworkInterface::new_on_dispatcher(
+            InterfaceType::Internal,
+            Rc::clone(&dispatcher),
+            0,
+            "127.0.0.1",
+        );
+
+        assert!(Rc::ptr_eq(&interface.dispatcher(), &dispatcher));
+        assert!(interface.is_good());
+        assert_ne!(interface.address().port, 0, "bound an ephemeral port");
         let fd = interface.udp_socket().fileno();
         assert!(interface.poller().is_registered(fd, true));
     }
