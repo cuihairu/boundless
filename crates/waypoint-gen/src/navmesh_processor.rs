@@ -168,6 +168,39 @@ pub fn flood_chunk(
     true
 }
 
+/// The workflow seam (`workflow::NavmeshProbe`) over this module's
+/// chunk face: the identity transforms the navgen grid mapping gives
+/// every chunk here, with the bounds and ownership answered by
+/// `GenChunk` — the same reduction the navgen_map harness records.
+struct ProbeOf<'a, T>(&'a T);
+
+impl<T: GenChunk> crate::workflow::NavmeshProbe for ProbeOf<'_, T> {
+    fn local_bounds(&self) -> (Vector3, Vector3) {
+        self.0.local_bb()
+    }
+    fn transform(&self) -> foundation::math::matrix::Matrix {
+        foundation::math::matrix::Matrix::identity()
+    }
+    fn transform_inverse(&self) -> foundation::math::matrix::Matrix {
+        foundation::math::matrix::Matrix::identity()
+    }
+    fn owns(&self, point: Vector3) -> bool {
+        self.0.owns(&point)
+    }
+}
+
+/// The workflow seam (`workflow::DropPhysics`) over the per-girth
+/// physics handler source: the same `find_drop_point` slab walk, in
+/// the Option shape the workflow arm expects.
+struct DropOf<'a>(&'a mut dyn FloodPhysics);
+
+impl crate::workflow::DropPhysics for DropOf<'_> {
+    fn drop_point(&mut self, point: Vector3) -> Option<f32> {
+        let mut y = 0.0;
+        self.0.find_drop_point(&point, &mut y).then_some(y)
+    }
+}
+
 /// `NavmeshProcessor::processInBackground` (`navmesh_processor.cpp:47-102`):
 /// loop the girths, and per girth flood the chunk fresh, regenerate the
 /// polygons, and append the girth's binary record into `navmesh`. The
@@ -235,7 +268,9 @@ pub fn process_in_background(
         }
 
         gener.generate();
-        gener.determine_edges_adjacent_to_other_chunks(chunk, physics);
+        let probe = ProbeOf(chunk);
+        let mut drop = DropOf(physics);
+        gener.determine_edges_adjacent_to_other_chunks(&probe, &mut drop);
         gener.streamline();
         gener.calculate_set_membership(entity_pts, chunk_identifier);
 
