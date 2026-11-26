@@ -8,6 +8,8 @@ native types carry (``boundless.Sequence``, ``boundless.wrapper`` in
 the reference exposes to game scripts -- is enumerated in the export
 manifest (``crates/python-host/src/manifest.rs``) and lands here module by
 module as its porting item delivers it.
+"""
+
 """Boundless Python module.
 
 The installable surface the engine's Python half shares. The embedded
@@ -21,7 +23,6 @@ reference sets it in ``Script::init`` (``lib/pyscript/script.cpp``).
 
 __version__ = "0.1.0"
 
-__all__ = ["__version__"]
 # The engine role names: cell, base, client, database, bot, editor.
 COMPONENTS = ("cell", "base", "client", "database", "bot", "editor")
 
