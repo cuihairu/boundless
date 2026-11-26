@@ -1343,6 +1343,7 @@ dependencies = [
 name = "mercury"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "foundation",
  "platform",
 ]
@@ -2340,6 +2341,7 @@ dependencies = [
  "flate2",
  "foundation",
  "libc",
+ "load",
  "md-5 0.10.6",
  "mercury",
  "message_logger",

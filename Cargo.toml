@@ -99,7 +99,6 @@ client = { path = "crates/client" }  # replay_write round-trips through its read
 # The log ingestion protocol codecs (OPT-02-01-04): the mixed-version
 # rerun speaks the register/record envelopes to the reference EL7 logger.
 message_logger = { path = "crates/message_logger" }
-# load = { path = "crates/load" }  # re-add with first consumer
 # test-support = { path = "crates/test-support" }  # re-add with first consumer
 asset-pipeline = { path = "crates/asset-pipeline" }
 terrain = { path = "crates/terrain" }

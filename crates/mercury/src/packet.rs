@@ -247,13 +247,18 @@ impl Packet {
 
     /// `freeSpace()`: `MAX_SIZE - RESERVED_FOOTER_SIZE - msgEndOffset -
     /// footerSize - extraFilterSize` — the body room left with the
-    /// worst-case footers held back.
+    /// worst-case footers held back. The reference's answer is an int
+    /// and runs negative in normal operation (a full multi-datagram
+    /// reliable bundle reserves the fragment and sequence footers over
+    /// an exactly-full packet); every caller only compares it against
+    /// footer sizes, so the clamped `usize` reads "no room" where the
+    /// reference reads negative.
     pub fn free_space(&self) -> usize {
         PACKET_MAX_SIZE
-            - RESERVED_FOOTER_SIZE
-            - self.msg_end_offset
-            - self.footer_size
-            - self.extra_filter_size
+            .saturating_sub(RESERVED_FOOTER_SIZE)
+            .saturating_sub(self.msg_end_offset)
+            .saturating_sub(self.footer_size)
+            .saturating_sub(self.extra_filter_size)
     }
 
     /// `reserveFooter( nBytes )`: promise `n` trail bytes the body must
@@ -803,6 +808,34 @@ mod tests {
             HEADER_SIZE + 110,
             "reserved footers trail"
         );
+    }
+
+    /// A full multi-datagram reliable bundle reserves its fragment and
+    /// sequence footers over an exactly-full packet, and the reference's
+    /// `freeSpace` reads negative there (`MAX_SIZE - RESERVED - end -
+    /// footer` with an int answer). Callers only compare it against
+    /// footer sizes, so "negative" and "zero" are the same no-room
+    /// answer -- the clamped `usize` must never wrap or panic on it.
+    #[test]
+    fn free_space_clamps_at_zero_on_a_full_packet() {
+        // Fill the body exactly to the reserved-footers boundary, the
+        // way a bulk bundle's qreserve loop packs every full packet.
+        let mut packet = Packet::new();
+        packet.set_flags(0);
+        packet.grow(HEADER_SIZE);
+        let room = PACKET_MAX_SIZE - RESERVED_FOOTER_SIZE - HEADER_SIZE;
+        packet.grow(room);
+        assert_eq!(packet.free_space(), 0);
+
+        // The fragment footer a 64 KiB reliable bundle reserves, then
+        // the sequence footer, then the channel's cumulative-ack
+        // reserve: each must read as no-room, not underflow.
+        packet.reserve_footer(8);
+        assert_eq!(packet.free_space(), 0, "negative reads as no-room");
+        packet.reserve_footer(4);
+        assert_eq!(packet.free_space(), 0, "still no-room after the seq footer");
+        packet.grow(packet.footer_size());
+        assert_eq!(packet.free_space(), 0, "the grown footers trail the body");
     }
 
     // ------------------------------------------------------------------

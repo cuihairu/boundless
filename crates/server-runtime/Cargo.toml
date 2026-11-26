@@ -58,6 +58,10 @@ db-postgres = { workspace = true }
 # entity defs; the DBApp storage def face is built from the parsed map.
 entitydef = { workspace = true }
 
+# BW-10-07-05 cross-cell bot traversal: the simulated client's movement
+# controller and tick drive the entity through the two cells.
+load = { workspace = true }
+
 # Performance baselines (perf-bench batch 1): the update-loop dispatch bench.
 criterion = "0.8"
 

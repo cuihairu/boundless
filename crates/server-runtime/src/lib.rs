@@ -64,6 +64,8 @@ pub mod login_request;
 pub mod login_rerun;
 pub mod login_tuning;
 pub mod loginapp;
+pub mod loginapp_interface;
+pub mod loginapp_login;
 pub mod machined;
 pub mod mailbox_call;
 pub mod message_redirect;
