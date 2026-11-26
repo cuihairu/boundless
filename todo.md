@@ -2937,7 +2937,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [x] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿；⚠️ 行保持开——Windows/macOS 腿待三端 runner（BW-15-05-01）后补测）
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+  - 注记（2026-11-26，台账席）：Linux 腿已落——bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿。行保持开——「各平台」待 Windows/macOS 腿（三端 runner，BW-15-05-01）后补测再勾。
 - [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
@@ -4517,7 +4518,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [x] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿；⚠️ 行保持开——Windows/macOS 腿待三端 runner（BW-15-05-01）后补测）
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+  - 注记（2026-11-26，台账席）：Linux 腿已落——bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿。行保持开——「各平台」待 Windows/macOS 腿（三端 runner，BW-15-05-01）后补测再勾。
 - [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
@@ -6058,7 +6060,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [x] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿；⚠️ 行保持开——Windows/macOS 腿待三端 runner（BW-15-05-01）后补测）
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+  - 注记（2026-11-26，台账席）：Linux 腿已落——bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿。行保持开——「各平台」待 Windows/macOS 腿（三端 runner，BW-15-05-01）后补测再勾。
 - [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
@@ -7599,7 +7602,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [x] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿；⚠️ 行保持开——Windows/macOS 腿待三端 runner（BW-15-05-01）后补测）
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+  - 注记（2026-11-26，台账席）：Linux 腿已落——bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿。行保持开——「各平台」待 Windows/macOS 腿（三端 runner，BW-15-05-01）后补测再勾。
 - [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
@@ -9179,7 +9183,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [x] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿；⚠️ 行保持开——Windows/macOS 腿待三端 runner（BW-15-05-01）后补测）
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+  - 注记（2026-11-26，台账席）：Linux 腿已落——bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿。行保持开——「各平台」待 Windows/macOS 腿（三端 runner，BW-15-05-01）后补测再勾。
 - [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
@@ -10720,7 +10725,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [x] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿；⚠️ 行保持开——Windows/macOS 腿待三端 runner（BW-15-05-01）后补测）
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+  - 注记（2026-11-26，台账席）：Linux 腿已落——bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿。行保持开——「各平台」待 Windows/macOS 腿（三端 runner，BW-15-05-01）后补测再勾。
 - [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
