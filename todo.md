@@ -2905,7 +2905,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化各端 GPU 上传、渲染批次、资源流与客户端帧调度。比较帧时间和显存，用固定镜头做视觉回归。
 
 - [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。(2026-11-26 lane/bw14-script-host 877e016：crates/client/tests/render_baseline_opt.rs 三端(linux/windows/macos=BW-11-04-07 可比集)各走同一固定镜头=DeviceConfig::default() 640×480 RGBA8 +64 帧 check_device→scene.step→present shipped 设备面；帧时间=每帧 Instant 只印不断言（本机 debug 面 p50 18.8-19.5ms/帧=307200 set_pixel+FNV，逐端逐帧 192 行 FRAME-TIME 落 docs/review/opt-11-01-01-render-baseline.md）；显存=计数分配器 LIVE+PEAK 高水位（OPT-10-01-02 变体）结构账断言：设备创建 2 allocs/1228848 bytes（640×480×4=1228800 背板+48 bytes 计数器 Arc），逐帧 0 allocs/0 bytes（present 原地画+摘要无上载抖动），整程峰值=创建足迹 1228848 恒不涨；固定镜头两证=新设备直接步进到帧序号复现该帧摘要（1/7/31/64）+全账复跑恒等；三端摘要逐帧全等+分配账全等；saved 基线钉 1..=8+64 帧摘要常量+整程内存账常量（光栅/场景/设备内存任一变化即触发，OPT-11-01-04 复跑同钉）；client 门禁 872 绿）
-- [ ] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。
+- [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。(2026-11-26 lane/bw14-script-host 5313db6：crates/client/tests/render_batch_opt.rs 双面上传评估——shipped 面=TestScene::draw 逐像素 set_pixel（640×480 每帧 307200 次写）vs 批量候选=同像素数学走 shipped 批原语（整幅 fill 背景+标记列块逐行 slice fill，每帧 481 次写=1+480）；三端(linux/windows/macos)各 64 帧画+摘要分开计时对比（FRAME-TIME 逐帧 192 行+BATCH-TAIL 落 docs/review/opt-11-01-02-render-batch-opt.md）：批量面画半 p50 1.97-2.10ms vs shipped 15.05-17.36ms=7-8× 省，帧时间整体 ~20ms→~6.6ms，摘要半与面无关（同像素同 FNV，两端面在每端内一致本身即可比性验证）；结构断言：逐帧全像素向量相等（64 帧×3 端）+摘要相等+Device::present 真设备面摘要步走=计时面所骑 shipped walk+双面零分配+连续帧摘要必异（固定镜头下动画真实）+三端账逐帧全等+复跑恒等；墙钟 probe 只印不断言；评估结论=整段画半收益全在写形状 307200→481，批量候选不换契约（像素恒等）不加内存（仍零分配），OPT-11-01-01 saved 摘要钉两面都须答；client 门禁 874 绿）
 - [ ] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。
 - [ ] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。
 
@@ -4486,7 +4486,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化各端 GPU 上传、渲染批次、资源流与客户端帧调度。比较帧时间和显存，用固定镜头做视觉回归。
 
 - [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。(2026-11-26 lane/bw14-script-host 877e016：crates/client/tests/render_baseline_opt.rs 三端(linux/windows/macos=BW-11-04-07 可比集)各走同一固定镜头=DeviceConfig::default() 640×480 RGBA8 +64 帧 check_device→scene.step→present shipped 设备面；帧时间=每帧 Instant 只印不断言（本机 debug 面 p50 18.8-19.5ms/帧=307200 set_pixel+FNV，逐端逐帧 192 行 FRAME-TIME 落 docs/review/opt-11-01-01-render-baseline.md）；显存=计数分配器 LIVE+PEAK 高水位（OPT-10-01-02 变体）结构账断言：设备创建 2 allocs/1228848 bytes（640×480×4=1228800 背板+48 bytes 计数器 Arc），逐帧 0 allocs/0 bytes（present 原地画+摘要无上载抖动），整程峰值=创建足迹 1228848 恒不涨；固定镜头两证=新设备直接步进到帧序号复现该帧摘要（1/7/31/64）+全账复跑恒等；三端摘要逐帧全等+分配账全等；saved 基线钉 1..=8+64 帧摘要常量+整程内存账常量（光栅/场景/设备内存任一变化即触发，OPT-11-01-04 复跑同钉）；client 门禁 872 绿）
-- [ ] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。
+- [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。(2026-11-26 lane/bw14-script-host 5313db6：crates/client/tests/render_batch_opt.rs 双面上传评估——shipped 面=TestScene::draw 逐像素 set_pixel（640×480 每帧 307200 次写）vs 批量候选=同像素数学走 shipped 批原语（整幅 fill 背景+标记列块逐行 slice fill，每帧 481 次写=1+480）；三端(linux/windows/macos)各 64 帧画+摘要分开计时对比（FRAME-TIME 逐帧 192 行+BATCH-TAIL 落 docs/review/opt-11-01-02-render-batch-opt.md）：批量面画半 p50 1.97-2.10ms vs shipped 15.05-17.36ms=7-8× 省，帧时间整体 ~20ms→~6.6ms，摘要半与面无关（同像素同 FNV，两端面在每端内一致本身即可比性验证）；结构断言：逐帧全像素向量相等（64 帧×3 端）+摘要相等+Device::present 真设备面摘要步走=计时面所骑 shipped walk+双面零分配+连续帧摘要必异（固定镜头下动画真实）+三端账逐帧全等+复跑恒等；墙钟 probe 只印不断言；评估结论=整段画半收益全在写形状 307200→481，批量候选不换契约（像素恒等）不加内存（仍零分配），OPT-11-01-01 saved 摘要钉两面都须答；client 门禁 874 绿）
 - [ ] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。
 - [ ] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。
 
@@ -6028,7 +6028,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化各端 GPU 上传、渲染批次、资源流与客户端帧调度。比较帧时间和显存，用固定镜头做视觉回归。
 
 - [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。(2026-11-26 lane/bw14-script-host 877e016：crates/client/tests/render_baseline_opt.rs 三端(linux/windows/macos=BW-11-04-07 可比集)各走同一固定镜头=DeviceConfig::default() 640×480 RGBA8 +64 帧 check_device→scene.step→present shipped 设备面；帧时间=每帧 Instant 只印不断言（本机 debug 面 p50 18.8-19.5ms/帧=307200 set_pixel+FNV，逐端逐帧 192 行 FRAME-TIME 落 docs/review/opt-11-01-01-render-baseline.md）；显存=计数分配器 LIVE+PEAK 高水位（OPT-10-01-02 变体）结构账断言：设备创建 2 allocs/1228848 bytes（640×480×4=1228800 背板+48 bytes 计数器 Arc），逐帧 0 allocs/0 bytes（present 原地画+摘要无上载抖动），整程峰值=创建足迹 1228848 恒不涨；固定镜头两证=新设备直接步进到帧序号复现该帧摘要（1/7/31/64）+全账复跑恒等；三端摘要逐帧全等+分配账全等；saved 基线钉 1..=8+64 帧摘要常量+整程内存账常量（光栅/场景/设备内存任一变化即触发，OPT-11-01-04 复跑同钉）；client 门禁 872 绿）
-- [ ] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。
+- [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。(2026-11-26 lane/bw14-script-host 5313db6：crates/client/tests/render_batch_opt.rs 双面上传评估——shipped 面=TestScene::draw 逐像素 set_pixel（640×480 每帧 307200 次写）vs 批量候选=同像素数学走 shipped 批原语（整幅 fill 背景+标记列块逐行 slice fill，每帧 481 次写=1+480）；三端(linux/windows/macos)各 64 帧画+摘要分开计时对比（FRAME-TIME 逐帧 192 行+BATCH-TAIL 落 docs/review/opt-11-01-02-render-batch-opt.md）：批量面画半 p50 1.97-2.10ms vs shipped 15.05-17.36ms=7-8× 省，帧时间整体 ~20ms→~6.6ms，摘要半与面无关（同像素同 FNV，两端面在每端内一致本身即可比性验证）；结构断言：逐帧全像素向量相等（64 帧×3 端）+摘要相等+Device::present 真设备面摘要步走=计时面所骑 shipped walk+双面零分配+连续帧摘要必异（固定镜头下动画真实）+三端账逐帧全等+复跑恒等；墙钟 probe 只印不断言；评估结论=整段画半收益全在写形状 307200→481，批量候选不换契约（像素恒等）不加内存（仍零分配），OPT-11-01-01 saved 摘要钉两面都须答；client 门禁 874 绿）
 - [ ] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。
 - [ ] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。
 
@@ -7570,7 +7570,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化各端 GPU 上传、渲染批次、资源流与客户端帧调度。比较帧时间和显存，用固定镜头做视觉回归。
 
 - [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。(2026-11-26 lane/bw14-script-host 877e016：crates/client/tests/render_baseline_opt.rs 三端(linux/windows/macos=BW-11-04-07 可比集)各走同一固定镜头=DeviceConfig::default() 640×480 RGBA8 +64 帧 check_device→scene.step→present shipped 设备面；帧时间=每帧 Instant 只印不断言（本机 debug 面 p50 18.8-19.5ms/帧=307200 set_pixel+FNV，逐端逐帧 192 行 FRAME-TIME 落 docs/review/opt-11-01-01-render-baseline.md）；显存=计数分配器 LIVE+PEAK 高水位（OPT-10-01-02 变体）结构账断言：设备创建 2 allocs/1228848 bytes（640×480×4=1228800 背板+48 bytes 计数器 Arc），逐帧 0 allocs/0 bytes（present 原地画+摘要无上载抖动），整程峰值=创建足迹 1228848 恒不涨；固定镜头两证=新设备直接步进到帧序号复现该帧摘要（1/7/31/64）+全账复跑恒等；三端摘要逐帧全等+分配账全等；saved 基线钉 1..=8+64 帧摘要常量+整程内存账常量（光栅/场景/设备内存任一变化即触发，OPT-11-01-04 复跑同钉）；client 门禁 872 绿）
-- [ ] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。
+- [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。(2026-11-26 lane/bw14-script-host 5313db6：crates/client/tests/render_batch_opt.rs 双面上传评估——shipped 面=TestScene::draw 逐像素 set_pixel（640×480 每帧 307200 次写）vs 批量候选=同像素数学走 shipped 批原语（整幅 fill 背景+标记列块逐行 slice fill，每帧 481 次写=1+480）；三端(linux/windows/macos)各 64 帧画+摘要分开计时对比（FRAME-TIME 逐帧 192 行+BATCH-TAIL 落 docs/review/opt-11-01-02-render-batch-opt.md）：批量面画半 p50 1.97-2.10ms vs shipped 15.05-17.36ms=7-8× 省，帧时间整体 ~20ms→~6.6ms，摘要半与面无关（同像素同 FNV，两端面在每端内一致本身即可比性验证）；结构断言：逐帧全像素向量相等（64 帧×3 端）+摘要相等+Device::present 真设备面摘要步走=计时面所骑 shipped walk+双面零分配+连续帧摘要必异（固定镜头下动画真实）+三端账逐帧全等+复跑恒等；墙钟 probe 只印不断言；评估结论=整段画半收益全在写形状 307200→481，批量候选不换契约（像素恒等）不加内存（仍零分配），OPT-11-01-01 saved 摘要钉两面都须答；client 门禁 874 绿）
 - [ ] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。
 - [ ] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。
 
@@ -9151,7 +9151,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化各端 GPU 上传、渲染批次、资源流与客户端帧调度。比较帧时间和显存，用固定镜头做视觉回归。
 
 - [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。(2026-11-26 lane/bw14-script-host 877e016：crates/client/tests/render_baseline_opt.rs 三端(linux/windows/macos=BW-11-04-07 可比集)各走同一固定镜头=DeviceConfig::default() 640×480 RGBA8 +64 帧 check_device→scene.step→present shipped 设备面；帧时间=每帧 Instant 只印不断言（本机 debug 面 p50 18.8-19.5ms/帧=307200 set_pixel+FNV，逐端逐帧 192 行 FRAME-TIME 落 docs/review/opt-11-01-01-render-baseline.md）；显存=计数分配器 LIVE+PEAK 高水位（OPT-10-01-02 变体）结构账断言：设备创建 2 allocs/1228848 bytes（640×480×4=1228800 背板+48 bytes 计数器 Arc），逐帧 0 allocs/0 bytes（present 原地画+摘要无上载抖动），整程峰值=创建足迹 1228848 恒不涨；固定镜头两证=新设备直接步进到帧序号复现该帧摘要（1/7/31/64）+全账复跑恒等；三端摘要逐帧全等+分配账全等；saved 基线钉 1..=8+64 帧摘要常量+整程内存账常量（光栅/场景/设备内存任一变化即触发，OPT-11-01-04 复跑同钉）；client 门禁 872 绿）
-- [ ] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。
+- [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。(2026-11-26 lane/bw14-script-host 5313db6：crates/client/tests/render_batch_opt.rs 双面上传评估——shipped 面=TestScene::draw 逐像素 set_pixel（640×480 每帧 307200 次写）vs 批量候选=同像素数学走 shipped 批原语（整幅 fill 背景+标记列块逐行 slice fill，每帧 481 次写=1+480）；三端(linux/windows/macos)各 64 帧画+摘要分开计时对比（FRAME-TIME 逐帧 192 行+BATCH-TAIL 落 docs/review/opt-11-01-02-render-batch-opt.md）：批量面画半 p50 1.97-2.10ms vs shipped 15.05-17.36ms=7-8× 省，帧时间整体 ~20ms→~6.6ms，摘要半与面无关（同像素同 FNV，两端面在每端内一致本身即可比性验证）；结构断言：逐帧全像素向量相等（64 帧×3 端）+摘要相等+Device::present 真设备面摘要步走=计时面所骑 shipped walk+双面零分配+连续帧摘要必异（固定镜头下动画真实）+三端账逐帧全等+复跑恒等；墙钟 probe 只印不断言；评估结论=整段画半收益全在写形状 307200→481，批量候选不换契约（像素恒等）不加内存（仍零分配），OPT-11-01-01 saved 摘要钉两面都须答；client 门禁 874 绿）
 - [ ] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。
 - [ ] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。
 
@@ -10693,7 +10693,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化各端 GPU 上传、渲染批次、资源流与客户端帧调度。比较帧时间和显存，用固定镜头做视觉回归。
 
 - [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。(2026-11-26 lane/bw14-script-host 877e016：crates/client/tests/render_baseline_opt.rs 三端(linux/windows/macos=BW-11-04-07 可比集)各走同一固定镜头=DeviceConfig::default() 640×480 RGBA8 +64 帧 check_device→scene.step→present shipped 设备面；帧时间=每帧 Instant 只印不断言（本机 debug 面 p50 18.8-19.5ms/帧=307200 set_pixel+FNV，逐端逐帧 192 行 FRAME-TIME 落 docs/review/opt-11-01-01-render-baseline.md）；显存=计数分配器 LIVE+PEAK 高水位（OPT-10-01-02 变体）结构账断言：设备创建 2 allocs/1228848 bytes（640×480×4=1228800 背板+48 bytes 计数器 Arc），逐帧 0 allocs/0 bytes（present 原地画+摘要无上载抖动），整程峰值=创建足迹 1228848 恒不涨；固定镜头两证=新设备直接步进到帧序号复现该帧摘要（1/7/31/64）+全账复跑恒等；三端摘要逐帧全等+分配账全等；saved 基线钉 1..=8+64 帧摘要常量+整程内存账常量（光栅/场景/设备内存任一变化即触发，OPT-11-01-04 复跑同钉）；client 门禁 872 绿）
-- [ ] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。
+- [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。(2026-11-26 lane/bw14-script-host 5313db6：crates/client/tests/render_batch_opt.rs 双面上传评估——shipped 面=TestScene::draw 逐像素 set_pixel（640×480 每帧 307200 次写）vs 批量候选=同像素数学走 shipped 批原语（整幅 fill 背景+标记列块逐行 slice fill，每帧 481 次写=1+480）；三端(linux/windows/macos)各 64 帧画+摘要分开计时对比（FRAME-TIME 逐帧 192 行+BATCH-TAIL 落 docs/review/opt-11-01-02-render-batch-opt.md）：批量面画半 p50 1.97-2.10ms vs shipped 15.05-17.36ms=7-8× 省，帧时间整体 ~20ms→~6.6ms，摘要半与面无关（同像素同 FNV，两端面在每端内一致本身即可比性验证）；结构断言：逐帧全像素向量相等（64 帧×3 端）+摘要相等+Device::present 真设备面摘要步走=计时面所骑 shipped walk+双面零分配+连续帧摘要必异（固定镜头下动画真实）+三端账逐帧全等+复跑恒等；墙钟 probe 只印不断言；评估结论=整段画半收益全在写形状 307200→481，批量候选不换契约（像素恒等）不加内存（仍零分配），OPT-11-01-01 saved 摘要钉两面都须答；client 门禁 874 绿）
 - [ ] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。
 - [ ] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。
 
