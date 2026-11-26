@@ -2891,8 +2891,11 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。cc648b5（login_baseline.rs 96 到达种子洪泛 64 会话/32 拒(7 封禁/24 限流/1 静默)拒率 0.3333 延迟 p50=1 p95=p99=2 峰值 2 队列峰值 1/17 下载 64 流 10288 字节收发相等 9 测 99.30% 行）
   - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行腿 `5ec0620`→main `4c29980`（crates/load/src/login_baseline.rs 三族数字）+证据 `fcfa88f`，与本席 `cc648b5`（crates/server-runtime/src/login_baseline.rs 种子洪泛）异路径异实现，待主席择一。
 - [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。3ced450（login_tuning.rs LoginTuning 缝：调优形 16/1.0s+拒绝不占缓存记录，尾延迟峰 2→1 tick、p95 2→1、假在途忽略 7→0、误拒 24→0、接受 64→88/96；会话接续双形均到达 tick 内完成；6 测，tuning 100%/baseline 99.33%）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行腿 `083c598`→main `790332b`（fleet.rs logOnRetry 单遍分区排水）+证据 `83f6caa`，与本席登录排队面异实现，待主席择一。
 - [x] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。3e4839c（download_tuning.rs 64 资源确定性语料过真实 Server/DataDownloads 双预算：时长 186→45 tick(4.1×)换每 tick 线束峰 68→252 字节，字节逐流核等 10182/10182；客户端未完成积压两形均记录不定向断言(272 vs 252)因语料形状定；内存=持有字节非分配计数(桥上分配计数恒 0)；5 测 100% 行）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行腿 `efabd67`→main `6ffd9af`（data_download.rs with_capacity 预分配装配）+bench `bdf1327`+证据 `c23987a`，与本席下载优化面异实现，待主席择一。
 - [x] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。da80f8e（login_rerun.rs 三面各录决策：重复登录 8 决策含参考文案两条+WaitForDestroy 超时+logoff 重跑+拒答；重连旧钥 AttachClient(attempts=2)+InvalidTicket/ProxyDestroyed/ChannelCollision+Continue/LoginFailed(1)/AlreadyLoggedOff+同凭据 ResentSuccess；旧客户端=replay 前缀协议版本门(唯一运行时可观察旧客户端面)；同种子逐位复现+跨种子 decisions() 归一化形状相同而密钥不同；5 测 100% 行）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行复跑 `838a54a`→main `2f27440`（三条面零代码改动判一致+hash 修正 `061471a`），与本席复跑面并存，待主席择一。
 
 ### OPT-07-01 备份和归档基线
 
@@ -4517,8 +4520,11 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。cc648b5（login_baseline.rs 96 到达种子洪泛 64 会话/32 拒(7 封禁/24 限流/1 静默)拒率 0.3333 延迟 p50=1 p95=p99=2 峰值 2 队列峰值 1/17 下载 64 流 10288 字节收发相等 9 测 99.30% 行）
   - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行腿 `5ec0620`→main `4c29980`（crates/load/src/login_baseline.rs 三族数字）+证据 `fcfa88f`，与本席 `cc648b5`（crates/server-runtime/src/login_baseline.rs 种子洪泛）异路径异实现，待主席择一。
 - [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。3ced450（login_tuning.rs LoginTuning 缝：调优形 16/1.0s+拒绝不占缓存记录，尾延迟峰 2→1 tick、p95 2→1、假在途忽略 7→0、误拒 24→0、接受 64→88/96；会话接续双形均到达 tick 内完成；6 测，tuning 100%/baseline 99.33%）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行腿 `083c598`→main `790332b`（fleet.rs logOnRetry 单遍分区排水）+证据 `83f6caa`，与本席登录排队面异实现，待主席择一。
 - [x] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。3e4839c（download_tuning.rs 64 资源确定性语料过真实 Server/DataDownloads 双预算：时长 186→45 tick(4.1×)换每 tick 线束峰 68→252 字节，字节逐流核等 10182/10182；客户端未完成积压两形均记录不定向断言(272 vs 252)因语料形状定；内存=持有字节非分配计数(桥上分配计数恒 0)；5 测 100% 行）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行腿 `efabd67`→main `6ffd9af`（data_download.rs with_capacity 预分配装配）+bench `bdf1327`+证据 `c23987a`，与本席下载优化面异实现，待主席择一。
 - [x] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。da80f8e（login_rerun.rs 三面各录决策：重复登录 8 决策含参考文案两条+WaitForDestroy 超时+logoff 重跑+拒答；重连旧钥 AttachClient(attempts=2)+InvalidTicket/ProxyDestroyed/ChannelCollision+Continue/LoginFailed(1)/AlreadyLoggedOff+同凭据 ResentSuccess；旧客户端=replay 前缀协议版本门(唯一运行时可观察旧客户端面)；同种子逐位复现+跨种子 decisions() 归一化形状相同而密钥不同；5 测 100% 行）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行复跑 `838a54a`→main `2f27440`（三条面零代码改动判一致+hash 修正 `061471a`），与本席复跑面并存，待主席择一。
 
 ### OPT-07-01 备份和归档基线
 
@@ -6104,8 +6110,11 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。cc648b5（login_baseline.rs 96 到达种子洪泛 64 会话/32 拒(7 封禁/24 限流/1 静默)拒率 0.3333 延迟 p50=1 p95=p99=2 峰值 2 队列峰值 1/17 下载 64 流 10288 字节收发相等 9 测 99.30% 行）
   - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行腿 `5ec0620`→main `4c29980`（crates/load/src/login_baseline.rs 三族数字）+证据 `fcfa88f`，与本席 `cc648b5`（crates/server-runtime/src/login_baseline.rs 种子洪泛）异路径异实现，待主席择一。
 - [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。3ced450（login_tuning.rs LoginTuning 缝：调优形 16/1.0s+拒绝不占缓存记录，尾延迟峰 2→1 tick、p95 2→1、假在途忽略 7→0、误拒 24→0、接受 64→88/96；会话接续双形均到达 tick 内完成；6 测，tuning 100%/baseline 99.33%）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行腿 `083c598`→main `790332b`（fleet.rs logOnRetry 单遍分区排水）+证据 `83f6caa`，与本席登录排队面异实现，待主席择一。
 - [x] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。3e4839c（download_tuning.rs 64 资源确定性语料过真实 Server/DataDownloads 双预算：时长 186→45 tick(4.1×)换每 tick 线束峰 68→252 字节，字节逐流核等 10182/10182；客户端未完成积压两形均记录不定向断言(272 vs 252)因语料形状定；内存=持有字节非分配计数(桥上分配计数恒 0)；5 测 100% 行）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行腿 `efabd67`→main `6ffd9af`（data_download.rs with_capacity 预分配装配）+bench `bdf1327`+证据 `c23987a`，与本席下载优化面异实现，待主席择一。
 - [x] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。da80f8e（login_rerun.rs 三面各录决策：重复登录 8 决策含参考文案两条+WaitForDestroy 超时+logoff 重跑+拒答；重连旧钥 AttachClient(attempts=2)+InvalidTicket/ProxyDestroyed/ChannelCollision+Continue/LoginFailed(1)/AlreadyLoggedOff+同凭据 ResentSuccess；旧客户端=replay 前缀协议版本门(唯一运行时可观察旧客户端面)；同种子逐位复现+跨种子 decisions() 归一化形状相同而密钥不同；5 测 100% 行）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行复跑 `838a54a`→main `2f27440`（三条面零代码改动判一致+hash 修正 `061471a`），与本席复跑面并存，待主席择一。
 
 ### OPT-07-01 备份和归档基线
 
@@ -7691,8 +7700,11 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。cc648b5（login_baseline.rs 96 到达种子洪泛 64 会话/32 拒(7 封禁/24 限流/1 静默)拒率 0.3333 延迟 p50=1 p95=p99=2 峰值 2 队列峰值 1/17 下载 64 流 10288 字节收发相等 9 测 99.30% 行）
   - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行腿 `5ec0620`→main `4c29980`（crates/load/src/login_baseline.rs 三族数字）+证据 `fcfa88f`，与本席 `cc648b5`（crates/server-runtime/src/login_baseline.rs 种子洪泛）异路径异实现，待主席择一。
 - [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。3ced450（login_tuning.rs LoginTuning 缝：调优形 16/1.0s+拒绝不占缓存记录，尾延迟峰 2→1 tick、p95 2→1、假在途忽略 7→0、误拒 24→0、接受 64→88/96；会话接续双形均到达 tick 内完成；6 测，tuning 100%/baseline 99.33%）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行腿 `083c598`→main `790332b`（fleet.rs logOnRetry 单遍分区排水）+证据 `83f6caa`，与本席登录排队面异实现，待主席择一。
 - [x] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。3e4839c（download_tuning.rs 64 资源确定性语料过真实 Server/DataDownloads 双预算：时长 186→45 tick(4.1×)换每 tick 线束峰 68→252 字节，字节逐流核等 10182/10182；客户端未完成积压两形均记录不定向断言(272 vs 252)因语料形状定；内存=持有字节非分配计数(桥上分配计数恒 0)；5 测 100% 行）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行腿 `efabd67`→main `6ffd9af`（data_download.rs with_capacity 预分配装配）+bench `bdf1327`+证据 `c23987a`，与本席下载优化面异实现，待主席择一。
 - [x] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。da80f8e（login_rerun.rs 三面各录决策：重复登录 8 决策含参考文案两条+WaitForDestroy 超时+logoff 重跑+拒答；重连旧钥 AttachClient(attempts=2)+InvalidTicket/ProxyDestroyed/ChannelCollision+Continue/LoginFailed(1)/AlreadyLoggedOff+同凭据 ResentSuccess；旧客户端=replay 前缀协议版本门(唯一运行时可观察旧客户端面)；同种子逐位复现+跨种子 decisions() 归一化形状相同而密钥不同；5 测 100% 行）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行复跑 `838a54a`→main `2f27440`（三条面零代码改动判一致+hash 修正 `061471a`），与本席复跑面并存，待主席择一。
 
 ### OPT-07-01 备份和归档基线
 
@@ -9317,8 +9329,11 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。cc648b5（login_baseline.rs 96 到达种子洪泛 64 会话/32 拒(7 封禁/24 限流/1 静默)拒率 0.3333 延迟 p50=1 p95=p99=2 峰值 2 队列峰值 1/17 下载 64 流 10288 字节收发相等 9 测 99.30% 行）
   - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行腿 `5ec0620`→main `4c29980`（crates/load/src/login_baseline.rs 三族数字）+证据 `fcfa88f`，与本席 `cc648b5`（crates/server-runtime/src/login_baseline.rs 种子洪泛）异路径异实现，待主席择一。
 - [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。3ced450（login_tuning.rs LoginTuning 缝：调优形 16/1.0s+拒绝不占缓存记录，尾延迟峰 2→1 tick、p95 2→1、假在途忽略 7→0、误拒 24→0、接受 64→88/96；会话接续双形均到达 tick 内完成；6 测，tuning 100%/baseline 99.33%）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行腿 `083c598`→main `790332b`（fleet.rs logOnRetry 单遍分区排水）+证据 `83f6caa`，与本席登录排队面异实现，待主席择一。
 - [x] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。3e4839c（download_tuning.rs 64 资源确定性语料过真实 Server/DataDownloads 双预算：时长 186→45 tick(4.1×)换每 tick 线束峰 68→252 字节，字节逐流核等 10182/10182；客户端未完成积压两形均记录不定向断言(272 vs 252)因语料形状定；内存=持有字节非分配计数(桥上分配计数恒 0)；5 测 100% 行）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行腿 `efabd67`→main `6ffd9af`（data_download.rs with_capacity 预分配装配）+bench `bdf1327`+证据 `c23987a`，与本席下载优化面异实现，待主席择一。
 - [x] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。da80f8e（login_rerun.rs 三面各录决策：重复登录 8 决策含参考文案两条+WaitForDestroy 超时+logoff 重跑+拒答；重连旧钥 AttachClient(attempts=2)+InvalidTicket/ProxyDestroyed/ChannelCollision+Continue/LoginFailed(1)/AlreadyLoggedOff+同凭据 ResentSuccess；旧客户端=replay 前缀协议版本门(唯一运行时可观察旧客户端面)；同种子逐位复现+跨种子 decisions() 归一化形状相同而密钥不同；5 测 100% 行）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行复跑 `838a54a`→main `2f27440`（三条面零代码改动判一致+hash 修正 `061471a`），与本席复跑面并存，待主席择一。
 
 ### OPT-07-01 备份和归档基线
 
@@ -10904,8 +10919,11 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。cc648b5（login_baseline.rs 96 到达种子洪泛 64 会话/32 拒(7 封禁/24 限流/1 静默)拒率 0.3333 延迟 p50=1 p95=p99=2 峰值 2 队列峰值 1/17 下载 64 流 10288 字节收发相等 9 测 99.30% 行）
   - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行腿 `5ec0620`→main `4c29980`（crates/load/src/login_baseline.rs 三族数字）+证据 `fcfa88f`，与本席 `cc648b5`（crates/server-runtime/src/login_baseline.rs 种子洪泛）异路径异实现，待主席择一。
 - [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。3ced450（login_tuning.rs LoginTuning 缝：调优形 16/1.0s+拒绝不占缓存记录，尾延迟峰 2→1 tick、p95 2→1、假在途忽略 7→0、误拒 24→0、接受 64→88/96；会话接续双形均到达 tick 内完成；6 测，tuning 100%/baseline 99.33%）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行腿 `083c598`→main `790332b`（fleet.rs logOnRetry 单遍分区排水）+证据 `83f6caa`，与本席登录排队面异实现，待主席择一。
 - [x] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。3e4839c（download_tuning.rs 64 资源确定性语料过真实 Server/DataDownloads 双预算：时长 186→45 tick(4.1×)换每 tick 线束峰 68→252 字节，字节逐流核等 10182/10182；客户端未完成积压两形均记录不定向断言(272 vs 252)因语料形状定；内存=持有字节非分配计数(桥上分配计数恒 0)；5 测 100% 行）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行腿 `efabd67`→main `6ffd9af`（data_download.rs with_capacity 预分配装配）+bench `bdf1327`+证据 `c23987a`，与本席下载优化面异实现，待主席择一。
 - [x] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。da80f8e（login_rerun.rs 三面各录决策：重复登录 8 决策含参考文案两条+WaitForDestroy 超时+logoff 重跑+拒答；重连旧钥 AttachClient(attempts=2)+InvalidTicket/ProxyDestroyed/ChannelCollision+Continue/LoginFailed(1)/AlreadyLoggedOff+同凭据 ResentSuccess；旧客户端=replay 前缀协议版本门(唯一运行时可观察旧客户端面)；同种子逐位复现+跨种子 decisions() 归一化形状相同而密钥不同；5 测 100% 行）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行复跑 `838a54a`→main `2f27440`（三条面零代码改动判一致+hash 修正 `061471a`），与本席复跑面并存，待主席择一。
 
 ### OPT-07-01 备份和归档基线
 
