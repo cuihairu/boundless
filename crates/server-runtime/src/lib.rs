@@ -16,6 +16,7 @@ pub mod baseapp_relogon;
 pub mod baseappmgr;
 pub mod billing;
 pub mod billing_creator;
+pub mod bot_crossing;
 pub mod buffered_ghost;
 pub mod cell_data;
 pub mod cell_viewer;
