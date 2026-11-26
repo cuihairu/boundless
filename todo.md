@@ -2962,10 +2962,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。deliver 8f42e4c（message_logger `qlog_replay_baseline.rs` 固定回放 20000 entry×11 查询面+样本报表；fixture `docs/review/fixtures/opt-26-01-01/qlog-replay-baseline.tsv`）
-- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。
-- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。
-- [ ] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。
+- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。deliver 8f42e4c（message_logger `qlog_replay_baseline.rs` 固定回放 20000 entry×11 查询面+样本报表；fixture `docs/review/fixtures/opt-26-01-01/qlog-replay-baseline.tsv`）；⚠️ 双交付 FLAG 主席择一：opt-26-db `4c75e00`（event_query_baseline.rs PG 语料面基线，未进 main）与本席 `8f42e4c`（message_logger 内存查询面基线）
+- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 他席交付未进 main，行保持开：opt-26-db `40b58e0`（import_batch_candidates.rs 五事务形 64 行 commit ~1.4×+分配峰值平坦）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理报告吞吐和峰值内存。
+- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 他席交付未进 main，行保持开：opt-26-db `bf335b5`（query_aggregation_candidates.rs name→id 索引 ~4746×+聚合答案相等）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理报告延迟变化。
+- [ ] **OPT-26-01-04 复算样本报表**。**验收** 他席交付未进 main，行保持开：opt-26-db `b34554a`（sample_report_rerun.rs 同流复算九键逐字节全等）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理窗口及计数与优化前一致。
 
 ## 5. 实施顺序与里程碑
 
@@ -4543,10 +4543,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。deliver 8f42e4c（message_logger `qlog_replay_baseline.rs` 固定回放 20000 entry×11 查询面+样本报表；fixture `docs/review/fixtures/opt-26-01-01/qlog-replay-baseline.tsv`）
-- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。
-- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。
-- [ ] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。
+- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。deliver 8f42e4c（message_logger `qlog_replay_baseline.rs` 固定回放 20000 entry×11 查询面+样本报表；fixture `docs/review/fixtures/opt-26-01-01/qlog-replay-baseline.tsv`）；⚠️ 双交付 FLAG 主席择一：opt-26-db `4c75e00`（event_query_baseline.rs PG 语料面基线，未进 main）与本席 `8f42e4c`（message_logger 内存查询面基线）
+- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 他席交付未进 main，行保持开：opt-26-db `40b58e0`（import_batch_candidates.rs 五事务形 64 行 commit ~1.4×+分配峰值平坦）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理报告吞吐和峰值内存。
+- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 他席交付未进 main，行保持开：opt-26-db `bf335b5`（query_aggregation_candidates.rs name→id 索引 ~4746×+聚合答案相等）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理报告延迟变化。
+- [ ] **OPT-26-01-04 复算样本报表**。**验收** 他席交付未进 main，行保持开：opt-26-db `b34554a`（sample_report_rerun.rs 同流复算九键逐字节全等）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理窗口及计数与优化前一致。
 
 ## 5. 实施顺序与里程碑
 
@@ -6085,10 +6085,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。deliver 8f42e4c（message_logger `qlog_replay_baseline.rs` 固定回放 20000 entry×11 查询面+样本报表；fixture `docs/review/fixtures/opt-26-01-01/qlog-replay-baseline.tsv`）
-- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。
-- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。
-- [ ] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。
+- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。deliver 8f42e4c（message_logger `qlog_replay_baseline.rs` 固定回放 20000 entry×11 查询面+样本报表；fixture `docs/review/fixtures/opt-26-01-01/qlog-replay-baseline.tsv`）；⚠️ 双交付 FLAG 主席择一：opt-26-db `4c75e00`（event_query_baseline.rs PG 语料面基线，未进 main）与本席 `8f42e4c`（message_logger 内存查询面基线）
+- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 他席交付未进 main，行保持开：opt-26-db `40b58e0`（import_batch_candidates.rs 五事务形 64 行 commit ~1.4×+分配峰值平坦）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理报告吞吐和峰值内存。
+- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 他席交付未进 main，行保持开：opt-26-db `bf335b5`（query_aggregation_candidates.rs name→id 索引 ~4746×+聚合答案相等）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理报告延迟变化。
+- [ ] **OPT-26-01-04 复算样本报表**。**验收** 他席交付未进 main，行保持开：opt-26-db `b34554a`（sample_report_rerun.rs 同流复算九键逐字节全等）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理窗口及计数与优化前一致。
 
 ## 5. 实施顺序与里程碑
 
@@ -7627,10 +7627,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。deliver 8f42e4c（message_logger `qlog_replay_baseline.rs` 固定回放 20000 entry×11 查询面+样本报表；fixture `docs/review/fixtures/opt-26-01-01/qlog-replay-baseline.tsv`）
-- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。
-- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。
-- [ ] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。
+- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。deliver 8f42e4c（message_logger `qlog_replay_baseline.rs` 固定回放 20000 entry×11 查询面+样本报表；fixture `docs/review/fixtures/opt-26-01-01/qlog-replay-baseline.tsv`）；⚠️ 双交付 FLAG 主席择一：opt-26-db `4c75e00`（event_query_baseline.rs PG 语料面基线，未进 main）与本席 `8f42e4c`（message_logger 内存查询面基线）
+- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 他席交付未进 main，行保持开：opt-26-db `40b58e0`（import_batch_candidates.rs 五事务形 64 行 commit ~1.4×+分配峰值平坦）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理报告吞吐和峰值内存。
+- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 他席交付未进 main，行保持开：opt-26-db `bf335b5`（query_aggregation_candidates.rs name→id 索引 ~4746×+聚合答案相等）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理报告延迟变化。
+- [ ] **OPT-26-01-04 复算样本报表**。**验收** 他席交付未进 main，行保持开：opt-26-db `b34554a`（sample_report_rerun.rs 同流复算九键逐字节全等）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理窗口及计数与优化前一致。
 
 ## 5. 实施顺序与里程碑
 
@@ -9208,10 +9208,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。deliver 8f42e4c（message_logger `qlog_replay_baseline.rs` 固定回放 20000 entry×11 查询面+样本报表；fixture `docs/review/fixtures/opt-26-01-01/qlog-replay-baseline.tsv`）
-- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。
-- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。
-- [ ] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。
+- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。deliver 8f42e4c（message_logger `qlog_replay_baseline.rs` 固定回放 20000 entry×11 查询面+样本报表；fixture `docs/review/fixtures/opt-26-01-01/qlog-replay-baseline.tsv`）；⚠️ 双交付 FLAG 主席择一：opt-26-db `4c75e00`（event_query_baseline.rs PG 语料面基线，未进 main）与本席 `8f42e4c`（message_logger 内存查询面基线）
+- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 他席交付未进 main，行保持开：opt-26-db `40b58e0`（import_batch_candidates.rs 五事务形 64 行 commit ~1.4×+分配峰值平坦）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理报告吞吐和峰值内存。
+- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 他席交付未进 main，行保持开：opt-26-db `bf335b5`（query_aggregation_candidates.rs name→id 索引 ~4746×+聚合答案相等）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理报告延迟变化。
+- [ ] **OPT-26-01-04 复算样本报表**。**验收** 他席交付未进 main，行保持开：opt-26-db `b34554a`（sample_report_rerun.rs 同流复算九键逐字节全等）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理窗口及计数与优化前一致。
 
 ## 5. 实施顺序与里程碑
 
@@ -10750,10 +10750,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。deliver 8f42e4c（message_logger `qlog_replay_baseline.rs` 固定回放 20000 entry×11 查询面+样本报表；fixture `docs/review/fixtures/opt-26-01-01/qlog-replay-baseline.tsv`）
-- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。
-- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。
-- [ ] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。
+- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。deliver 8f42e4c（message_logger `qlog_replay_baseline.rs` 固定回放 20000 entry×11 查询面+样本报表；fixture `docs/review/fixtures/opt-26-01-01/qlog-replay-baseline.tsv`）；⚠️ 双交付 FLAG 主席择一：opt-26-db `4c75e00`（event_query_baseline.rs PG 语料面基线，未进 main）与本席 `8f42e4c`（message_logger 内存查询面基线）
+- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 他席交付未进 main，行保持开：opt-26-db `40b58e0`（import_batch_candidates.rs 五事务形 64 行 commit ~1.4×+分配峰值平坦）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理报告吞吐和峰值内存。
+- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 他席交付未进 main，行保持开：opt-26-db `bf335b5`（query_aggregation_candidates.rs name→id 索引 ~4746×+聚合答案相等）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理报告延迟变化。
+- [ ] **OPT-26-01-04 复算样本报表**。**验收** 他席交付未进 main，行保持开：opt-26-db `b34554a`（sample_report_rerun.rs 同流复算九键逐字节全等）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理窗口及计数与优化前一致。
 
 ## 5. 实施顺序与里程碑
 
