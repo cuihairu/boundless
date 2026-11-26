@@ -31,6 +31,8 @@ members = [
     "crates/load",
     "apps/bots",
     "apps/server",
+    "apps/client",
+    "apps/editor",
 ]
 
 [workspace.package]
