@@ -2903,18 +2903,18 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化各端 GPU 上传、渲染批次、资源流与客户端帧调度。比较帧时间和显存，用固定镜头做视觉回归。
 
-- [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。 (5a80a78)
-- [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。 (909bc11)
-- [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。 (0f4963c)
-- [x] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。（4924509）
+- [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。 (5a80a78)；**FLAG 双交付未决**：bw14-script-host lane-only `877e016`+`09ec792`（render_baseline_opt.rs 三端固定镜头+显存结构账）未进 main，与 main `5a80a78`+`5772a03` 并存，待主席择一。
+- [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。 (909bc11)；**FLAG 双交付未决**：bw14-script-host lane-only `5313db6`+`cc9797e`（render_batch_opt.rs 批量 7-8× 省）未进 main，与 main `909bc11`+`a4604b4` 并存，待主席择一。
+- [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。 (0f4963c)；**FLAG 双交付未决**：bw14-script-host lane-only `5535b86`+`b384a1e`（render_stream_sched_opt.rs 378 行——run_frame 相序断言+六切图帧流式+分配账）未进 main，与 main `0f4963c`+`f89f9ab` 并存，待主席择一。
+- [x] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。（4924509）；**FLAG 双交付未决**：bw14-script-host lane-only `96d8f67`+`7ddaae1`（render_visual_rerun.rs 309 行——三端复跑 differing_pixels=0 位级容差+TGA 截图字节恒等）未进 main，与 main `4924509`+`df48373` 并存，待主席择一。
 
 ### OPT-12-01 各观测通道开销
 
 降低日志、Watcher、Profiler 的观测成本。验证背压、关闭观测后的开销及新旧工具查询兼容。
 
-- [ ] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。
-- [ ] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。
-- [ ] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。
+- [x] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。（9cd6ad4）
+- [x] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。（1a64d63）；**FLAG 双交付未决**：bw14-script-host lane-only `9a74213`+`ea2d32a`（channel_gate_delta.rs 387 行——门差值 tick 5039→312ns ≈16×、Start/End 各 22%、禁用零新分配）未进 main，与 main `1a64d63`+`4111efb` 并存，待主席择一。
+- [x] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。（8f4e047）；**FLAG 双交付未决**：bw14-script-host lane-only `f4fce4f`（query_backpressure_interop.rs 211 行+watcher backpressure_query_contract.rs 255 行——背压 is_full 算术边逐断+QueryableLog run_query 真过滤管线幸存集 {11,13}）未进 main，与 main `8f4e047`+`cd3bd71` 并存，待主席择一。
 
 ### OPT-13-01 冷构建、增量与编辑器加载
 
@@ -4483,18 +4483,18 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化各端 GPU 上传、渲染批次、资源流与客户端帧调度。比较帧时间和显存，用固定镜头做视觉回归。
 
-- [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。 (5a80a78)
-- [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。 (909bc11)
-- [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。 (0f4963c)
-- [x] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。（4924509）
+- [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。 (5a80a78)；**FLAG 双交付未决**：bw14-script-host lane-only `877e016`+`09ec792`（render_baseline_opt.rs 三端固定镜头+显存结构账）未进 main，与 main `5a80a78`+`5772a03` 并存，待主席择一。
+- [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。 (909bc11)；**FLAG 双交付未决**：bw14-script-host lane-only `5313db6`+`cc9797e`（render_batch_opt.rs 批量 7-8× 省）未进 main，与 main `909bc11`+`a4604b4` 并存，待主席择一。
+- [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。 (0f4963c)；**FLAG 双交付未决**：bw14-script-host lane-only `5535b86`+`b384a1e`（render_stream_sched_opt.rs 378 行——run_frame 相序断言+六切图帧流式+分配账）未进 main，与 main `0f4963c`+`f89f9ab` 并存，待主席择一。
+- [x] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。（4924509）；**FLAG 双交付未决**：bw14-script-host lane-only `96d8f67`+`7ddaae1`（render_visual_rerun.rs 309 行——三端复跑 differing_pixels=0 位级容差+TGA 截图字节恒等）未进 main，与 main `4924509`+`df48373` 并存，待主席择一。
 
 ### OPT-12-01 各观测通道开销
 
 降低日志、Watcher、Profiler 的观测成本。验证背压、关闭观测后的开销及新旧工具查询兼容。
 
-- [ ] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。
-- [ ] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。
-- [ ] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。
+- [x] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。（9cd6ad4）
+- [x] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。（1a64d63）；**FLAG 双交付未决**：bw14-script-host lane-only `9a74213`+`ea2d32a`（channel_gate_delta.rs 387 行——门差值 tick 5039→312ns ≈16×、Start/End 各 22%、禁用零新分配）未进 main，与 main `1a64d63`+`4111efb` 并存，待主席择一。
+- [x] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。（8f4e047）；**FLAG 双交付未决**：bw14-script-host lane-only `f4fce4f`（query_backpressure_interop.rs 211 行+watcher backpressure_query_contract.rs 255 行——背压 is_full 算术边逐断+QueryableLog run_query 真过滤管线幸存集 {11,13}）未进 main，与 main `8f4e047`+`cd3bd71` 并存，待主席择一。
 
 ### OPT-13-01 冷构建、增量与编辑器加载
 
@@ -6024,18 +6024,18 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化各端 GPU 上传、渲染批次、资源流与客户端帧调度。比较帧时间和显存，用固定镜头做视觉回归。
 
-- [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。 (5a80a78)
-- [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。 (909bc11)
-- [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。 (0f4963c)
-- [x] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。（4924509）
+- [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。 (5a80a78)；**FLAG 双交付未决**：bw14-script-host lane-only `877e016`+`09ec792`（render_baseline_opt.rs 三端固定镜头+显存结构账）未进 main，与 main `5a80a78`+`5772a03` 并存，待主席择一。
+- [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。 (909bc11)；**FLAG 双交付未决**：bw14-script-host lane-only `5313db6`+`cc9797e`（render_batch_opt.rs 批量 7-8× 省）未进 main，与 main `909bc11`+`a4604b4` 并存，待主席择一。
+- [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。 (0f4963c)；**FLAG 双交付未决**：bw14-script-host lane-only `5535b86`+`b384a1e`（render_stream_sched_opt.rs 378 行——run_frame 相序断言+六切图帧流式+分配账）未进 main，与 main `0f4963c`+`f89f9ab` 并存，待主席择一。
+- [x] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。（4924509）；**FLAG 双交付未决**：bw14-script-host lane-only `96d8f67`+`7ddaae1`（render_visual_rerun.rs 309 行——三端复跑 differing_pixels=0 位级容差+TGA 截图字节恒等）未进 main，与 main `4924509`+`df48373` 并存，待主席择一。
 
 ### OPT-12-01 各观测通道开销
 
 降低日志、Watcher、Profiler 的观测成本。验证背压、关闭观测后的开销及新旧工具查询兼容。
 
-- [ ] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。
-- [ ] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。
-- [ ] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。
+- [x] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。（9cd6ad4）
+- [x] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。（1a64d63）；**FLAG 双交付未决**：bw14-script-host lane-only `9a74213`+`ea2d32a`（channel_gate_delta.rs 387 行——门差值 tick 5039→312ns ≈16×、Start/End 各 22%、禁用零新分配）未进 main，与 main `1a64d63`+`4111efb` 并存，待主席择一。
+- [x] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。（8f4e047）；**FLAG 双交付未决**：bw14-script-host lane-only `f4fce4f`（query_backpressure_interop.rs 211 行+watcher backpressure_query_contract.rs 255 行——背压 is_full 算术边逐断+QueryableLog run_query 真过滤管线幸存集 {11,13}）未进 main，与 main `8f4e047`+`cd3bd71` 并存，待主席择一。
 
 ### OPT-13-01 冷构建、增量与编辑器加载
 
@@ -7565,18 +7565,18 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化各端 GPU 上传、渲染批次、资源流与客户端帧调度。比较帧时间和显存，用固定镜头做视觉回归。
 
-- [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。 (5a80a78)
-- [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。 (909bc11)
-- [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。 (0f4963c)
-- [x] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。（4924509）
+- [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。 (5a80a78)；**FLAG 双交付未决**：bw14-script-host lane-only `877e016`+`09ec792`（render_baseline_opt.rs 三端固定镜头+显存结构账）未进 main，与 main `5a80a78`+`5772a03` 并存，待主席择一。
+- [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。 (909bc11)；**FLAG 双交付未决**：bw14-script-host lane-only `5313db6`+`cc9797e`（render_batch_opt.rs 批量 7-8× 省）未进 main，与 main `909bc11`+`a4604b4` 并存，待主席择一。
+- [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。 (0f4963c)；**FLAG 双交付未决**：bw14-script-host lane-only `5535b86`+`b384a1e`（render_stream_sched_opt.rs 378 行——run_frame 相序断言+六切图帧流式+分配账）未进 main，与 main `0f4963c`+`f89f9ab` 并存，待主席择一。
+- [x] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。（4924509）；**FLAG 双交付未决**：bw14-script-host lane-only `96d8f67`+`7ddaae1`（render_visual_rerun.rs 309 行——三端复跑 differing_pixels=0 位级容差+TGA 截图字节恒等）未进 main，与 main `4924509`+`df48373` 并存，待主席择一。
 
 ### OPT-12-01 各观测通道开销
 
 降低日志、Watcher、Profiler 的观测成本。验证背压、关闭观测后的开销及新旧工具查询兼容。
 
-- [ ] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。
-- [ ] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。
-- [ ] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。
+- [x] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。（9cd6ad4）
+- [x] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。（1a64d63）；**FLAG 双交付未决**：bw14-script-host lane-only `9a74213`+`ea2d32a`（channel_gate_delta.rs 387 行——门差值 tick 5039→312ns ≈16×、Start/End 各 22%、禁用零新分配）未进 main，与 main `1a64d63`+`4111efb` 并存，待主席择一。
+- [x] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。（8f4e047）；**FLAG 双交付未决**：bw14-script-host lane-only `f4fce4f`（query_backpressure_interop.rs 211 行+watcher backpressure_query_contract.rs 255 行——背压 is_full 算术边逐断+QueryableLog run_query 真过滤管线幸存集 {11,13}）未进 main，与 main `8f4e047`+`cd3bd71` 并存，待主席择一。
 
 ### OPT-13-01 冷构建、增量与编辑器加载
 
@@ -9145,18 +9145,18 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化各端 GPU 上传、渲染批次、资源流与客户端帧调度。比较帧时间和显存，用固定镜头做视觉回归。
 
-- [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。 (5a80a78)
-- [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。 (909bc11)
-- [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。 (0f4963c)
-- [x] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。（4924509）
+- [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。 (5a80a78)；**FLAG 双交付未决**：bw14-script-host lane-only `877e016`+`09ec792`（render_baseline_opt.rs 三端固定镜头+显存结构账）未进 main，与 main `5a80a78`+`5772a03` 并存，待主席择一。
+- [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。 (909bc11)；**FLAG 双交付未决**：bw14-script-host lane-only `5313db6`+`cc9797e`（render_batch_opt.rs 批量 7-8× 省）未进 main，与 main `909bc11`+`a4604b4` 并存，待主席择一。
+- [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。 (0f4963c)；**FLAG 双交付未决**：bw14-script-host lane-only `5535b86`+`b384a1e`（render_stream_sched_opt.rs 378 行——run_frame 相序断言+六切图帧流式+分配账）未进 main，与 main `0f4963c`+`f89f9ab` 并存，待主席择一。
+- [x] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。（4924509）；**FLAG 双交付未决**：bw14-script-host lane-only `96d8f67`+`7ddaae1`（render_visual_rerun.rs 309 行——三端复跑 differing_pixels=0 位级容差+TGA 截图字节恒等）未进 main，与 main `4924509`+`df48373` 并存，待主席择一。
 
 ### OPT-12-01 各观测通道开销
 
 降低日志、Watcher、Profiler 的观测成本。验证背压、关闭观测后的开销及新旧工具查询兼容。
 
-- [ ] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。
-- [ ] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。
-- [ ] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。
+- [x] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。（9cd6ad4）
+- [x] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。（1a64d63）；**FLAG 双交付未决**：bw14-script-host lane-only `9a74213`+`ea2d32a`（channel_gate_delta.rs 387 行——门差值 tick 5039→312ns ≈16×、Start/End 各 22%、禁用零新分配）未进 main，与 main `1a64d63`+`4111efb` 并存，待主席择一。
+- [x] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。（8f4e047）；**FLAG 双交付未决**：bw14-script-host lane-only `f4fce4f`（query_backpressure_interop.rs 211 行+watcher backpressure_query_contract.rs 255 行——背压 is_full 算术边逐断+QueryableLog run_query 真过滤管线幸存集 {11,13}）未进 main，与 main `8f4e047`+`cd3bd71` 并存，待主席择一。
 
 ### OPT-13-01 冷构建、增量与编辑器加载
 
@@ -10686,18 +10686,18 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化各端 GPU 上传、渲染批次、资源流与客户端帧调度。比较帧时间和显存，用固定镜头做视觉回归。
 
-- [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。 (5a80a78)
-- [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。 (909bc11)
-- [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。 (0f4963c)
-- [x] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。（4924509）
+- [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。 (5a80a78)；**FLAG 双交付未决**：bw14-script-host lane-only `877e016`+`09ec792`（render_baseline_opt.rs 三端固定镜头+显存结构账）未进 main，与 main `5a80a78`+`5772a03` 并存，待主席择一。
+- [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。 (909bc11)；**FLAG 双交付未决**：bw14-script-host lane-only `5313db6`+`cc9797e`（render_batch_opt.rs 批量 7-8× 省）未进 main，与 main `909bc11`+`a4604b4` 并存，待主席择一。
+- [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。 (0f4963c)；**FLAG 双交付未决**：bw14-script-host lane-only `5535b86`+`b384a1e`（render_stream_sched_opt.rs 378 行——run_frame 相序断言+六切图帧流式+分配账）未进 main，与 main `0f4963c`+`f89f9ab` 并存，待主席择一。
+- [x] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。（4924509）；**FLAG 双交付未决**：bw14-script-host lane-only `96d8f67`+`7ddaae1`（render_visual_rerun.rs 309 行——三端复跑 differing_pixels=0 位级容差+TGA 截图字节恒等）未进 main，与 main `4924509`+`df48373` 并存，待主席择一。
 
 ### OPT-12-01 各观测通道开销
 
 降低日志、Watcher、Profiler 的观测成本。验证背压、关闭观测后的开销及新旧工具查询兼容。
 
-- [ ] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。
-- [ ] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。
-- [ ] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。
+- [x] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。（9cd6ad4）
+- [x] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。（1a64d63）；**FLAG 双交付未决**：bw14-script-host lane-only `9a74213`+`ea2d32a`（channel_gate_delta.rs 387 行——门差值 tick 5039→312ns ≈16×、Start/End 各 22%、禁用零新分配）未进 main，与 main `1a64d63`+`4111efb` 并存，待主席择一。
+- [x] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。（8f4e047）；**FLAG 双交付未决**：bw14-script-host lane-only `f4fce4f`（query_backpressure_interop.rs 211 行+watcher backpressure_query_contract.rs 255 行——背压 is_full 算术边逐断+QueryableLog run_query 真过滤管线幸存集 {11,13}）未进 main，与 main `8f4e047`+`cd3bd71` 并存，待主席择一。
 
 ### OPT-13-01 冷构建、增量与编辑器加载
 

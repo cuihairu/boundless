@@ -2031,9 +2031,11 @@ dependencies = [
  "message_logger",
  "physics",
  "platform",
+ "profiler",
  "regex",
  "resources",
  "sha2 0.10.9",
+ "watcher",
  "waypoint",
 ]
 

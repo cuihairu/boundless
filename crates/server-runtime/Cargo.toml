@@ -64,6 +64,12 @@ client = { workspace = true }
 # reference EL7 `message_logger` over UDP and TCP.
 message_logger = { workspace = true }
 
+# OPT-12-01-01: the observation channels' cost baseline drives the Watcher
+# registry, the MessageLogger entry writer and the profiler global from
+# outside their own crates (test-only edges).
+watcher = { workspace = true }
+profiler = { workspace = true }
+
 [[bench]]
 name = "tick"
 harness = false
