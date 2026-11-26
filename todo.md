@@ -2931,7 +2931,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。；**证据（本席 lane/bw15-platform，行仍开=三端基线未齐）**：`ci/release-baseline.sh` 可复跑（size/archive/first-run 三行+绿红自测），夹具 `docs/review/fixtures/opt-14-01-01/release-baseline.tsv`：linux x86_64 release 二进制 116126768 B、tar 23678496 B（sha256 56708c3…），首跑 `BaseApp is running` min 17 ms/median 26 ms/max 85 ms（14 次）；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、darwin 卡 libsqlite3-sys 无 SDK，两腿 PENDING。`ci/package.sh` 解压 prefix 无 res/server/bw.xml 致 package-smoke exit 124（BW-14-04 剩余面）。证据页 `docs/review/opt-14-01-01-release-baseline.md`。
 - [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（4cff41e；**A/B 实测**：release `strip=symbols`，二进制 116126768→792160 B（146.60×）、tar 23678579→401146 B（59.03×），首跑同 17–26 ms 区间无回归；`ci/package-size-ab.sh` 两腿独立 target dir 复跑，夹具 `docs/review/fixtures/opt-14-01-02/package-layout-ab.tsv`，证据 `docs/review/opt-14-01-02-package-layout.md`。坑：`strip` 合法值 none/debuginfo/symbols，非 false。）
-- [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
+- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（988ff5f；零行为改动+修脚本过时模块名：`ci/install-layout.sh` 十三行全 PASS（clean/smoke/cli/cli-res/res-server/parity/module/layout/upgrade/uninstall），自测 7/7；`boundless_core.so` 导入成功（answer()=42/engine_version()=14.4.1），升级还原篡改 res 且 data/db/user.db 保留、卸载删包保留 data；tar 872K（strip 生效）。夹具 `docs/review/fixtures/opt-14-01-03/install-upgrade-rerun.tsv`，证据 `docs/review/opt-14-01-03-install-upgrade-rerun.md`。坑：cdylib 名 `libpython_module.so` ≠ 安装名 `boundless_core.so` ≠ 旧脚本 `boundless.so`。）
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
 
@@ -4511,7 +4511,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。；**证据（本席 lane/bw15-platform，行仍开=三端基线未齐）**：`ci/release-baseline.sh` 可复跑（size/archive/first-run 三行+绿红自测），夹具 `docs/review/fixtures/opt-14-01-01/release-baseline.tsv`：linux x86_64 release 二进制 116126768 B、tar 23678496 B（sha256 56708c3…），首跑 `BaseApp is running` min 17 ms/median 26 ms/max 85 ms（14 次）；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、darwin 卡 libsqlite3-sys 无 SDK，两腿 PENDING。`ci/package.sh` 解压 prefix 无 res/server/bw.xml 致 package-smoke exit 124（BW-14-04 剩余面）。证据页 `docs/review/opt-14-01-01-release-baseline.md`。
 - [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（4cff41e；**A/B 实测**：release `strip=symbols`，二进制 116126768→792160 B（146.60×）、tar 23678579→401146 B（59.03×），首跑同 17–26 ms 区间无回归；`ci/package-size-ab.sh` 两腿独立 target dir 复跑，夹具 `docs/review/fixtures/opt-14-01-02/package-layout-ab.tsv`，证据 `docs/review/opt-14-01-02-package-layout.md`。坑：`strip` 合法值 none/debuginfo/symbols，非 false。）
-- [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
+- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（988ff5f；零行为改动+修脚本过时模块名：`ci/install-layout.sh` 十三行全 PASS（clean/smoke/cli/cli-res/res-server/parity/module/layout/upgrade/uninstall），自测 7/7；`boundless_core.so` 导入成功（answer()=42/engine_version()=14.4.1），升级还原篡改 res 且 data/db/user.db 保留、卸载删包保留 data；tar 872K（strip 生效）。夹具 `docs/review/fixtures/opt-14-01-03/install-upgrade-rerun.tsv`，证据 `docs/review/opt-14-01-03-install-upgrade-rerun.md`。坑：cdylib 名 `libpython_module.so` ≠ 安装名 `boundless_core.so` ≠ 旧脚本 `boundless.so`。）
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
 
@@ -6052,7 +6052,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。；**证据（本席 lane/bw15-platform，行仍开=三端基线未齐）**：`ci/release-baseline.sh` 可复跑（size/archive/first-run 三行+绿红自测），夹具 `docs/review/fixtures/opt-14-01-01/release-baseline.tsv`：linux x86_64 release 二进制 116126768 B、tar 23678496 B（sha256 56708c3…），首跑 `BaseApp is running` min 17 ms/median 26 ms/max 85 ms（14 次）；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、darwin 卡 libsqlite3-sys 无 SDK，两腿 PENDING。`ci/package.sh` 解压 prefix 无 res/server/bw.xml 致 package-smoke exit 124（BW-14-04 剩余面）。证据页 `docs/review/opt-14-01-01-release-baseline.md`。
 - [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（4cff41e；**A/B 实测**：release `strip=symbols`，二进制 116126768→792160 B（146.60×）、tar 23678579→401146 B（59.03×），首跑同 17–26 ms 区间无回归；`ci/package-size-ab.sh` 两腿独立 target dir 复跑，夹具 `docs/review/fixtures/opt-14-01-02/package-layout-ab.tsv`，证据 `docs/review/opt-14-01-02-package-layout.md`。坑：`strip` 合法值 none/debuginfo/symbols，非 false。）
-- [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
+- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（988ff5f；零行为改动+修脚本过时模块名：`ci/install-layout.sh` 十三行全 PASS（clean/smoke/cli/cli-res/res-server/parity/module/layout/upgrade/uninstall），自测 7/7；`boundless_core.so` 导入成功（answer()=42/engine_version()=14.4.1），升级还原篡改 res 且 data/db/user.db 保留、卸载删包保留 data；tar 872K（strip 生效）。夹具 `docs/review/fixtures/opt-14-01-03/install-upgrade-rerun.tsv`，证据 `docs/review/opt-14-01-03-install-upgrade-rerun.md`。坑：cdylib 名 `libpython_module.so` ≠ 安装名 `boundless_core.so` ≠ 旧脚本 `boundless.so`。）
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
 
@@ -7593,7 +7593,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。；**证据（本席 lane/bw15-platform，行仍开=三端基线未齐）**：`ci/release-baseline.sh` 可复跑（size/archive/first-run 三行+绿红自测），夹具 `docs/review/fixtures/opt-14-01-01/release-baseline.tsv`：linux x86_64 release 二进制 116126768 B、tar 23678496 B（sha256 56708c3…），首跑 `BaseApp is running` min 17 ms/median 26 ms/max 85 ms（14 次）；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、darwin 卡 libsqlite3-sys 无 SDK，两腿 PENDING。`ci/package.sh` 解压 prefix 无 res/server/bw.xml 致 package-smoke exit 124（BW-14-04 剩余面）。证据页 `docs/review/opt-14-01-01-release-baseline.md`。
 - [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（4cff41e；**A/B 实测**：release `strip=symbols`，二进制 116126768→792160 B（146.60×）、tar 23678579→401146 B（59.03×），首跑同 17–26 ms 区间无回归；`ci/package-size-ab.sh` 两腿独立 target dir 复跑，夹具 `docs/review/fixtures/opt-14-01-02/package-layout-ab.tsv`，证据 `docs/review/opt-14-01-02-package-layout.md`。坑：`strip` 合法值 none/debuginfo/symbols，非 false。）
-- [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
+- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（988ff5f；零行为改动+修脚本过时模块名：`ci/install-layout.sh` 十三行全 PASS（clean/smoke/cli/cli-res/res-server/parity/module/layout/upgrade/uninstall），自测 7/7；`boundless_core.so` 导入成功（answer()=42/engine_version()=14.4.1），升级还原篡改 res 且 data/db/user.db 保留、卸载删包保留 data；tar 872K（strip 生效）。夹具 `docs/review/fixtures/opt-14-01-03/install-upgrade-rerun.tsv`，证据 `docs/review/opt-14-01-03-install-upgrade-rerun.md`。坑：cdylib 名 `libpython_module.so` ≠ 安装名 `boundless_core.so` ≠ 旧脚本 `boundless.so`。）
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
 
@@ -9173,7 +9173,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。；**证据（本席 lane/bw15-platform，行仍开=三端基线未齐）**：`ci/release-baseline.sh` 可复跑（size/archive/first-run 三行+绿红自测），夹具 `docs/review/fixtures/opt-14-01-01/release-baseline.tsv`：linux x86_64 release 二进制 116126768 B、tar 23678496 B（sha256 56708c3…），首跑 `BaseApp is running` min 17 ms/median 26 ms/max 85 ms（14 次）；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、darwin 卡 libsqlite3-sys 无 SDK，两腿 PENDING。`ci/package.sh` 解压 prefix 无 res/server/bw.xml 致 package-smoke exit 124（BW-14-04 剩余面）。证据页 `docs/review/opt-14-01-01-release-baseline.md`。
 - [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（4cff41e；**A/B 实测**：release `strip=symbols`，二进制 116126768→792160 B（146.60×）、tar 23678579→401146 B（59.03×），首跑同 17–26 ms 区间无回归；`ci/package-size-ab.sh` 两腿独立 target dir 复跑，夹具 `docs/review/fixtures/opt-14-01-02/package-layout-ab.tsv`，证据 `docs/review/opt-14-01-02-package-layout.md`。坑：`strip` 合法值 none/debuginfo/symbols，非 false。）
-- [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
+- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（988ff5f；零行为改动+修脚本过时模块名：`ci/install-layout.sh` 十三行全 PASS（clean/smoke/cli/cli-res/res-server/parity/module/layout/upgrade/uninstall），自测 7/7；`boundless_core.so` 导入成功（answer()=42/engine_version()=14.4.1），升级还原篡改 res 且 data/db/user.db 保留、卸载删包保留 data；tar 872K（strip 生效）。夹具 `docs/review/fixtures/opt-14-01-03/install-upgrade-rerun.tsv`，证据 `docs/review/opt-14-01-03-install-upgrade-rerun.md`。坑：cdylib 名 `libpython_module.so` ≠ 安装名 `boundless_core.so` ≠ 旧脚本 `boundless.so`。）
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
 
@@ -10714,7 +10714,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。；**证据（本席 lane/bw15-platform，行仍开=三端基线未齐）**：`ci/release-baseline.sh` 可复跑（size/archive/first-run 三行+绿红自测），夹具 `docs/review/fixtures/opt-14-01-01/release-baseline.tsv`：linux x86_64 release 二进制 116126768 B、tar 23678496 B（sha256 56708c3…），首跑 `BaseApp is running` min 17 ms/median 26 ms/max 85 ms（14 次）；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、darwin 卡 libsqlite3-sys 无 SDK，两腿 PENDING。`ci/package.sh` 解压 prefix 无 res/server/bw.xml 致 package-smoke exit 124（BW-14-04 剩余面）。证据页 `docs/review/opt-14-01-01-release-baseline.md`。
 - [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（4cff41e；**A/B 实测**：release `strip=symbols`，二进制 116126768→792160 B（146.60×）、tar 23678579→401146 B（59.03×），首跑同 17–26 ms 区间无回归；`ci/package-size-ab.sh` 两腿独立 target dir 复跑，夹具 `docs/review/fixtures/opt-14-01-02/package-layout-ab.tsv`，证据 `docs/review/opt-14-01-02-package-layout.md`。坑：`strip` 合法值 none/debuginfo/symbols，非 false。）
-- [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
+- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（988ff5f；零行为改动+修脚本过时模块名：`ci/install-layout.sh` 十三行全 PASS（clean/smoke/cli/cli-res/res-server/parity/module/layout/upgrade/uninstall），自测 7/7；`boundless_core.so` 导入成功（answer()=42/engine_version()=14.4.1），升级还原篡改 res 且 data/db/user.db 保留、卸载删包保留 data；tar 872K（strip 生效）。夹具 `docs/review/fixtures/opt-14-01-03/install-upgrade-rerun.tsv`，证据 `docs/review/opt-14-01-03-install-upgrade-rerun.md`。坑：cdylib 名 `libpython_module.so` ≠ 安装名 `boundless_core.so` ≠ 旧脚本 `boundless.so`。）
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
 
