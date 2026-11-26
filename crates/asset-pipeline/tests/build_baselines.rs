@@ -4,13 +4,21 @@
 //! The fixed assets (12 nested `.txt` sources) drive the shipped batch
 //! pipeline through its three baseline legs: a **cold build** (empty
 //! output tree, every asset converted, a `{source}.deps` sidecar per
-//! source in the intermediate tree), an **incremental build** (the
-//! same tree rebuilt — every task answers up-to-date, zero conversions,
+//! source in the intermediate tree), an **incremental build** (a fresh
+//! pipeline session over the same tree — every task answers up-to-date
+//! from the on-disk dependency lists and file hashes, zero conversions,
 //! byte-identical outputs), and an **editor load** (a fresh
 //! `BwResource` opened over the output tree reads every artifact back
 //! through the multi-file-system face, bytes equal to the source). A
 //! second independent cold build reruns to identical digests — the
 //! artifacts are reproducible.
+//!
+//! The incremental leg registers a fresh session deliberately: the
+//! shipped `queue_task` only queues tasks whose status is `New`, so a
+//! second `build` on the same session re-queues nothing and would
+//! exercise no mechanism at all. A fresh session re-hashes every
+//! source, finds each task's `.deps` list and outputs intact, and
+//! answers up-to-date through the real dependency checks.
 //!
 //! Wall-clocks are printed (`BASELINE` lines) as probe data only; the
 //! contracts are asserted.
@@ -203,48 +211,56 @@ fn counting_converter(_params: &str) -> Box<dyn Converter> {
     Box::new(CountingConverter)
 }
 
-/// One build tree: the fixed assets planted, the pipeline registered
-/// (rule + converter + paths), `init_compiler` done.
+/// One build tree: the fixed assets planted and the persistent
+/// `out/`/`intermediate/` roots named. Each walk registers a fresh
+/// pipeline session over the tree — the shipped `queue_task` only
+/// queues tasks whose status is `New`, so a second build on the same
+/// session would re-queue nothing.
 struct BuildTree {
     _dir: TempDir,
     assets: String,
     output: String,
     intermediate: String,
-    compiler: BatchCompiler,
+    type_id: u64,
 }
 
-fn build_tree(tag: &str, type_id: u64, creator: ConverterCreator) -> BuildTree {
+fn build_tree(tag: &str, type_id: u64) -> BuildTree {
     let dir = TempDir::new(tag);
     let assets = plant_assets(dir.path());
     let output = format!("{}/out/", dir.path().to_string_lossy());
     let intermediate = format!("{}/intermediate/", dir.path().to_string_lossy());
+    BuildTree {
+        _dir: dir,
+        assets,
+        output,
+        intermediate,
+        type_id,
+    }
+}
 
-    let mut resource = BwResource::init_paths(&[assets.as_str()]);
+/// A fresh pipeline session over the tree: the pipeline registered
+/// (rule + converter + paths), `init_compiler` done.
+fn register_session(tree: &BuildTree, creator: ConverterCreator) -> BatchCompiler {
+    let mut resource = BwResource::init_paths(&[tree.assets.as_str()]);
     resource.enable_editor_default_root();
     let resource = Rc::new(resource);
 
     let mut bc = BatchCompiler::new(resource.clone());
     // The shipped setters (what the options' apply pushes through): the
     // intermediate path first, the output path after it.
-    bc.compiler().set_intermediate_path(&intermediate);
-    bc.compiler().set_output_path(&output);
+    bc.compiler().set_intermediate_path(&tree.intermediate);
+    bc.compiler().set_output_path(&tree.output);
     bc.compiler()
-        .register_conversion_rule(Box::new(BaselineRule(type_id)));
+        .register_conversion_rule(Box::new(BaselineRule(tree.type_id)));
     bc.compiler().register_converter(ConverterInfo {
         name: "baseline".to_string(),
-        type_id,
+        type_id: tree.type_id,
         version: "1.0".to_string(),
         flags: ConverterFlags::DEFAULT_FLAGS,
         creator,
     });
     bc.init_compiler();
-    BuildTree {
-        _dir: dir,
-        assets,
-        output,
-        intermediate,
-        compiler: bc,
-    }
+    bc
 }
 
 /// The output path for a fixture's relative path.
@@ -273,14 +289,15 @@ fn ledger(tree: &BuildTree) -> Vec<(String, Vec<u8>, Vec<u8>, u64)> {
 
 #[test]
 fn the_fixed_asset_baseline_records_cold_incremental_and_editor_load() {
-    let tree = build_tree("walk", 7, counting_converter);
+    let tree = build_tree("walk", 7);
 
     // --- the cold build: every asset converts, every source grows a
     // .deps sidecar, the outputs land in the output tree
     let started = Instant::now();
-    tree.compiler.build(std::slice::from_ref(&tree.assets));
+    let cold = register_session(&tree, counting_converter);
+    cold.build(std::slice::from_ref(&tree.assets));
     let cold_ns = started.elapsed().as_nanos();
-    assert_eq!(tree.compiler.get_failed_count(), 0, "the cold build passed");
+    assert_eq!(cold.get_failed_count(), 0, "the cold build passed");
     assert_eq!(
         CONVERTS.load(Ordering::SeqCst),
         12,
@@ -296,13 +313,15 @@ fn the_fixed_asset_baseline_records_cold_incremental_and_editor_load() {
         );
     }
 
-    // --- the incremental build: the same tree again — every task
-    // answers up-to-date, nothing converts, the outputs hold
+    // --- the incremental build: a fresh session over the same tree —
+    // every task answers up-to-date from the on-disk dependency lists
+    // and file hashes, nothing converts, the outputs hold
     let started = Instant::now();
-    tree.compiler.build(std::slice::from_ref(&tree.assets));
+    let incremental = register_session(&tree, counting_converter);
+    incremental.build(std::slice::from_ref(&tree.assets));
     let incremental_ns = started.elapsed().as_nanos();
     assert_eq!(
-        tree.compiler.get_failed_count(),
+        incremental.get_failed_count(),
         0,
         "the incremental build passed"
     );
@@ -356,13 +375,15 @@ fn the_fixed_asset_baseline_records_cold_incremental_and_editor_load() {
 
 #[test]
 fn the_cold_build_reruns_to_identical_artifacts() {
-    let tree_a = build_tree("rerun-a", 8, plain_converter);
-    tree_a.compiler.build(std::slice::from_ref(&tree_a.assets));
-    assert_eq!(tree_a.compiler.get_failed_count(), 0, "rerun a passed");
+    let tree_a = build_tree("rerun-a", 8);
+    let a = register_session(&tree_a, plain_converter);
+    a.build(std::slice::from_ref(&tree_a.assets));
+    assert_eq!(a.get_failed_count(), 0, "rerun a passed");
 
-    let tree_b = build_tree("rerun-b", 8, plain_converter);
-    tree_b.compiler.build(std::slice::from_ref(&tree_b.assets));
-    assert_eq!(tree_b.compiler.get_failed_count(), 0, "rerun b passed");
+    let tree_b = build_tree("rerun-b", 8);
+    let b = register_session(&tree_b, plain_converter);
+    b.build(std::slice::from_ref(&tree_b.assets));
+    assert_eq!(b.get_failed_count(), 0, "rerun b passed");
 
     let ledger_a = ledger(&tree_a);
     let ledger_b = ledger(&tree_b);

@@ -32,11 +32,18 @@ observable for "converted" (see the finding below).
 
 ## Incremental build
 
-The same tree is rebuilt with no changes. Asserted: zero failures; the
-converter-call counter still at 12 (nothing re-converted); and each
-output byte-identical to the cold build's. Probe sample from one run:
-cold 17.85 ms → incremental 0.30 ms (~60×) — printed only, machine
-noise dominates at this asset size.
+A fresh pipeline session is registered over the same (unchanged) tree
+and rebuilt — every task answers up-to-date through the shipped
+dependency checks (the on-disk `.deps` list, the source hash, the
+stored output hashes), so zero conversions happen and each output is
+byte-identical to the cold build's. The leg deliberately uses a new
+session per walk: the shipped `queue_task` only queues tasks whose
+status is `New`, so a second `build` on the same session re-queues
+nothing ("Found: 0 tasks") and exercises no mechanism at all. Probe
+sample from one run (printed only): cold 5.83 ms → incremental 3.99
+ms — the fresh session re-walks and re-hashes every source, so at this
+12-file scale the saving is small; the counter and the digests are the
+contract.
 
 ## Editor load
 
@@ -53,19 +60,29 @@ A second independent cold build (fresh temp tree, same fixtures, plain
 copy converter) produces byte-identical outputs for all 12 assets and
 identical digests — `BASELINE-RERUN files=12 digests_equal=true`.
 
-## Finding
+## Findings
 
-The batch driver's `task_up_to_date_count` hook is driven off
-`TaskRecord::up_to_date` (default `true`), but `on_pre_convert` clears
-it before the `process_conversion` early-out returns, so the summary
-line can report `12 converted, 0 up-to-date` on a no-op rebuild. The
-real skip is observable at the converter seam (zero additional calls),
-which is what the test asserts. This is a reporting-label quirk in the
-shipped driver, not a rebuild that re-ran conversion work.
+**The batch driver's task summary mislabels a no-op rebuild.** The
+`task_up_to_date_count` hook is driven off `TaskRecord::up_to_date`
+(default `true`), but `on_pre_convert` clears it before the
+`process_conversion` early-out returns, so the summary line can report
+`12 converted, 0 up-to-date` on a no-op rebuild. The real skip is
+observable at the converter seam (zero additional calls), which is
+what the test asserts. This is a reporting-label quirk in the shipped
+driver, not a rebuild that re-ran conversion work.
+
+**A second `build` on the same session is a no-op.** `queue_task`
+(asset_compiler.rs) only queues tasks whose status is still `New`;
+after the first build every task is `Done`, so the same session's
+second walk reports `Found: 0 tasks` and nothing else happens. An
+honest incremental measurement must register a fresh session over the
+persistent trees — which is what this test (and OPT-13-01-02's cache
+walks) do.
 
 ## Gates
 
-- `cargo test -p asset-pipeline`: 384 lib + 2 new integration passed,
-  0 failed (one doc-test target with 0 tests).
+- `cargo test -p asset-pipeline`: 384 lib + 2 + 2 integration passed,
+  0 failed (the incremental-leg correction reruns `build_baselines`
+  alongside the OPT-13-01-02 target).
 - `cargo fmt -p asset-pipeline -- --check`: clean.
 - `cargo clippy -p asset-pipeline --all-targets -- -D warnings`: no lint.
