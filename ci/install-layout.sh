@@ -12,9 +12,9 @@
 # convention under /opt/boundless (compare docs/review/bw14-04-01-...md):
 #   bin/boundless-server    the server role binary (CLI: boundless-server <role>)
 #   bin/process_defs        the entitydef CLI (CLI: process_defs [-r res] ...)
-#   lib/python/boundless.so the CPython module (the cdylib's install rename,
+#   lib/python/boundless_core.so the CPython module (the cdylib's install rename,
 #                           the exact step crates/python-module/tests/import.rs
-#                           pins: CPython resolves `boundless.so`, not `lib-`)
+#                           pins: CPython resolves `boundless_core.so`, not `lib-`)
 #   res/server/bw.xml       server configuration (BW-01-04 config chain)
 #   res/scripts/**          sample entity definitions and scripts (BW-14-01)
 #   data/                   user-data dir — NOT packaged: install creates it,
@@ -107,7 +107,7 @@ stage_prefix() {
     if [ -d "$mod" ]; then
         cp -a "$mod/." "$prefix/lib/python/" || return 1
     else
-        cp "$mod" "$prefix/lib/python/boundless.so" || return 1
+        cp "$mod" "$prefix/lib/python/boundless_core.so" || return 1
     fi
 
     cp -a "$res" "$prefix/res" || return 1
@@ -290,15 +290,14 @@ build_install_parity() {
 module_import() {
     local prefix="$1" py out rc
     py="$(cur_py)"
-    [ -f "$prefix/lib/python/boundless.so" ] || [ -d "$prefix/lib/python/boundless" ] \
+    [ -f "$prefix/lib/python/boundless_core.so" ] || [ -d "$prefix/lib/python/boundless_core" ] \
         || { echo "no installed boundless module"; return 2; }
     out="$(PYTHONPATH="$prefix/lib/python" "$py" -c '
-import boundless
-assert boundless.__name__ == "boundless", boundless.__name__
-assert boundless.__version__, "missing __version__"
-assert callable(boundless.version), "missing version()"
-assert boundless.version() == boundless.__version__, "version() != __version__"
-print("boundless", boundless.__version__, "imported")
+import boundless_core as m
+assert m.answer() == 42, m.answer()
+assert m.engine_version() == "14.4.1", m.engine_version()
+assert m.__version__, "missing __version__"
+print("boundless_core", m.__version__, "imported")
 ' 2>&1)"
     rc=$?
     if [ "$rc" -ne 0 ]; then
@@ -321,8 +320,8 @@ layout_present() {
     [ -f "$prefix/res/scripts/entity_defs/Account.def" ] || { echo "missing Account.def"; return 1; }
     [ -x "$prefix/bin/$SERVER" ] || { echo "bin/$SERVER not executable"; return 1; }
     [ -x "$prefix/bin/$CLI" ] || { echo "bin/$CLI not executable"; return 1; }
-    if [ ! -f "$prefix/lib/python/boundless.so" ] && [ ! -d "$prefix/lib/python/boundless" ]; then
-        echo "lib/python/boundless module missing"
+    if [ ! -f "$prefix/lib/python/boundless_core.so" ] && [ ! -d "$prefix/lib/python/boundless_core" ]; then
+        echo "lib/python/boundless_core module missing"
         return 1
     fi
     [ -d "$prefix/data" ] || { echo "data dir missing"; return 1; }
@@ -366,7 +365,13 @@ run_all() {
         ci_pass install-build "release build of $SERVER, $CLI, python-module"
         bin="$REPO_ROOT/target/release/$SERVER"
         cli="$REPO_ROOT/target/release/$CLI"
-        mod="$REPO_ROOT/target/release/libboundless.so"
+        # The cdylib follows the crate name: `python-module` builds
+        # libpython_module.so. Older docs name libboundless.so; accept both
+        # so the lane measures whichever the workspace produces.
+        mod="$REPO_ROOT/target/release/libpython_module.so"
+        if [ ! -e "$mod" ] && [ -e "$REPO_ROOT/target/release/libboundless.so" ]; then
+            mod="$REPO_ROOT/target/release/libboundless.so"
+        fi
     fi
 
     for f in "$bin" "$cli" "$mod"; do
@@ -521,16 +526,18 @@ exit 0'
 esac
 exit 1'
 
-    # The green module stub is a pure-Python package dir: `import boundless`
-    # resolves `lib/python/boundless/__init__.py`, the same observable the
-    # real `boundless.so` satisfies. The real layout ships the extension
+    # The green module stub is a pure-Python package dir: `import boundless_core`
+    # resolves `lib/python/boundless_core/__init__.py`, the same observable the
+    # real `boundless_core.so` satisfies. The real layout ships the extension
     # module; the stub proves the check measures the import, not the build.
     mod="$r/module"
-    mkdir -p "$mod/boundless"
-    cat >"$mod/boundless/__init__.py" <<'PY'
+    mkdir -p "$mod/boundless_core"
+    cat >"$mod/boundless_core/__init__.py" <<'PY'
 __version__ = "0.0-stub"
-def version():
-    return __version__
+def answer():
+    return 42
+def engine_version():
+    return "14.4.1"
 PY
 
     res="$r/res"
@@ -595,7 +602,7 @@ esac
 exit 1'
     rm -rf "$mod"
     mkdir -p "$mod"
-    printf 'not a shared object' >"$mod/boundless.so"
+    printf 'not a shared object' >"$mod/boundless_core.so"
     out="$(CI_OUT="$r/manifest" CI_LAYOUT_OUT="$r/out" CI_LAYOUT_BIN="$bin" CI_LAYOUT_CLI="$cli" \
         CI_LAYOUT_MOD="$mod" CI_LAYOUT_RES="$res" "$0" 2>&1)"
     rc=$?
