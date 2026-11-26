@@ -1,0 +1,16 @@
+profiler_entry_on_ns	235
+profiler_entry_off_ns	146
+profiler_entry_delta_ratio	1.611
+profiler_tick_on_ns	2907
+profiler_tick_off_ns	77
+profiler_tick_delta_ratio	37.663
+profiler_gate_reports_disabled	1
+eventstats_track_on_ns	449
+eventstats_track_off_ns	16
+eventstats_delta_ratio	28.649
+eventstats_gate_reports_disabled	1
+log_write_on_ns	213
+log_write_gated_ns	13
+log_gate_delta_ratio	15.996
+log_gate_priority_floor	4
+eval_wall_ms	4.225
