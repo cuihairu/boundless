@@ -2977,9 +2977,11 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化发布包和 Demo 首次启动，衡量体积和安装耗时，复跑干净安装、升级及脚本导入。
 
-- [x] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。（edea922；双交付登记：lane/bw15-platform 7ae598b 同面 ci/release-baseline.sh，主席择一）
-- [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（e0d3672；双交付登记：lane/bw15-platform 4cff41e 同面 profile strip=symbols，主席择一）
-- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（797e770=lane/bw15-platform 988ff5f 跨席复测勾：修脚本过时模块名 libboundless.so→libpython_module.so、安装名 boundless_core.so；install-layout 十三行全 PASS+自测 7/7，boundless_core 0.1.0 导入 answer()=42/engine_version()=14.4.1，升级还原篡改 res 且 data/db/user.db 保留，卸载删包保留 data；本树 tar 31M 无 profile strip=另一交付面 4cff41e 主席择一）
+- [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。（双交付登记待主席择一：bw14-script-host `edea922` ci/package-baseline.sh[454 行+package-daily workflow+三端 TSV 11 行：linux 26,616,105 B measured、两腿 PENDING 注明 BW-15-03/04 卡点+自测绿]vs bw15-platform `7ae598b` ci/release-baseline.sh[168 行+14 次首跑 min/median/max 17/26/85ms+三端 TSV：linux 116,126,768 B binary/23,678,496 B tar/两腿 PENDING 注明 mercury-16 缺 Windows 臂+sqlite3-sys 缺 darwin SDK]——同为 linux 单腿 measured 三端行保持开；patch-id PARALLEL 异脚本名异 TSV 格式，择须用户明示+全重测）
+  - 本席登记归档（2026-11-26，主席双交付待择）：本席 `edea922`（ci/package-baseline.sh 454 行+package-daily workflow+三端 TSV 11 行：linux 26,616,105 B measured、两腿 PENDING BW-15-03/04 卡点）已并入 main 行；择须用户明示+全重测。
+- [ ] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（双交付登记待主席择一：bw14-script-host `e0d3672` ci/package.sh strip=symbols+固定 archive metadata[ELF debug sidecar+strip+sorted deterministic tar[archive 26,616,105→478,760 B −98.2%、binary→1,123,056 B、sidecar 130,193,992 B 留 staging、SHA-256 双跑同、首跑 1.02→1.03s 墙钟无增益]]vs bw15-platform `4cff41e` Cargo.toml [profile.release] strip=symbols+ci/package-size-ab.sh[独立 target dir A/B 复跑]——同为 strip 路线；patch-id PARALLEL 异脚本异数字，择须用户明示+全重测；行保持开）
+  - 本席登记归档（2026-11-26，主席双交付待择）：本席 `e0d3672`（ci/package.sh strip=symbols+确定性 tar 26,616,105→478,760 B −98.2%+首跑 1.02→1.03s 墙钟）已并入 main 行；择须用户明示+全重测。
+- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（main `b62977b`=cherry-pick 988ff5f/797e770 patch-id 镜像[修 ci/install-layout.sh 过时模块名 libboundless.so→libpython_module.so、安装名 boundless.so→boundless_core.so，与 crates/python-module MODULE_NAME=boundless_core 对齐]；真机 `CI_RUNNERS_TIMEOUT=600 bash ci/install-layout.sh` 全部 PASS rc=0——install-build/stage(28M tar)/clean/smoke-server(starting+is running+shutdown exit 0)/cli/cli-res/res-server/build-parity/module(boundless_core 0.1.0 裸导入)/layout/upgrade(篡改 res 还原+data/db/user.db 保留)/uninstall(删包保 data)；证据 docs/review/opt-14-01-03-install-upgrade-rerun.md + fixtures opt-14-01-03/install-upgrade-rerun.tsv；三端本行验收=脚本/数据保留 Linux 面，Windows/macOS 运行属 BW-15-03/04 矩阵）
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
 
@@ -4614,9 +4616,11 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化发布包和 Demo 首次启动，衡量体积和安装耗时，复跑干净安装、升级及脚本导入。
 
-- [x] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。（edea922；双交付登记：lane/bw15-platform 7ae598b 同面 ci/release-baseline.sh，主席择一）
-- [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（e0d3672；双交付登记：lane/bw15-platform 4cff41e 同面 profile strip=symbols，主席择一）
-- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（797e770=lane/bw15-platform 988ff5f 跨席复测勾：修脚本过时模块名 libboundless.so→libpython_module.so、安装名 boundless_core.so；install-layout 十三行全 PASS+自测 7/7，boundless_core 0.1.0 导入 answer()=42/engine_version()=14.4.1，升级还原篡改 res 且 data/db/user.db 保留，卸载删包保留 data；本树 tar 31M 无 profile strip=另一交付面 4cff41e 主席择一）
+- [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。（双交付登记待主席择一：bw14-script-host `edea922` ci/package-baseline.sh[454 行+package-daily workflow+三端 TSV 11 行：linux 26,616,105 B measured、两腿 PENDING 注明 BW-15-03/04 卡点+自测绿]vs bw15-platform `7ae598b` ci/release-baseline.sh[168 行+14 次首跑 min/median/max 17/26/85ms+三端 TSV：linux 116,126,768 B binary/23,678,496 B tar/两腿 PENDING 注明 mercury-16 缺 Windows 臂+sqlite3-sys 缺 darwin SDK]——同为 linux 单腿 measured 三端行保持开；patch-id PARALLEL 异脚本名异 TSV 格式，择须用户明示+全重测）
+  - 本席登记归档（2026-11-26，主席双交付待择）：本席 `edea922`（ci/package-baseline.sh 454 行+package-daily workflow+三端 TSV 11 行：linux 26,616,105 B measured、两腿 PENDING BW-15-03/04 卡点）已并入 main 行；择须用户明示+全重测。
+- [ ] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（双交付登记待主席择一：bw14-script-host `e0d3672` ci/package.sh strip=symbols+固定 archive metadata[ELF debug sidecar+strip+sorted deterministic tar[archive 26,616,105→478,760 B −98.2%、binary→1,123,056 B、sidecar 130,193,992 B 留 staging、SHA-256 双跑同、首跑 1.02→1.03s 墙钟无增益]]vs bw15-platform `4cff41e` Cargo.toml [profile.release] strip=symbols+ci/package-size-ab.sh[独立 target dir A/B 复跑]——同为 strip 路线；patch-id PARALLEL 异脚本异数字，择须用户明示+全重测；行保持开）
+  - 本席登记归档（2026-11-26，主席双交付待择）：本席 `e0d3672`（ci/package.sh strip=symbols+确定性 tar 26,616,105→478,760 B −98.2%+首跑 1.02→1.03s 墙钟）已并入 main 行；择须用户明示+全重测。
+- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（main `b62977b`=cherry-pick 988ff5f/797e770 patch-id 镜像[修 ci/install-layout.sh 过时模块名 libboundless.so→libpython_module.so、安装名 boundless.so→boundless_core.so，与 crates/python-module MODULE_NAME=boundless_core 对齐]；真机 `CI_RUNNERS_TIMEOUT=600 bash ci/install-layout.sh` 全部 PASS rc=0——install-build/stage(28M tar)/clean/smoke-server(starting+is running+shutdown exit 0)/cli/cli-res/res-server/build-parity/module(boundless_core 0.1.0 裸导入)/layout/upgrade(篡改 res 还原+data/db/user.db 保留)/uninstall(删包保 data)；证据 docs/review/opt-14-01-03-install-upgrade-rerun.md + fixtures opt-14-01-03/install-upgrade-rerun.tsv；三端本行验收=脚本/数据保留 Linux 面，Windows/macOS 运行属 BW-15-03/04 矩阵）
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
 
@@ -6212,9 +6216,11 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化发布包和 Demo 首次启动，衡量体积和安装耗时，复跑干净安装、升级及脚本导入。
 
-- [x] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。（edea922；双交付登记：lane/bw15-platform 7ae598b 同面 ci/release-baseline.sh，主席择一）
-- [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（e0d3672；双交付登记：lane/bw15-platform 4cff41e 同面 profile strip=symbols，主席择一）
-- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（797e770=lane/bw15-platform 988ff5f 跨席复测勾：修脚本过时模块名 libboundless.so→libpython_module.so、安装名 boundless_core.so；install-layout 十三行全 PASS+自测 7/7，boundless_core 0.1.0 导入 answer()=42/engine_version()=14.4.1，升级还原篡改 res 且 data/db/user.db 保留，卸载删包保留 data；本树 tar 31M 无 profile strip=另一交付面 4cff41e 主席择一）
+- [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。（双交付登记待主席择一：bw14-script-host `edea922` ci/package-baseline.sh[454 行+package-daily workflow+三端 TSV 11 行：linux 26,616,105 B measured、两腿 PENDING 注明 BW-15-03/04 卡点+自测绿]vs bw15-platform `7ae598b` ci/release-baseline.sh[168 行+14 次首跑 min/median/max 17/26/85ms+三端 TSV：linux 116,126,768 B binary/23,678,496 B tar/两腿 PENDING 注明 mercury-16 缺 Windows 臂+sqlite3-sys 缺 darwin SDK]——同为 linux 单腿 measured 三端行保持开；patch-id PARALLEL 异脚本名异 TSV 格式，择须用户明示+全重测）
+  - 本席登记归档（2026-11-26，主席双交付待择）：本席 `edea922`（ci/package-baseline.sh 454 行+package-daily workflow+三端 TSV 11 行：linux 26,616,105 B measured、两腿 PENDING BW-15-03/04 卡点）已并入 main 行；择须用户明示+全重测。
+- [ ] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（双交付登记待主席择一：bw14-script-host `e0d3672` ci/package.sh strip=symbols+固定 archive metadata[ELF debug sidecar+strip+sorted deterministic tar[archive 26,616,105→478,760 B −98.2%、binary→1,123,056 B、sidecar 130,193,992 B 留 staging、SHA-256 双跑同、首跑 1.02→1.03s 墙钟无增益]]vs bw15-platform `4cff41e` Cargo.toml [profile.release] strip=symbols+ci/package-size-ab.sh[独立 target dir A/B 复跑]——同为 strip 路线；patch-id PARALLEL 异脚本异数字，择须用户明示+全重测；行保持开）
+  - 本席登记归档（2026-11-26，主席双交付待择）：本席 `e0d3672`（ci/package.sh strip=symbols+确定性 tar 26,616,105→478,760 B −98.2%+首跑 1.02→1.03s 墙钟）已并入 main 行；择须用户明示+全重测。
+- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（main `b62977b`=cherry-pick 988ff5f/797e770 patch-id 镜像[修 ci/install-layout.sh 过时模块名 libboundless.so→libpython_module.so、安装名 boundless.so→boundless_core.so，与 crates/python-module MODULE_NAME=boundless_core 对齐]；真机 `CI_RUNNERS_TIMEOUT=600 bash ci/install-layout.sh` 全部 PASS rc=0——install-build/stage(28M tar)/clean/smoke-server(starting+is running+shutdown exit 0)/cli/cli-res/res-server/build-parity/module(boundless_core 0.1.0 裸导入)/layout/upgrade(篡改 res 还原+data/db/user.db 保留)/uninstall(删包保 data)；证据 docs/review/opt-14-01-03-install-upgrade-rerun.md + fixtures opt-14-01-03/install-upgrade-rerun.tsv；三端本行验收=脚本/数据保留 Linux 面，Windows/macOS 运行属 BW-15-03/04 矩阵）
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
 
@@ -7810,9 +7816,11 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化发布包和 Demo 首次启动，衡量体积和安装耗时，复跑干净安装、升级及脚本导入。
 
-- [x] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。（edea922；双交付登记：lane/bw15-platform 7ae598b 同面 ci/release-baseline.sh，主席择一）
-- [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（e0d3672；双交付登记：lane/bw15-platform 4cff41e 同面 profile strip=symbols，主席择一）
-- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（797e770=lane/bw15-platform 988ff5f 跨席复测勾：修脚本过时模块名 libboundless.so→libpython_module.so、安装名 boundless_core.so；install-layout 十三行全 PASS+自测 7/7，boundless_core 0.1.0 导入 answer()=42/engine_version()=14.4.1，升级还原篡改 res 且 data/db/user.db 保留，卸载删包保留 data；本树 tar 31M 无 profile strip=另一交付面 4cff41e 主席择一）
+- [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。（双交付登记待主席择一：bw14-script-host `edea922` ci/package-baseline.sh[454 行+package-daily workflow+三端 TSV 11 行：linux 26,616,105 B measured、两腿 PENDING 注明 BW-15-03/04 卡点+自测绿]vs bw15-platform `7ae598b` ci/release-baseline.sh[168 行+14 次首跑 min/median/max 17/26/85ms+三端 TSV：linux 116,126,768 B binary/23,678,496 B tar/两腿 PENDING 注明 mercury-16 缺 Windows 臂+sqlite3-sys 缺 darwin SDK]——同为 linux 单腿 measured 三端行保持开；patch-id PARALLEL 异脚本名异 TSV 格式，择须用户明示+全重测）
+  - 本席登记归档（2026-11-26，主席双交付待择）：本席 `edea922`（ci/package-baseline.sh 454 行+package-daily workflow+三端 TSV 11 行：linux 26,616,105 B measured、两腿 PENDING BW-15-03/04 卡点）已并入 main 行；择须用户明示+全重测。
+- [ ] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（双交付登记待主席择一：bw14-script-host `e0d3672` ci/package.sh strip=symbols+固定 archive metadata[ELF debug sidecar+strip+sorted deterministic tar[archive 26,616,105→478,760 B −98.2%、binary→1,123,056 B、sidecar 130,193,992 B 留 staging、SHA-256 双跑同、首跑 1.02→1.03s 墙钟无增益]]vs bw15-platform `4cff41e` Cargo.toml [profile.release] strip=symbols+ci/package-size-ab.sh[独立 target dir A/B 复跑]——同为 strip 路线；patch-id PARALLEL 异脚本异数字，择须用户明示+全重测；行保持开）
+  - 本席登记归档（2026-11-26，主席双交付待择）：本席 `e0d3672`（ci/package.sh strip=symbols+确定性 tar 26,616,105→478,760 B −98.2%+首跑 1.02→1.03s 墙钟）已并入 main 行；择须用户明示+全重测。
+- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（main `b62977b`=cherry-pick 988ff5f/797e770 patch-id 镜像[修 ci/install-layout.sh 过时模块名 libboundless.so→libpython_module.so、安装名 boundless.so→boundless_core.so，与 crates/python-module MODULE_NAME=boundless_core 对齐]；真机 `CI_RUNNERS_TIMEOUT=600 bash ci/install-layout.sh` 全部 PASS rc=0——install-build/stage(28M tar)/clean/smoke-server(starting+is running+shutdown exit 0)/cli/cli-res/res-server/build-parity/module(boundless_core 0.1.0 裸导入)/layout/upgrade(篡改 res 还原+data/db/user.db 保留)/uninstall(删包保 data)；证据 docs/review/opt-14-01-03-install-upgrade-rerun.md + fixtures opt-14-01-03/install-upgrade-rerun.tsv；三端本行验收=脚本/数据保留 Linux 面，Windows/macOS 运行属 BW-15-03/04 矩阵）
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
 
@@ -9447,9 +9455,11 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化发布包和 Demo 首次启动，衡量体积和安装耗时，复跑干净安装、升级及脚本导入。
 
-- [x] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。（edea922；双交付登记：lane/bw15-platform 7ae598b 同面 ci/release-baseline.sh，主席择一）
-- [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（e0d3672；双交付登记：lane/bw15-platform 4cff41e 同面 profile strip=symbols，主席择一）
-- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（797e770=lane/bw15-platform 988ff5f 跨席复测勾：修脚本过时模块名 libboundless.so→libpython_module.so、安装名 boundless_core.so；install-layout 十三行全 PASS+自测 7/7，boundless_core 0.1.0 导入 answer()=42/engine_version()=14.4.1，升级还原篡改 res 且 data/db/user.db 保留，卸载删包保留 data；本树 tar 31M 无 profile strip=另一交付面 4cff41e 主席择一）
+- [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。（双交付登记待主席择一：bw14-script-host `edea922` ci/package-baseline.sh[454 行+package-daily workflow+三端 TSV 11 行：linux 26,616,105 B measured、两腿 PENDING 注明 BW-15-03/04 卡点+自测绿]vs bw15-platform `7ae598b` ci/release-baseline.sh[168 行+14 次首跑 min/median/max 17/26/85ms+三端 TSV：linux 116,126,768 B binary/23,678,496 B tar/两腿 PENDING 注明 mercury-16 缺 Windows 臂+sqlite3-sys 缺 darwin SDK]——同为 linux 单腿 measured 三端行保持开；patch-id PARALLEL 异脚本名异 TSV 格式，择须用户明示+全重测）
+  - 本席登记归档（2026-11-26，主席双交付待择）：本席 `edea922`（ci/package-baseline.sh 454 行+package-daily workflow+三端 TSV 11 行：linux 26,616,105 B measured、两腿 PENDING BW-15-03/04 卡点）已并入 main 行；择须用户明示+全重测。
+- [ ] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（双交付登记待主席择一：bw14-script-host `e0d3672` ci/package.sh strip=symbols+固定 archive metadata[ELF debug sidecar+strip+sorted deterministic tar[archive 26,616,105→478,760 B −98.2%、binary→1,123,056 B、sidecar 130,193,992 B 留 staging、SHA-256 双跑同、首跑 1.02→1.03s 墙钟无增益]]vs bw15-platform `4cff41e` Cargo.toml [profile.release] strip=symbols+ci/package-size-ab.sh[独立 target dir A/B 复跑]——同为 strip 路线；patch-id PARALLEL 异脚本异数字，择须用户明示+全重测；行保持开）
+  - 本席登记归档（2026-11-26，主席双交付待择）：本席 `e0d3672`（ci/package.sh strip=symbols+确定性 tar 26,616,105→478,760 B −98.2%+首跑 1.02→1.03s 墙钟）已并入 main 行；择须用户明示+全重测。
+- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（main `b62977b`=cherry-pick 988ff5f/797e770 patch-id 镜像[修 ci/install-layout.sh 过时模块名 libboundless.so→libpython_module.so、安装名 boundless.so→boundless_core.so，与 crates/python-module MODULE_NAME=boundless_core 对齐]；真机 `CI_RUNNERS_TIMEOUT=600 bash ci/install-layout.sh` 全部 PASS rc=0——install-build/stage(28M tar)/clean/smoke-server(starting+is running+shutdown exit 0)/cli/cli-res/res-server/build-parity/module(boundless_core 0.1.0 裸导入)/layout/upgrade(篡改 res 还原+data/db/user.db 保留)/uninstall(删包保 data)；证据 docs/review/opt-14-01-03-install-upgrade-rerun.md + fixtures opt-14-01-03/install-upgrade-rerun.tsv；三端本行验收=脚本/数据保留 Linux 面，Windows/macOS 运行属 BW-15-03/04 矩阵）
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
 
@@ -11045,9 +11055,11 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化发布包和 Demo 首次启动，衡量体积和安装耗时，复跑干净安装、升级及脚本导入。
 
-- [x] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。（edea922；双交付登记：lane/bw15-platform 7ae598b 同面 ci/release-baseline.sh，主席择一）
-- [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（e0d3672；双交付登记：lane/bw15-platform 4cff41e 同面 profile strip=symbols，主席择一）
-- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（797e770=lane/bw15-platform 988ff5f 跨席复测勾：修脚本过时模块名 libboundless.so→libpython_module.so、安装名 boundless_core.so；install-layout 十三行全 PASS+自测 7/7，boundless_core 0.1.0 导入 answer()=42/engine_version()=14.4.1，升级还原篡改 res 且 data/db/user.db 保留，卸载删包保留 data；本树 tar 31M 无 profile strip=另一交付面 4cff41e 主席择一）
+- [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。（双交付登记待主席择一：bw14-script-host `edea922` ci/package-baseline.sh[454 行+package-daily workflow+三端 TSV 11 行：linux 26,616,105 B measured、两腿 PENDING 注明 BW-15-03/04 卡点+自测绿]vs bw15-platform `7ae598b` ci/release-baseline.sh[168 行+14 次首跑 min/median/max 17/26/85ms+三端 TSV：linux 116,126,768 B binary/23,678,496 B tar/两腿 PENDING 注明 mercury-16 缺 Windows 臂+sqlite3-sys 缺 darwin SDK]——同为 linux 单腿 measured 三端行保持开；patch-id PARALLEL 异脚本名异 TSV 格式，择须用户明示+全重测）
+  - 本席登记归档（2026-11-26，主席双交付待择）：本席 `edea922`（ci/package-baseline.sh 454 行+package-daily workflow+三端 TSV 11 行：linux 26,616,105 B measured、两腿 PENDING BW-15-03/04 卡点）已并入 main 行；择须用户明示+全重测。
+- [ ] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（双交付登记待主席择一：bw14-script-host `e0d3672` ci/package.sh strip=symbols+固定 archive metadata[ELF debug sidecar+strip+sorted deterministic tar[archive 26,616,105→478,760 B −98.2%、binary→1,123,056 B、sidecar 130,193,992 B 留 staging、SHA-256 双跑同、首跑 1.02→1.03s 墙钟无增益]]vs bw15-platform `4cff41e` Cargo.toml [profile.release] strip=symbols+ci/package-size-ab.sh[独立 target dir A/B 复跑]——同为 strip 路线；patch-id PARALLEL 异脚本异数字，择须用户明示+全重测；行保持开）
+  - 本席登记归档（2026-11-26，主席双交付待择）：本席 `e0d3672`（ci/package.sh strip=symbols+确定性 tar 26,616,105→478,760 B −98.2%+首跑 1.02→1.03s 墙钟）已并入 main 行；择须用户明示+全重测。
+- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（main `b62977b`=cherry-pick 988ff5f/797e770 patch-id 镜像[修 ci/install-layout.sh 过时模块名 libboundless.so→libpython_module.so、安装名 boundless.so→boundless_core.so，与 crates/python-module MODULE_NAME=boundless_core 对齐]；真机 `CI_RUNNERS_TIMEOUT=600 bash ci/install-layout.sh` 全部 PASS rc=0——install-build/stage(28M tar)/clean/smoke-server(starting+is running+shutdown exit 0)/cli/cli-res/res-server/build-parity/module(boundless_core 0.1.0 裸导入)/layout/upgrade(篡改 res 还原+data/db/user.db 保留)/uninstall(删包保 data)；证据 docs/review/opt-14-01-03-install-upgrade-rerun.md + fixtures opt-14-01-03/install-upgrade-rerun.tsv；三端本行验收=脚本/数据保留 Linux 面，Windows/macOS 运行属 BW-15-03/04 矩阵）
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
 
