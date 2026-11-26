@@ -166,13 +166,9 @@ fn split_fixture(
 fn balance_with(mgr: &mut CellAppMgr, space_id: u32, limit_to_chunks: bool) {
     let mut space = mgr.spaces.remove(&space_id).unwrap();
     let removed = {
-        let ctx = BalanceContext {
-            space_bounds: space.bounds,
-            space_grid: space.grid,
-            apps: &mgr.apps,
-            limit_to_chunks,
-            balance_unloaded_chunks: true,
-        };
+        let mut ctx = BalanceContext::new(space.bounds, space.grid, &mgr.apps);
+        ctx.limit_to_chunks = limit_to_chunks;
+        ctx.balance_unloaded_chunks = true;
         space.load_balance(&ctx)
     };
     for app in removed {
