@@ -2938,8 +2938,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
 - [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。；**证据（Linux 腿实测，行仍开=三端 runner 缺）**：`crates/platform/tests/io_timer_baseline.rs` 统一负载 512 ops@64KiB——顺序写 30.33µs/读 9.04µs/atomic_replace 55.81µs（fsync 大头）/mmap 单遍 ~1µs/时钟分辨率 1µs/1ms sleep 均值 1.0864ms/wakeup 往返 0.95µs；断言全数据面（往返/映射内容/节拍±10%），墙钟读数不入断言；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、macOS 卡 darwin SDK，同测试三端可跑待 BW-15-05 runner。夹具 `docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv`，证据 `docs/review/opt-15-01-01-io-timer-baseline.md`。
-- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
-- [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
+- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。；**Linux 腿登记（行仍开=三端图形矩阵缺 runner，BW-15-04）**：本仓像素面=确定性软件光栅器（`render::software`），设备/驱动面=宿主 CPU Intel i9-10880H @2.30GHz+内核 7.0.0-44-generic（无 GPU 依赖=驱动无关），帧时已由 main `5a80a78`（OPT-11-01-01 三端 profile 基线：320x240 4.9ms/640x480 21.5ms）钉死——本行剩余面=真 GPU 后端（D3D/Metal）三端设备+驱动+帧时，待 BW-15-04 runner 矩阵。
+- [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。；**Linux 腿登记（行仍开=三端）**：平台针对性优化的回归面=协议与功能套件全绿——workspace 166 套 7185 passed exit 0（含 mercury 传输/协议、platform 四 Windows 后端镜像 `--all-targets` 交叉验证、BW-15-01 逐 slice 门禁矩阵）；windows-gnu 全量编译卡 mercury Windows 臂（BW-15-03）、macOS 卡 darwin SDK，三端套件通过待 runner。
 
 ### OPT-16-01 采集依赖与增量构建基线
 
@@ -4518,8 +4518,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
 - [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。；**证据（Linux 腿实测，行仍开=三端 runner 缺）**：`crates/platform/tests/io_timer_baseline.rs` 统一负载 512 ops@64KiB——顺序写 30.33µs/读 9.04µs/atomic_replace 55.81µs（fsync 大头）/mmap 单遍 ~1µs/时钟分辨率 1µs/1ms sleep 均值 1.0864ms/wakeup 往返 0.95µs；断言全数据面（往返/映射内容/节拍±10%），墙钟读数不入断言；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、macOS 卡 darwin SDK，同测试三端可跑待 BW-15-05 runner。夹具 `docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv`，证据 `docs/review/opt-15-01-01-io-timer-baseline.md`。
-- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
-- [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
+- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。；**Linux 腿登记（行仍开=三端图形矩阵缺 runner，BW-15-04）**：本仓像素面=确定性软件光栅器（`render::software`），设备/驱动面=宿主 CPU Intel i9-10880H @2.30GHz+内核 7.0.0-44-generic（无 GPU 依赖=驱动无关），帧时已由 main `5a80a78`（OPT-11-01-01 三端 profile 基线：320x240 4.9ms/640x480 21.5ms）钉死——本行剩余面=真 GPU 后端（D3D/Metal）三端设备+驱动+帧时，待 BW-15-04 runner 矩阵。
+- [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。；**Linux 腿登记（行仍开=三端）**：平台针对性优化的回归面=协议与功能套件全绿——workspace 166 套 7185 passed exit 0（含 mercury 传输/协议、platform 四 Windows 后端镜像 `--all-targets` 交叉验证、BW-15-01 逐 slice 门禁矩阵）；windows-gnu 全量编译卡 mercury Windows 臂（BW-15-03）、macOS 卡 darwin SDK，三端套件通过待 runner。
 
 ### OPT-16-01 采集依赖与增量构建基线
 
@@ -6059,8 +6059,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
 - [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。；**证据（Linux 腿实测，行仍开=三端 runner 缺）**：`crates/platform/tests/io_timer_baseline.rs` 统一负载 512 ops@64KiB——顺序写 30.33µs/读 9.04µs/atomic_replace 55.81µs（fsync 大头）/mmap 单遍 ~1µs/时钟分辨率 1µs/1ms sleep 均值 1.0864ms/wakeup 往返 0.95µs；断言全数据面（往返/映射内容/节拍±10%），墙钟读数不入断言；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、macOS 卡 darwin SDK，同测试三端可跑待 BW-15-05 runner。夹具 `docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv`，证据 `docs/review/opt-15-01-01-io-timer-baseline.md`。
-- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
-- [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
+- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。；**Linux 腿登记（行仍开=三端图形矩阵缺 runner，BW-15-04）**：本仓像素面=确定性软件光栅器（`render::software`），设备/驱动面=宿主 CPU Intel i9-10880H @2.30GHz+内核 7.0.0-44-generic（无 GPU 依赖=驱动无关），帧时已由 main `5a80a78`（OPT-11-01-01 三端 profile 基线：320x240 4.9ms/640x480 21.5ms）钉死——本行剩余面=真 GPU 后端（D3D/Metal）三端设备+驱动+帧时，待 BW-15-04 runner 矩阵。
+- [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。；**Linux 腿登记（行仍开=三端）**：平台针对性优化的回归面=协议与功能套件全绿——workspace 166 套 7185 passed exit 0（含 mercury 传输/协议、platform 四 Windows 后端镜像 `--all-targets` 交叉验证、BW-15-01 逐 slice 门禁矩阵）；windows-gnu 全量编译卡 mercury Windows 臂（BW-15-03）、macOS 卡 darwin SDK，三端套件通过待 runner。
 
 ### OPT-16-01 采集依赖与增量构建基线
 
@@ -7600,8 +7600,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
 - [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。；**证据（Linux 腿实测，行仍开=三端 runner 缺）**：`crates/platform/tests/io_timer_baseline.rs` 统一负载 512 ops@64KiB——顺序写 30.33µs/读 9.04µs/atomic_replace 55.81µs（fsync 大头）/mmap 单遍 ~1µs/时钟分辨率 1µs/1ms sleep 均值 1.0864ms/wakeup 往返 0.95µs；断言全数据面（往返/映射内容/节拍±10%），墙钟读数不入断言；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、macOS 卡 darwin SDK，同测试三端可跑待 BW-15-05 runner。夹具 `docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv`，证据 `docs/review/opt-15-01-01-io-timer-baseline.md`。
-- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
-- [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
+- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。；**Linux 腿登记（行仍开=三端图形矩阵缺 runner，BW-15-04）**：本仓像素面=确定性软件光栅器（`render::software`），设备/驱动面=宿主 CPU Intel i9-10880H @2.30GHz+内核 7.0.0-44-generic（无 GPU 依赖=驱动无关），帧时已由 main `5a80a78`（OPT-11-01-01 三端 profile 基线：320x240 4.9ms/640x480 21.5ms）钉死——本行剩余面=真 GPU 后端（D3D/Metal）三端设备+驱动+帧时，待 BW-15-04 runner 矩阵。
+- [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。；**Linux 腿登记（行仍开=三端）**：平台针对性优化的回归面=协议与功能套件全绿——workspace 166 套 7185 passed exit 0（含 mercury 传输/协议、platform 四 Windows 后端镜像 `--all-targets` 交叉验证、BW-15-01 逐 slice 门禁矩阵）；windows-gnu 全量编译卡 mercury Windows 臂（BW-15-03）、macOS 卡 darwin SDK，三端套件通过待 runner。
 
 ### OPT-16-01 采集依赖与增量构建基线
 
@@ -9180,8 +9180,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
 - [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。；**证据（Linux 腿实测，行仍开=三端 runner 缺）**：`crates/platform/tests/io_timer_baseline.rs` 统一负载 512 ops@64KiB——顺序写 30.33µs/读 9.04µs/atomic_replace 55.81µs（fsync 大头）/mmap 单遍 ~1µs/时钟分辨率 1µs/1ms sleep 均值 1.0864ms/wakeup 往返 0.95µs；断言全数据面（往返/映射内容/节拍±10%），墙钟读数不入断言；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、macOS 卡 darwin SDK，同测试三端可跑待 BW-15-05 runner。夹具 `docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv`，证据 `docs/review/opt-15-01-01-io-timer-baseline.md`。
-- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
-- [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
+- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。；**Linux 腿登记（行仍开=三端图形矩阵缺 runner，BW-15-04）**：本仓像素面=确定性软件光栅器（`render::software`），设备/驱动面=宿主 CPU Intel i9-10880H @2.30GHz+内核 7.0.0-44-generic（无 GPU 依赖=驱动无关），帧时已由 main `5a80a78`（OPT-11-01-01 三端 profile 基线：320x240 4.9ms/640x480 21.5ms）钉死——本行剩余面=真 GPU 后端（D3D/Metal）三端设备+驱动+帧时，待 BW-15-04 runner 矩阵。
+- [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。；**Linux 腿登记（行仍开=三端）**：平台针对性优化的回归面=协议与功能套件全绿——workspace 166 套 7185 passed exit 0（含 mercury 传输/协议、platform 四 Windows 后端镜像 `--all-targets` 交叉验证、BW-15-01 逐 slice 门禁矩阵）；windows-gnu 全量编译卡 mercury Windows 臂（BW-15-03）、macOS 卡 darwin SDK，三端套件通过待 runner。
 
 ### OPT-16-01 采集依赖与增量构建基线
 
@@ -10721,8 +10721,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
 - [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。；**证据（Linux 腿实测，行仍开=三端 runner 缺）**：`crates/platform/tests/io_timer_baseline.rs` 统一负载 512 ops@64KiB——顺序写 30.33µs/读 9.04µs/atomic_replace 55.81µs（fsync 大头）/mmap 单遍 ~1µs/时钟分辨率 1µs/1ms sleep 均值 1.0864ms/wakeup 往返 0.95µs；断言全数据面（往返/映射内容/节拍±10%），墙钟读数不入断言；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、macOS 卡 darwin SDK，同测试三端可跑待 BW-15-05 runner。夹具 `docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv`，证据 `docs/review/opt-15-01-01-io-timer-baseline.md`。
-- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
-- [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
+- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。；**Linux 腿登记（行仍开=三端图形矩阵缺 runner，BW-15-04）**：本仓像素面=确定性软件光栅器（`render::software`），设备/驱动面=宿主 CPU Intel i9-10880H @2.30GHz+内核 7.0.0-44-generic（无 GPU 依赖=驱动无关），帧时已由 main `5a80a78`（OPT-11-01-01 三端 profile 基线：320x240 4.9ms/640x480 21.5ms）钉死——本行剩余面=真 GPU 后端（D3D/Metal）三端设备+驱动+帧时，待 BW-15-04 runner 矩阵。
+- [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。；**Linux 腿登记（行仍开=三端）**：平台针对性优化的回归面=协议与功能套件全绿——workspace 166 套 7185 passed exit 0（含 mercury 传输/协议、platform 四 Windows 后端镜像 `--all-targets` 交叉验证、BW-15-01 逐 slice 门禁矩阵）；windows-gnu 全量编译卡 mercury Windows 臂（BW-15-03）、macOS 卡 darwin SDK，三端套件通过待 runner。
 
 ### OPT-16-01 采集依赖与增量构建基线
 
