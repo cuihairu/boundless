@@ -20,6 +20,8 @@ use crate::channel_map::ChannelMap;
 use crate::condemned_channels::CondemnedChannels;
 use crate::endpoint::{Address, Endpoint, INADDR_ANY, NO_SOCKET, NONE};
 use crate::event_dispatcher::EventDispatcher;
+use crate::fragmented_bundle::FragmentedBundles;
+use crate::interface_table::InterfaceTable;
 use crate::misc::{CHANNEL_ID_NULL, Reason, SeqNumAllocator};
 use crate::packet::Packet;
 use crate::packet::flags;
@@ -366,11 +368,43 @@ impl NetworkInterface {
         *self.sink.borrow_mut() = sink;
     }
 
-    /// `pOffChannelFilter` (network_interface.hpp:135): install the filter
-    /// that gets first say over off-channel datagrams. The BaseApp wires
-    /// its `InitialConnectionFilter` here (baseapp.cpp:251).
-    pub fn set_off_channel_filter(&self, filter: Option<Rc<dyn PacketFilter>>) {
+    /// `pOffChannelFilter()`: the installed connection filter, if any.
+    pub fn p_off_channel_filter(&self) -> Option<Rc<dyn PacketFilter>> {
+        self.off_channel_filter.borrow().clone()
+    }
+
+    /// `pOffChannelFilter( pFilter )` (network_interface.hpp:135): install
+    /// or clear the filter gating channel-less datagrams. The BaseApp
+    /// wires its `InitialConnectionFilter` here (baseapp.cpp:251).
+    pub fn set_p_off_channel_filter(&self, filter: Option<Rc<dyn PacketFilter>>) {
         *self.off_channel_filter.borrow_mut() = filter;
+    }
+
+    /// `setInterfaceTable`'s seam: the message table the receive paths
+    /// dispatch through. Nothing is wired until the owner (the baseapp
+    /// side of the port) hands one over (BW-02-02).
+    pub fn set_interface_table(&self, table: Option<Rc<InterfaceTable>>) {
+        *self.interface_table.borrow_mut() = table;
+    }
+
+    /// `interfaceTable()` (network_interface.hpp): the table the receive
+    /// paths walk. The TCP channel reaches the served handlers through
+    /// it, the same way the reference's `TCPBundleProcessor` does.
+    pub fn interface_table(&self) -> Option<Rc<InterfaceTable>> {
+        self.interface_table.borrow().clone()
+    }
+
+    /// The receive-side stats the filtered path counts into
+    /// (`PacketReceiver::stats()`).
+    pub fn receive_stats(&self) -> &RefCell<PacketReceiverStats> {
+        &self.receive_stats
+    }
+
+    /// The off-channel fragment bundles this interface is mid-reassembly
+    /// on (`onceOffReceiver_.fragmentedBundles()`). The once-off receiver
+    /// is BW-02-03-08, so the map is held but not yet filled.
+    pub fn fragmented_bundles(&self) -> &RefCell<FragmentedBundles> {
+        &self.fragmented_bundles
     }
 
     /// `dispatcher().errorReporter()`, replaced by tests and by the
@@ -638,11 +672,8 @@ impl NetworkInterface {
     /// The `PacketReceiver::processPacket` routing target: on-channel
     /// packets with a live channel go to that channel's receive dispatch,
     /// everything else to the interface's off-channel filter (when one is
-    /// installed) and then the sink (the interface table that dispatches
-    /// messages is BW-02-02). A channel-less on-channel packet falls to
-    /// the sink rather than the reference's `REASON_GENERAL_NETWORK`
-    /// drop: the sink is the message-dispatch seam, and the channel map's
-    /// condemned-handling covers the destroyed-channel case elsewhere.
+    /// installed) and then the filtered receive path
+    /// (`PacketReceiver::processPacket`, packet_receiver.cpp:445-493).
     pub fn process_packet(&self, addr: &Address, packet: &mut Packet) -> Reason {
         // `processPacket` (packet_receiver.cpp:445-455): the rate limiting
         // speaks before anything else, and it does not distinguish internal
@@ -677,15 +708,189 @@ impl NetworkInterface {
         }
         // `networkInterface_.pOffChannelFilter()` (packet_receiver.cpp:493):
         // the interface's off-channel filter gets first say over stray
-        // datagrams; with none installed they go straight to the sink.
-        // This half of `processFilteredPacket` stays as loose as the rest
-        // of it here: the size and flag checks run in the on-channel
-        // dispatch, and the checksum with them.
+        // datagrams; its verdict's continuation, like the base filter's
+        // pass-through, is the filtered receive path below.
         if let Some(filter) = self.off_channel_filter.borrow().as_ref() {
             return filter.recv(addr, packet, &|addr, packet| {
-                self.deliver_packet(addr, packet)
+                self.process_filtered_packet(addr, packet)
             });
         }
+        self.process_filtered_packet(addr, packet)
+    }
+
+    /// `PacketReceiver::processFilteredPacket` (packet_receiver.cpp:518):
+    /// the header guards and the stats they count into, then the routing
+    /// the guards leave standing. `RETURN_FOR_CORRUPTED_PACKET` is the
+    /// guard-and-return idiom throughout. This port's channel receive
+    /// machinery (the ack/sequence footers and the receive window) lives
+    /// in `UdpChannel::process_packet`, so a channelled packet that
+    /// survives the guards hands off there; the once-off reliable half
+    /// of the reference's footer strip arrives with the once-off
+    /// receiver (BW-02-03-08).
+    pub fn process_filtered_packet(&self, addr: &Address, packet: &mut Packet) -> Reason {
+        macro_rules! corrupted {
+            () => {{
+                self.receive_stats.borrow_mut().inc_corrupted_packets();
+                return Reason::CorruptedPacket;
+            }};
+        }
+
+        if packet.total_size() < 2 {
+            if self.verbose.get() {
+                eprintln!(
+                    "PacketReceiver::processFilteredPacket( {} ): received undersized packet",
+                    addr.c_str()
+                );
+            }
+            corrupted!();
+        }
+
+        // Make sure we understand all the flags.
+        if packet.flags() & !flags::KNOWN_FLAGS != 0 {
+            if self.verbose.get() {
+                eprintln!(
+                    "PacketReceiver::processFilteredPacket( {} ): received packet with bad flags {:x}",
+                    addr.c_str(),
+                    packet.flags()
+                );
+            }
+            corrupted!();
+        }
+
+        if !packet.has_flags(flags::ON_CHANNEL) {
+            self.receive_stats.borrow_mut().inc_packets_off_channel();
+        }
+
+        // Don't allow FLAG_CREATE_CHANNEL on external interfaces.
+        if self.is_external && packet.has_flags(flags::CREATE_CHANNEL) {
+            if self.verbose.get() {
+                eprintln!(
+                    "PacketReceiver::processFilteredPacket( {} ): \
+                     Got FLAG_CREATE_CHANNEL on external interface",
+                    addr.c_str()
+                );
+            }
+            corrupted!();
+        }
+
+        // Make sure there's something in the packet.
+        if packet.total_size() <= 2 {
+            if self.verbose.get() {
+                eprintln!(
+                    "PacketReceiver::processFilteredPacket( {} ): received undersize packet ({} bytes)",
+                    addr.c_str(),
+                    packet.total_size()
+                );
+            }
+            corrupted!();
+        }
+
+        // Start stripping footers.
+        if !packet.validate_checksum() {
+            if self.verbose.get() {
+                eprintln!(
+                    "PacketReceiver::processFilteredPacket( {} ): Invalid checksum",
+                    addr.c_str()
+                );
+            }
+            corrupted!();
+        }
+
+        // Strip off piggybacks and process them immediately (i.e. before
+        // the messages on this packet) as the piggybacks must be older
+        // than this packet (packet_receiver.cpp:553: the flag gates the
+        // peel).
+        if packet.has_flags(flags::HAS_PIGGYBACKS) {
+            let piggybacks_ok = packet.process_piggyback_packets(|inner| {
+                self.process_filtered_packet(addr, inner) != Reason::CorruptedPacket
+            });
+            if !piggybacks_ok {
+                if self.verbose.get() {
+                    eprintln!(
+                        "PacketReceiver::processFilteredPacket( {} ): Corrupted piggyback packets",
+                        addr.c_str()
+                    );
+                }
+                corrupted!();
+            }
+        }
+
+        // Strip off indexed channel ID if present. No indexed channel
+        // finder is registered in this port yet, so the packet -- like
+        // the reference's without a finder -- is corrupt.
+        if packet.has_flags(flags::INDEXED_CHANNEL) {
+            let id = match packet.strip_footer_u32() {
+                Some(id) => id,
+                None => {
+                    if self.verbose.get() {
+                        eprintln!(
+                            "PacketReceiver::processFilteredPacket( {} ): \
+                             Not enough data for indexed channel footer ({} bytes left)",
+                            addr.c_str(),
+                            packet.body_size()
+                        );
+                    }
+                    corrupted!();
+                }
+            };
+            let version = match packet.strip_footer_u32() {
+                Some(version) => version,
+                None => {
+                    if self.verbose.get() {
+                        eprintln!(
+                            "PacketReceiver::processFilteredPacket( {} ): \
+                             Not enough data for indexed channel footer ({} bytes left)",
+                            addr.c_str(),
+                            packet.body_size()
+                        );
+                    }
+                    corrupted!();
+                }
+            };
+            packet.set_channel_id(id as i32);
+            packet.set_channel_version(version);
+
+            if self.verbose.get() {
+                eprintln!(
+                    "PacketReceiver::processFilteredPacket( {} ): \
+                     Got indexed channel packet with no finder registered",
+                    addr.c_str()
+                );
+            }
+            corrupted!();
+        }
+
+        // A channelled packet hands off to the channel's receive
+        // dispatch; the reference drops one whose channel has gone
+        // (packet_receiver.cpp:600-608) or whose remote has failed
+        // (:610-618).
+        if packet.has_flags(flags::ON_CHANNEL) {
+            let channel = match self.find_channel(*addr, false) {
+                Some(channel) => channel,
+                None => {
+                    if self.verbose.get() {
+                        eprintln!(
+                            "PacketReceiver::processFilteredPacket( {} ): \
+                             Dropping packet due to absence of local channel",
+                            addr.c_str()
+                        );
+                    }
+                    return Reason::GeneralNetwork;
+                }
+            };
+            if channel.borrow().has_remote_failed() {
+                if self.verbose.get() {
+                    eprintln!(
+                        "PacketReceiver::processFilteredPacket( {} ): \
+                         Dropping packet due to remote process failure",
+                        channel.borrow().c_str()
+                    );
+                }
+                return Reason::GeneralNetwork;
+            }
+            return UdpChannel::process_packet(&channel, addr, packet);
+        }
+
         self.deliver_packet(addr, packet)
     }
 
@@ -1221,8 +1426,9 @@ mod tests {
         assert!(interface.poller().is_registered(fd, true));
     }
 
-    /// An interface with no sink accepts packets silently; with one, it
-    /// hands them over (the routing entry of `processPacket`).
+    /// A stray datagram meets the filtered receive path before any sink:
+    /// an empty one is corrupt, a well-formed one reaches the sink (with
+    /// or without one installed -- `processFilteredPacket`).
     #[test]
     fn the_sink_receives_what_the_interface_processes() {
         let (interface, _receiver) = loopback_interface(InterfaceType::Internal);
@@ -1230,18 +1436,25 @@ mod tests {
         let mut packet = crate::packet::Packet::new();
         let addr = Address::new(LOOPBACK, socket::htons(1234));
 
-        // No sink yet: accepted, nothing recorded.
+        // Not even a flags word: corrupt, and counted.
         assert_eq!(
             interface.process_packet(&addr, &mut packet),
-            Reason::Success
+            Reason::CorruptedPacket
         );
+        assert_eq!(
+            interface.receive_stats().borrow().num_corrupted_packets(),
+            1
+        );
+
+        // A well-formed datagram: with no sink it is accepted silently,
+        // and with one it is handed over.
+        let mut stray = wire(0, &[0, 0, 0, 0]);
+        assert_eq!(interface.process_packet(&addr, &mut stray), Reason::Success);
 
         let sink = Rc::new(RecordingSink::default());
         interface.set_packet_sink(Some(sink.clone()));
-        assert_eq!(
-            interface.process_packet(&addr, &mut packet),
-            Reason::Success
-        );
+        let mut stray = wire(0, &[0, 0, 0, 0]);
+        assert_eq!(interface.process_packet(&addr, &mut stray), Reason::Success);
         assert_eq!(sink.packets.borrow().len(), 1);
         assert_eq!(sink.packets.borrow()[0].0, addr);
     }
@@ -1258,7 +1471,8 @@ mod tests {
         interface.set_packet_sink(Some(sink.clone()));
 
         let filter = Rc::new(crate::packet_filter::InitialConnectionFilter::new(0));
-        interface.set_off_channel_filter(Some(filter));
+        interface.set_p_off_channel_filter(Some(filter.clone()));
+        assert!(interface.p_off_channel_filter().is_some());
         let addr = Address::new(LOOPBACK, socket::htons(1));
 
         // The admitted request goes through.
@@ -1283,13 +1497,230 @@ mod tests {
 
         // With no filter installed, stray datagrams go straight to the
         // sink as before.
-        interface.set_off_channel_filter(None);
+        interface.set_p_off_channel_filter(None);
+        assert!(interface.p_off_channel_filter().is_none());
         let mut unfiltered = crate::packet_filter::tests_support::base_app_login_packet(5);
         assert_eq!(
             interface.process_packet(&addr, &mut unfiltered),
             Reason::Success
         );
         assert_eq!(sink.packets.borrow().len(), 2);
+    }
+
+    /// The interface-table seam holds whatever the owner hands over,
+    /// and hands it back (`setInterfaceTable`/`interfaceTable`). The
+    /// fragment-map seam starts empty and stays reachable for the
+    /// once-off receiver (BW-02-03-08).
+    #[test]
+    fn the_table_and_fragment_seams_hold_what_the_owner_gives() {
+        let (interface, _clock) = channel_interface(InterfaceType::Internal);
+
+        assert!(interface.interface_table().is_none());
+        let table = Rc::new(InterfaceTable::new());
+        interface.set_interface_table(Some(table.clone()));
+        assert!(Rc::ptr_eq(
+            interface.interface_table().as_ref().expect("held"),
+            &table
+        ));
+        interface.set_interface_table(None);
+        assert!(interface.interface_table().is_none());
+
+        assert_eq!(interface.fragmented_bundles().borrow().len(), 0);
+    }
+
+    /// The size and known-flags guards, the bad checksum and the bad
+    /// piggyback footer all report a corrupted packet.
+    #[test]
+    fn the_receive_guards_report_corruption() {
+        let (interface, _clock) = channel_interface(InterfaceType::Internal);
+        let addr = Address::new(LOOPBACK, socket::htons(9101));
+
+        // Under two bytes: not even a flags word.
+        let mut undersized = Packet::new();
+        undersized.grow(1);
+        assert_eq!(
+            interface.process_filtered_packet(&addr, &mut undersized),
+            Reason::CorruptedPacket
+        );
+
+        // A flag this build does not understand.
+        let mut bad_flags = wire(0x0800, &[0]);
+        assert_eq!(
+            interface.process_filtered_packet(&addr, &mut bad_flags),
+            Reason::CorruptedPacket
+        );
+
+        // A bare flags word is too small to hold a message.
+        let mut empty = wire(0, &[]);
+        assert_eq!(
+            interface.process_filtered_packet(&addr, &mut empty),
+            Reason::CorruptedPacket
+        );
+
+        // A checksum that no longer matches its bytes.
+        let mut bad_checksum = wire(flags::HAS_CHECKSUM, &[0, 0, 0, 0, 0, 0, 0, 1]);
+        assert_eq!(
+            interface.process_filtered_packet(&addr, &mut bad_checksum),
+            Reason::CorruptedPacket
+        );
+
+        // A piggyback footer too short to peel.
+        let mut bad_piggyback = wire(flags::HAS_PIGGYBACKS, &[0]);
+        assert_eq!(
+            interface.process_filtered_packet(&addr, &mut bad_piggyback),
+            Reason::CorruptedPacket
+        );
+
+        assert_eq!(
+            interface.receive_stats().borrow().num_corrupted_packets(),
+            5,
+            "every guard counted one corruption"
+        );
+    }
+
+    /// The indexed-channel guards: a short id footer, a short version
+    /// footer, and -- with both present -- the no-finder corruption the
+    /// reference reports while indexed lookup is unported.
+    #[test]
+    fn the_indexed_channel_guards_report_corruption() {
+        let (interface, _clock) = channel_interface(InterfaceType::Internal);
+        let addr = Address::new(LOOPBACK, socket::htons(9102));
+
+        let mut short_id = wire(flags::INDEXED_CHANNEL, &[0, 0, 0]);
+        assert_eq!(
+            interface.process_filtered_packet(&addr, &mut short_id),
+            Reason::CorruptedPacket
+        );
+
+        let mut short_version = wire(flags::INDEXED_CHANNEL, &le32(7));
+        assert_eq!(
+            interface.process_filtered_packet(&addr, &mut short_version),
+            Reason::CorruptedPacket
+        );
+
+        let mut indexed = wire(flags::INDEXED_CHANNEL, &[le32(7), le32(9)].concat());
+        assert_eq!(
+            interface.process_filtered_packet(&addr, &mut indexed),
+            Reason::CorruptedPacket
+        );
+    }
+
+    /// The silent drops: an on-channel packet for an address no channel
+    /// is registered at, and one whose channel has a remote failure.
+    #[test]
+    fn the_channel_guards_drop_silently() {
+        let (interface, _clock) = channel_interface(InterfaceType::Internal);
+        let addr = Address::new(LOOPBACK, socket::htons(9103));
+
+        let mut no_channel = wire(flags::ON_CHANNEL, &[0, 0, 0]);
+        assert_eq!(
+            interface.process_filtered_packet(&addr, &mut no_channel),
+            Reason::GeneralNetwork
+        );
+
+        let failed = UdpChannel::new(
+            &interface,
+            addr,
+            ChannelTraits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+        UdpChannel::set_remote_failed(&failed);
+        let mut remote = wire(flags::ON_CHANNEL, &[0, 0, 0]);
+        assert_eq!(
+            interface.process_filtered_packet(&addr, &mut remote),
+            Reason::GeneralNetwork
+        );
+    }
+
+    /// The channel-creation flag is refused on an external interface:
+    /// one corruption, counted.
+    #[test]
+    fn create_channel_is_refused_on_external_interfaces() {
+        let (interface, _clock) = channel_interface(InterfaceType::External);
+        let addr = Address::new(LOOPBACK, socket::htons(9104));
+
+        let mut create = wire(flags::CREATE_CHANNEL, &[0, 0, 0, 0]);
+        assert_eq!(
+            interface.process_filtered_packet(&addr, &mut create),
+            Reason::CorruptedPacket
+        );
+        assert_eq!(
+            interface.receive_stats().borrow().num_corrupted_packets(),
+            1
+        );
+    }
+
+    /// A guarded on-channel packet for a live channel is routed into
+    /// that channel's own receiver, not the sink: the reason comes back
+    /// identical to feeding the same bytes to the channel directly.
+    #[test]
+    fn on_channel_packets_are_handed_to_their_channel() {
+        let (interface, _clock) = channel_interface(InterfaceType::Internal);
+        let addr = Address::new(LOOPBACK, socket::htons(9105));
+
+        let channel = UdpChannel::new(
+            &interface,
+            addr,
+            ChannelTraits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        let mut routed = wire(flags::ON_CHANNEL, &[0, 0, 0, 0]);
+        let via_interface = interface.process_filtered_packet(&addr, &mut routed);
+
+        let mut direct = wire(flags::ON_CHANNEL, &[0, 0, 0, 0]);
+        assert_eq!(
+            via_interface,
+            UdpChannel::process_packet(&channel, &addr, &mut direct),
+            "the interface handed the packet to the channel"
+        );
+    }
+
+    /// A well-formed piggyback footer peels, and the inner datagram
+    /// walks this same guarded path: both it and the outer count as
+    /// off-channel, and nothing is corrupted.
+    #[test]
+    fn a_piggyback_peels_and_walks_the_same_guards() {
+        let (interface, _clock) = channel_interface(InterfaceType::Internal);
+        let addr = Address::new(LOOPBACK, socket::htons(9106));
+
+        let mut outer = wire(flags::HAS_PIGGYBACKS, &[0, 0, 0, 0]);
+
+        // The footer: the inner datagram (flags word + four body bytes),
+        // then its length in the last-block complement form.
+        let mut footer = vec![0u8, 0, 0, 0, 0, 0];
+        footer.extend_from_slice(&(!(footer.len() as u16)).to_le_bytes());
+        outer.grow(footer.len());
+        let base = 2 + 4;
+        outer.buffer_mut()[base..base + footer.len()].copy_from_slice(&footer);
+
+        assert_eq!(
+            interface.process_filtered_packet(&addr, &mut outer),
+            Reason::Success
+        );
+        let stats = interface.receive_stats().borrow();
+        assert_eq!(
+            stats.num_packets_received_off_channel(),
+            2,
+            "outer plus inner"
+        );
+        assert_eq!(stats.num_corrupted_packets(), 0);
+    }
+
+    /// Little-endian u32 footer bytes.
+    fn le32(value: u32) -> [u8; 4] {
+        value.to_le_bytes()
+    }
+
+    /// A datagram body: the flags word, then `body` bytes after it.
+    fn wire(flag_bits: u16, body: &[u8]) -> Packet {
+        let mut packet = Packet::new();
+        packet.set_flags(flag_bits);
+        packet.grow(2 + body.len());
+        packet.buffer_mut()[2..2 + body.len()].copy_from_slice(body);
+        packet
     }
 
     /// A pinned-clock interface with no socket, for the channel-map
@@ -1789,7 +2220,7 @@ mod tests {
 
         let addr = Address::new(LOOPBACK, socket::htons(9));
         for _ in 0..8 {
-            let mut packet = Packet::new();
+            let mut packet = wire(0, &[0, 0, 0, 0]);
             assert_eq!(
                 interface.process_packet(&addr, &mut packet),
                 Reason::Success
@@ -1811,7 +2242,7 @@ mod tests {
 
         let ports = [9u16, 10, 11, 12];
         for (index, port) in ports.iter().enumerate() {
-            let mut packet = Packet::new();
+            let mut packet = wire(0, &[0, 0, 0, 0]);
             let addr = Address::new(LOOPBACK, socket::htons(*port));
             let reason = interface.process_packet(&addr, &mut packet);
             if index < 3 {
@@ -1845,7 +2276,7 @@ mod tests {
 
         let busy = Address::new(LOOPBACK, socket::htons(9));
         for index in 0..3 {
-            let mut packet = Packet::new();
+            let mut packet = wire(0, &[0, 0, 0, 0]);
             let reason = interface.process_packet(&busy, &mut packet);
             if index < 2 {
                 assert_eq!(reason, Reason::Success, "index {index} is inside");
@@ -1855,7 +2286,7 @@ mod tests {
         }
 
         let other = Address::new(LOOPBACK, socket::htons(10));
-        let mut packet = Packet::new();
+        let mut packet = wire(0, &[0, 0, 0, 0]);
         assert_eq!(
             interface.process_packet(&other, &mut packet),
             Reason::Success,
@@ -1874,14 +2305,14 @@ mod tests {
         interface.set_per_ip_address_rate_limit(1);
 
         let addr = Address::new(LOOPBACK, socket::htons(9));
-        let mut first = Packet::new();
+        let mut first = wire(0, &[0, 0, 0, 0]);
         assert_eq!(interface.process_packet(&addr, &mut first), Reason::Success);
-        let mut second = Packet::new();
+        let mut second = wire(0, &[0, 0, 0, 0]);
         assert_eq!(
             interface.process_packet(&addr, &mut second),
             Reason::GeneralNetwork
         );
-        let mut third = Packet::new();
+        let mut third = wire(0, &[0, 0, 0, 0]);
         assert_eq!(
             interface.process_packet(&addr, &mut third),
             Reason::GeneralNetwork
@@ -1890,7 +2321,7 @@ mod tests {
         clock.set(clock.get() + 1_000_000);
         dispatcher.process_timers();
 
-        let mut fresh = Packet::new();
+        let mut fresh = wire(0, &[0, 0, 0, 0]);
         assert_eq!(
             interface.process_packet(&addr, &mut fresh),
             Reason::Success,
