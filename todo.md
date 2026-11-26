@@ -2826,7 +2826,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。（bw15 席 `2ba686b`，lane/bw15-platform，main=`841315b`：crates/mercury/tests/network_baseline.rs 7 测=UDP/TCP 真回环 RTT p50/p90/p99+4MiB 吞吐+钉死钟丢包恢复两臂（16/16 恰一次重发+越序 ack 穿越）；记录 TSV docs/review/fixtures/network-baseline/net-baseline.tsv；mercury 377 lib+7 集成全绿（本席 main 复测 384 绿），回环墙钟数字机器相关只记录不设带）
 - [x] **OPT-02-01-02 评估缓冲复用**。**验收** 报告分配与峰值内存。（bw15 席 `dc549c4`/`739a3bc`，lane/bw15-platform，main=`3b5f15a`/`8b1793a`：crates/mercury/tests/buffer_alloc.rs 5 测=指针配对台账分配器+测量窗，Packet 1 alloc/1472B、收包循环每报 1 新箱、未确认窗每槽 1576B 且 ack 后活集归零、TCP 发送缓冲稳态写+重排队零分配=背衬复用证实；TSV docs/review/fixtures/network-baseline/buffer-alloc.tsv，证据页 docs/review/opt-02-01-02-buffer-reuse.md；mercury 377 lib+7+5 全绿（本席 main 复测绿），分配计数族逐跑恒等）
 - [x] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。（bw15 席 `bc1ee86`/`071bdc6`/`3e7c776`，lane/bw15-platform，main=`c733e5a`/`7dc6d12`/`3590227`：platform::socket 落 sendmmsg/recvmmsg 包装+SendScratch/RecvScratch 保留式暂存（Linux cfg）；crates/mercury/tests/batch_io.rs 三臂对照=批量/逐报/分配计数，批宽 64 收发系统调用各 63×摊派（3495→55）确定、每报摊派成本 p50 持平、稳态 0 alloc/报（现行路径 1.00/报）、回环吞吐同量级（窗深投递延迟主导，墙钟只记录不设带）；TSV docs/review/fixtures/network-baseline/batch-io.tsv，证据页 docs/review/opt-02-01-03-batch-and-copy.md；platform 64+mercury 377/7/5/1 全绿（本席 main 复测 455 绿））
-- [ ] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。
+- [x] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。（bw15-platform 席 `fc181f5`/`19a9c42`/`29cc302`/`f438b7d`/`1b27379`，lane/bw15-platform，main=`261a2d0`/`25ee476`/`3675b18`/`62ea5d3`/`4b83ebb`：crates/server-runtime/tests/el7_mixed_deploy.rs 五腿真机混部（`#[ignore]` 场景，EL7_MIXED_OUT 落 TSV）=新版→原版 UDP（pid/WholeMachine 查询）+原版→新版 UDP（logger 注册与 birth/death 监听入册）+发现广播（addTCP/add 版本门两臂推送件到位）+新版→原版 TCP（注册 108+记录 107 帧化落 mldb）+新版→原版 UDP（裸数据报落 mldb），mldb component_names/strings 字节级断言；**四个真互操作 bug 修复**：contracts/machined 线格式对参考（main=`261a2d0`）/message_logger 记录头源字段宽（main=`25ee476`）/machined 进程统计查询答全匹配面（main=`3675b18`）/server-runtime 接 message_logger workspace 边（main=`62ea5d3`）；TSV docs/review/fixtures/network-baseline/el7-mixed-deploy.tsv，证据页 docs/review/opt-02-01-04-el7-mixed-deploy.md；本席 main 复测五腿全绿（5.01s，TSV 复捕与夹具逐字节恒等））
 
 ### OPT-03-01 Python 桥接基线
 
@@ -2937,7 +2937,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+- [x] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿；⚠️ 行保持开——Windows/macOS 腿待三端 runner（BW-15-05-01）后补测）
 - [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
@@ -4406,7 +4406,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。（bw15 席 `2ba686b`，lane/bw15-platform，main=`841315b`：crates/mercury/tests/network_baseline.rs 7 测=UDP/TCP 真回环 RTT p50/p90/p99+4MiB 吞吐+钉死钟丢包恢复两臂（16/16 恰一次重发+越序 ack 穿越）；记录 TSV docs/review/fixtures/network-baseline/net-baseline.tsv；mercury 377 lib+7 集成全绿（本席 main 复测 384 绿），回环墙钟数字机器相关只记录不设带）
 - [x] **OPT-02-01-02 评估缓冲复用**。**验收** 报告分配与峰值内存。（bw15 席 `dc549c4`/`739a3bc`，lane/bw15-platform，main=`3b5f15a`/`8b1793a`：crates/mercury/tests/buffer_alloc.rs 5 测=指针配对台账分配器+测量窗，Packet 1 alloc/1472B、收包循环每报 1 新箱、未确认窗每槽 1576B 且 ack 后活集归零、TCP 发送缓冲稳态写+重排队零分配=背衬复用证实；TSV docs/review/fixtures/network-baseline/buffer-alloc.tsv，证据页 docs/review/opt-02-01-02-buffer-reuse.md；mercury 377 lib+7+5 全绿（本席 main 复测绿），分配计数族逐跑恒等）
 - [x] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。（bw15 席 `bc1ee86`/`071bdc6`/`3e7c776`，lane/bw15-platform，main=`c733e5a`/`7dc6d12`/`3590227`：platform::socket 落 sendmmsg/recvmmsg 包装+SendScratch/RecvScratch 保留式暂存（Linux cfg）；crates/mercury/tests/batch_io.rs 三臂对照=批量/逐报/分配计数，批宽 64 收发系统调用各 63×摊派（3495→55）确定、每报摊派成本 p50 持平、稳态 0 alloc/报（现行路径 1.00/报）、回环吞吐同量级（窗深投递延迟主导，墙钟只记录不设带）；TSV docs/review/fixtures/network-baseline/batch-io.tsv，证据页 docs/review/opt-02-01-03-batch-and-copy.md；platform 64+mercury 377/7/5/1 全绿（本席 main 复测 455 绿））
-- [ ] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。
+- [x] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。（bw15-platform 席 `fc181f5`/`19a9c42`/`29cc302`/`f438b7d`/`1b27379`，lane/bw15-platform，main=`261a2d0`/`25ee476`/`3675b18`/`62ea5d3`/`4b83ebb`：crates/server-runtime/tests/el7_mixed_deploy.rs 五腿真机混部（`#[ignore]` 场景，EL7_MIXED_OUT 落 TSV）=新版→原版 UDP（pid/WholeMachine 查询）+原版→新版 UDP（logger 注册与 birth/death 监听入册）+发现广播（addTCP/add 版本门两臂推送件到位）+新版→原版 TCP（注册 108+记录 107 帧化落 mldb）+新版→原版 UDP（裸数据报落 mldb），mldb component_names/strings 字节级断言；**四个真互操作 bug 修复**：contracts/machined 线格式对参考（main=`261a2d0`）/message_logger 记录头源字段宽（main=`25ee476`）/machined 进程统计查询答全匹配面（main=`3675b18`）/server-runtime 接 message_logger workspace 边（main=`62ea5d3`）；TSV docs/review/fixtures/network-baseline/el7-mixed-deploy.tsv，证据页 docs/review/opt-02-01-04-el7-mixed-deploy.md；本席 main 复测五腿全绿（5.01s，TSV 复捕与夹具逐字节恒等））
 
 ### OPT-03-01 Python 桥接基线
 
@@ -4517,7 +4517,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+- [x] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿；⚠️ 行保持开——Windows/macOS 腿待三端 runner（BW-15-05-01）后补测）
 - [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
@@ -5947,7 +5947,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。（bw15 席 `2ba686b`，lane/bw15-platform，main=`841315b`：crates/mercury/tests/network_baseline.rs 7 测=UDP/TCP 真回环 RTT p50/p90/p99+4MiB 吞吐+钉死钟丢包恢复两臂（16/16 恰一次重发+越序 ack 穿越）；记录 TSV docs/review/fixtures/network-baseline/net-baseline.tsv；mercury 377 lib+7 集成全绿（本席 main 复测 384 绿），回环墙钟数字机器相关只记录不设带）
 - [x] **OPT-02-01-02 评估缓冲复用**。**验收** 报告分配与峰值内存。（bw15 席 `dc549c4`/`739a3bc`，lane/bw15-platform，main=`3b5f15a`/`8b1793a`：crates/mercury/tests/buffer_alloc.rs 5 测=指针配对台账分配器+测量窗，Packet 1 alloc/1472B、收包循环每报 1 新箱、未确认窗每槽 1576B 且 ack 后活集归零、TCP 发送缓冲稳态写+重排队零分配=背衬复用证实；TSV docs/review/fixtures/network-baseline/buffer-alloc.tsv，证据页 docs/review/opt-02-01-02-buffer-reuse.md；mercury 377 lib+7+5 全绿（本席 main 复测绿），分配计数族逐跑恒等）
 - [x] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。（bw15 席 `bc1ee86`/`071bdc6`/`3e7c776`，lane/bw15-platform，main=`c733e5a`/`7dc6d12`/`3590227`：platform::socket 落 sendmmsg/recvmmsg 包装+SendScratch/RecvScratch 保留式暂存（Linux cfg）；crates/mercury/tests/batch_io.rs 三臂对照=批量/逐报/分配计数，批宽 64 收发系统调用各 63×摊派（3495→55）确定、每报摊派成本 p50 持平、稳态 0 alloc/报（现行路径 1.00/报）、回环吞吐同量级（窗深投递延迟主导，墙钟只记录不设带）；TSV docs/review/fixtures/network-baseline/batch-io.tsv，证据页 docs/review/opt-02-01-03-batch-and-copy.md；platform 64+mercury 377/7/5/1 全绿（本席 main 复测 455 绿））
-- [ ] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。
+- [x] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。（bw15-platform 席 `fc181f5`/`19a9c42`/`29cc302`/`f438b7d`/`1b27379`，lane/bw15-platform，main=`261a2d0`/`25ee476`/`3675b18`/`62ea5d3`/`4b83ebb`：crates/server-runtime/tests/el7_mixed_deploy.rs 五腿真机混部（`#[ignore]` 场景，EL7_MIXED_OUT 落 TSV）=新版→原版 UDP（pid/WholeMachine 查询）+原版→新版 UDP（logger 注册与 birth/death 监听入册）+发现广播（addTCP/add 版本门两臂推送件到位）+新版→原版 TCP（注册 108+记录 107 帧化落 mldb）+新版→原版 UDP（裸数据报落 mldb），mldb component_names/strings 字节级断言；**四个真互操作 bug 修复**：contracts/machined 线格式对参考（main=`261a2d0`）/message_logger 记录头源字段宽（main=`25ee476`）/machined 进程统计查询答全匹配面（main=`3675b18`）/server-runtime 接 message_logger workspace 边（main=`62ea5d3`）；TSV docs/review/fixtures/network-baseline/el7-mixed-deploy.tsv，证据页 docs/review/opt-02-01-04-el7-mixed-deploy.md；本席 main 复测五腿全绿（5.01s，TSV 复捕与夹具逐字节恒等））
 
 ### OPT-03-01 Python 桥接基线
 
@@ -6058,7 +6058,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+- [x] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿；⚠️ 行保持开——Windows/macOS 腿待三端 runner（BW-15-05-01）后补测）
 - [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
@@ -7488,7 +7488,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。（bw15 席 `2ba686b`，lane/bw15-platform，main=`841315b`：crates/mercury/tests/network_baseline.rs 7 测=UDP/TCP 真回环 RTT p50/p90/p99+4MiB 吞吐+钉死钟丢包恢复两臂（16/16 恰一次重发+越序 ack 穿越）；记录 TSV docs/review/fixtures/network-baseline/net-baseline.tsv；mercury 377 lib+7 集成全绿（本席 main 复测 384 绿），回环墙钟数字机器相关只记录不设带）
 - [x] **OPT-02-01-02 评估缓冲复用**。**验收** 报告分配与峰值内存。（bw15 席 `dc549c4`/`739a3bc`，lane/bw15-platform，main=`3b5f15a`/`8b1793a`：crates/mercury/tests/buffer_alloc.rs 5 测=指针配对台账分配器+测量窗，Packet 1 alloc/1472B、收包循环每报 1 新箱、未确认窗每槽 1576B 且 ack 后活集归零、TCP 发送缓冲稳态写+重排队零分配=背衬复用证实；TSV docs/review/fixtures/network-baseline/buffer-alloc.tsv，证据页 docs/review/opt-02-01-02-buffer-reuse.md；mercury 377 lib+7+5 全绿（本席 main 复测绿），分配计数族逐跑恒等）
 - [x] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。（bw15 席 `bc1ee86`/`071bdc6`/`3e7c776`，lane/bw15-platform，main=`c733e5a`/`7dc6d12`/`3590227`：platform::socket 落 sendmmsg/recvmmsg 包装+SendScratch/RecvScratch 保留式暂存（Linux cfg）；crates/mercury/tests/batch_io.rs 三臂对照=批量/逐报/分配计数，批宽 64 收发系统调用各 63×摊派（3495→55）确定、每报摊派成本 p50 持平、稳态 0 alloc/报（现行路径 1.00/报）、回环吞吐同量级（窗深投递延迟主导，墙钟只记录不设带）；TSV docs/review/fixtures/network-baseline/batch-io.tsv，证据页 docs/review/opt-02-01-03-batch-and-copy.md；platform 64+mercury 377/7/5/1 全绿（本席 main 复测 455 绿））
-- [ ] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。
+- [x] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。（bw15-platform 席 `fc181f5`/`19a9c42`/`29cc302`/`f438b7d`/`1b27379`，lane/bw15-platform，main=`261a2d0`/`25ee476`/`3675b18`/`62ea5d3`/`4b83ebb`：crates/server-runtime/tests/el7_mixed_deploy.rs 五腿真机混部（`#[ignore]` 场景，EL7_MIXED_OUT 落 TSV）=新版→原版 UDP（pid/WholeMachine 查询）+原版→新版 UDP（logger 注册与 birth/death 监听入册）+发现广播（addTCP/add 版本门两臂推送件到位）+新版→原版 TCP（注册 108+记录 107 帧化落 mldb）+新版→原版 UDP（裸数据报落 mldb），mldb component_names/strings 字节级断言；**四个真互操作 bug 修复**：contracts/machined 线格式对参考（main=`261a2d0`）/message_logger 记录头源字段宽（main=`25ee476`）/machined 进程统计查询答全匹配面（main=`3675b18`）/server-runtime 接 message_logger workspace 边（main=`62ea5d3`）；TSV docs/review/fixtures/network-baseline/el7-mixed-deploy.tsv，证据页 docs/review/opt-02-01-04-el7-mixed-deploy.md；本席 main 复测五腿全绿（5.01s，TSV 复捕与夹具逐字节恒等））
 
 ### OPT-03-01 Python 桥接基线
 
@@ -7599,7 +7599,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+- [x] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿；⚠️ 行保持开——Windows/macOS 腿待三端 runner（BW-15-05-01）后补测）
 - [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
@@ -9068,7 +9068,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。（bw15 席 `2ba686b`，lane/bw15-platform，main=`841315b`：crates/mercury/tests/network_baseline.rs 7 测=UDP/TCP 真回环 RTT p50/p90/p99+4MiB 吞吐+钉死钟丢包恢复两臂（16/16 恰一次重发+越序 ack 穿越）；记录 TSV docs/review/fixtures/network-baseline/net-baseline.tsv；mercury 377 lib+7 集成全绿（本席 main 复测 384 绿），回环墙钟数字机器相关只记录不设带）
 - [x] **OPT-02-01-02 评估缓冲复用**。**验收** 报告分配与峰值内存。（bw15 席 `dc549c4`/`739a3bc`，lane/bw15-platform，main=`3b5f15a`/`8b1793a`：crates/mercury/tests/buffer_alloc.rs 5 测=指针配对台账分配器+测量窗，Packet 1 alloc/1472B、收包循环每报 1 新箱、未确认窗每槽 1576B 且 ack 后活集归零、TCP 发送缓冲稳态写+重排队零分配=背衬复用证实；TSV docs/review/fixtures/network-baseline/buffer-alloc.tsv，证据页 docs/review/opt-02-01-02-buffer-reuse.md；mercury 377 lib+7+5 全绿（本席 main 复测绿），分配计数族逐跑恒等）
 - [x] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。（bw15 席 `bc1ee86`/`071bdc6`/`3e7c776`，lane/bw15-platform，main=`c733e5a`/`7dc6d12`/`3590227`：platform::socket 落 sendmmsg/recvmmsg 包装+SendScratch/RecvScratch 保留式暂存（Linux cfg）；crates/mercury/tests/batch_io.rs 三臂对照=批量/逐报/分配计数，批宽 64 收发系统调用各 63×摊派（3495→55）确定、每报摊派成本 p50 持平、稳态 0 alloc/报（现行路径 1.00/报）、回环吞吐同量级（窗深投递延迟主导，墙钟只记录不设带）；TSV docs/review/fixtures/network-baseline/batch-io.tsv，证据页 docs/review/opt-02-01-03-batch-and-copy.md；platform 64+mercury 377/7/5/1 全绿（本席 main 复测 455 绿））
-- [ ] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。
+- [x] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。（bw15-platform 席 `fc181f5`/`19a9c42`/`29cc302`/`f438b7d`/`1b27379`，lane/bw15-platform，main=`261a2d0`/`25ee476`/`3675b18`/`62ea5d3`/`4b83ebb`：crates/server-runtime/tests/el7_mixed_deploy.rs 五腿真机混部（`#[ignore]` 场景，EL7_MIXED_OUT 落 TSV）=新版→原版 UDP（pid/WholeMachine 查询）+原版→新版 UDP（logger 注册与 birth/death 监听入册）+发现广播（addTCP/add 版本门两臂推送件到位）+新版→原版 TCP（注册 108+记录 107 帧化落 mldb）+新版→原版 UDP（裸数据报落 mldb），mldb component_names/strings 字节级断言；**四个真互操作 bug 修复**：contracts/machined 线格式对参考（main=`261a2d0`）/message_logger 记录头源字段宽（main=`25ee476`）/machined 进程统计查询答全匹配面（main=`3675b18`）/server-runtime 接 message_logger workspace 边（main=`62ea5d3`）；TSV docs/review/fixtures/network-baseline/el7-mixed-deploy.tsv，证据页 docs/review/opt-02-01-04-el7-mixed-deploy.md；本席 main 复测五腿全绿（5.01s，TSV 复捕与夹具逐字节恒等））
 
 ### OPT-03-01 Python 桥接基线
 
@@ -9179,7 +9179,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+- [x] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿；⚠️ 行保持开——Windows/macOS 腿待三端 runner（BW-15-05-01）后补测）
 - [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
@@ -10609,7 +10609,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。（bw15 席 `2ba686b`，lane/bw15-platform，main=`841315b`：crates/mercury/tests/network_baseline.rs 7 测=UDP/TCP 真回环 RTT p50/p90/p99+4MiB 吞吐+钉死钟丢包恢复两臂（16/16 恰一次重发+越序 ack 穿越）；记录 TSV docs/review/fixtures/network-baseline/net-baseline.tsv；mercury 377 lib+7 集成全绿（本席 main 复测 384 绿），回环墙钟数字机器相关只记录不设带）
 - [x] **OPT-02-01-02 评估缓冲复用**。**验收** 报告分配与峰值内存。（bw15 席 `dc549c4`/`739a3bc`，lane/bw15-platform，main=`3b5f15a`/`8b1793a`：crates/mercury/tests/buffer_alloc.rs 5 测=指针配对台账分配器+测量窗，Packet 1 alloc/1472B、收包循环每报 1 新箱、未确认窗每槽 1576B 且 ack 后活集归零、TCP 发送缓冲稳态写+重排队零分配=背衬复用证实；TSV docs/review/fixtures/network-baseline/buffer-alloc.tsv，证据页 docs/review/opt-02-01-02-buffer-reuse.md；mercury 377 lib+7+5 全绿（本席 main 复测绿），分配计数族逐跑恒等）
 - [x] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。（bw15 席 `bc1ee86`/`071bdc6`/`3e7c776`，lane/bw15-platform，main=`c733e5a`/`7dc6d12`/`3590227`：platform::socket 落 sendmmsg/recvmmsg 包装+SendScratch/RecvScratch 保留式暂存（Linux cfg）；crates/mercury/tests/batch_io.rs 三臂对照=批量/逐报/分配计数，批宽 64 收发系统调用各 63×摊派（3495→55）确定、每报摊派成本 p50 持平、稳态 0 alloc/报（现行路径 1.00/报）、回环吞吐同量级（窗深投递延迟主导，墙钟只记录不设带）；TSV docs/review/fixtures/network-baseline/batch-io.tsv，证据页 docs/review/opt-02-01-03-batch-and-copy.md；platform 64+mercury 377/7/5/1 全绿（本席 main 复测 455 绿））
-- [ ] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。
+- [x] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。（bw15-platform 席 `fc181f5`/`19a9c42`/`29cc302`/`f438b7d`/`1b27379`，lane/bw15-platform，main=`261a2d0`/`25ee476`/`3675b18`/`62ea5d3`/`4b83ebb`：crates/server-runtime/tests/el7_mixed_deploy.rs 五腿真机混部（`#[ignore]` 场景，EL7_MIXED_OUT 落 TSV）=新版→原版 UDP（pid/WholeMachine 查询）+原版→新版 UDP（logger 注册与 birth/death 监听入册）+发现广播（addTCP/add 版本门两臂推送件到位）+新版→原版 TCP（注册 108+记录 107 帧化落 mldb）+新版→原版 UDP（裸数据报落 mldb），mldb component_names/strings 字节级断言；**四个真互操作 bug 修复**：contracts/machined 线格式对参考（main=`261a2d0`）/message_logger 记录头源字段宽（main=`25ee476`）/machined 进程统计查询答全匹配面（main=`3675b18`）/server-runtime 接 message_logger workspace 边（main=`62ea5d3`）；TSV docs/review/fixtures/network-baseline/el7-mixed-deploy.tsv，证据页 docs/review/opt-02-01-04-el7-mixed-deploy.md；本席 main 复测五腿全绿（5.01s，TSV 复捕与夹具逐字节恒等））
 
 ### OPT-03-01 Python 桥接基线
 
@@ -10720,7 +10720,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+- [x] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿；⚠️ 行保持开——Windows/macOS 腿待三端 runner（BW-15-05-01）后补测）
 - [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
