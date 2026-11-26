@@ -83,3 +83,7 @@ harness = false
 [[bench]]
 name = "dense_aoi"
 harness = false
+
+[[bench]]
+name = "spatial_parallel"
+harness = false
