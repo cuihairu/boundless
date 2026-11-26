@@ -2945,8 +2945,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [ ] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。
-- [ ] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。
+- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。；deliver 96009f9（main）；**FLAG 双交付未决**：main `96009f9`（asset-pipeline tests/dependency_rebuild_baseline.rs 203 行集成测）与本席 `d11c3d2`（`ci/build-baseline.sh` fanout+冷/增量双腿 shell 测量：foundation 19 依赖者、release 冷 220.59s/增量 96.25s、debug 冷 53.47s/增量 3.81s、touch foundation 重编 11 crate 全闭包）互补非冲突——main 面是测试内基线，本席面是可复跑 CI 入口；本席勾行已自纠退回开（revert `6d07099`），证据 `docs/review/opt-16-01-01-build-baseline.md`，待主席择一/并认。
+- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171（main `8c37171`，time_queue 拆分评估 rebuild 25→7 crate fan-out 24→6；吸收自 origin/main `7ff40ee` 勾行，本席未重做）。
 - [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
 
 ### OPT-23-01 关闭及开启采集的长稳基线
@@ -4525,8 +4525,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [ ] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。
-- [ ] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。
+- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。；deliver 96009f9（main）；**FLAG 双交付未决**：main `96009f9`（asset-pipeline tests/dependency_rebuild_baseline.rs 203 行集成测）与本席 `d11c3d2`（`ci/build-baseline.sh` fanout+冷/增量双腿 shell 测量：foundation 19 依赖者、release 冷 220.59s/增量 96.25s、debug 冷 53.47s/增量 3.81s、touch foundation 重编 11 crate 全闭包）互补非冲突——main 面是测试内基线，本席面是可复跑 CI 入口；本席勾行已自纠退回开（revert `6d07099`），证据 `docs/review/opt-16-01-01-build-baseline.md`，待主席择一/并认。
+- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171（main `8c37171`，time_queue 拆分评估 rebuild 25→7 crate fan-out 24→6；吸收自 origin/main `7ff40ee` 勾行，本席未重做）。
 - [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
 
 ### OPT-23-01 关闭及开启采集的长稳基线
@@ -6066,8 +6066,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [ ] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。
-- [ ] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。
+- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。；deliver 96009f9（main）；**FLAG 双交付未决**：main `96009f9`（asset-pipeline tests/dependency_rebuild_baseline.rs 203 行集成测）与本席 `d11c3d2`（`ci/build-baseline.sh` fanout+冷/增量双腿 shell 测量：foundation 19 依赖者、release 冷 220.59s/增量 96.25s、debug 冷 53.47s/增量 3.81s、touch foundation 重编 11 crate 全闭包）互补非冲突——main 面是测试内基线，本席面是可复跑 CI 入口；本席勾行已自纠退回开（revert `6d07099`），证据 `docs/review/opt-16-01-01-build-baseline.md`，待主席择一/并认。
+- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171（main `8c37171`，time_queue 拆分评估 rebuild 25→7 crate fan-out 24→6；吸收自 origin/main `7ff40ee` 勾行，本席未重做）。
 - [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
 
 ### OPT-23-01 关闭及开启采集的长稳基线
@@ -7607,8 +7607,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [ ] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。
-- [ ] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。
+- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。；deliver 96009f9（main）；**FLAG 双交付未决**：main `96009f9`（asset-pipeline tests/dependency_rebuild_baseline.rs 203 行集成测）与本席 `d11c3d2`（`ci/build-baseline.sh` fanout+冷/增量双腿 shell 测量：foundation 19 依赖者、release 冷 220.59s/增量 96.25s、debug 冷 53.47s/增量 3.81s、touch foundation 重编 11 crate 全闭包）互补非冲突——main 面是测试内基线，本席面是可复跑 CI 入口；本席勾行已自纠退回开（revert `6d07099`），证据 `docs/review/opt-16-01-01-build-baseline.md`，待主席择一/并认。
+- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171（main `8c37171`，time_queue 拆分评估 rebuild 25→7 crate fan-out 24→6；吸收自 origin/main `7ff40ee` 勾行，本席未重做）。
 - [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
 
 ### OPT-23-01 关闭及开启采集的长稳基线
@@ -9187,8 +9187,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [ ] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。
-- [ ] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。
+- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。；deliver 96009f9（main）；**FLAG 双交付未决**：main `96009f9`（asset-pipeline tests/dependency_rebuild_baseline.rs 203 行集成测）与本席 `d11c3d2`（`ci/build-baseline.sh` fanout+冷/增量双腿 shell 测量：foundation 19 依赖者、release 冷 220.59s/增量 96.25s、debug 冷 53.47s/增量 3.81s、touch foundation 重编 11 crate 全闭包）互补非冲突——main 面是测试内基线，本席面是可复跑 CI 入口；本席勾行已自纠退回开（revert `6d07099`），证据 `docs/review/opt-16-01-01-build-baseline.md`，待主席择一/并认。
+- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171（main `8c37171`，time_queue 拆分评估 rebuild 25→7 crate fan-out 24→6；吸收自 origin/main `7ff40ee` 勾行，本席未重做）。
 - [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
 
 ### OPT-23-01 关闭及开启采集的长稳基线
@@ -10728,8 +10728,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [ ] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。
-- [ ] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。
+- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。；deliver 96009f9（main）；**FLAG 双交付未决**：main `96009f9`（asset-pipeline tests/dependency_rebuild_baseline.rs 203 行集成测）与本席 `d11c3d2`（`ci/build-baseline.sh` fanout+冷/增量双腿 shell 测量：foundation 19 依赖者、release 冷 220.59s/增量 96.25s、debug 冷 53.47s/增量 3.81s、touch foundation 重编 11 crate 全闭包）互补非冲突——main 面是测试内基线，本席面是可复跑 CI 入口；本席勾行已自纠退回开（revert `6d07099`），证据 `docs/review/opt-16-01-01-build-baseline.md`，待主席择一/并认。
+- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171（main `8c37171`，time_queue 拆分评估 rebuild 25→7 crate fan-out 24→6；吸收自 origin/main `7ff40ee` 勾行，本席未重做）。
 - [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
 
 ### OPT-23-01 关闭及开启采集的长稳基线
