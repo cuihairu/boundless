@@ -2945,7 +2945,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [ ] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。
+- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。（d11c3d2；`ci/build-baseline.sh` fanout+冷/增量双腿：直接依赖者 foundation 19/resources 12/physics 6/platform 5；release 冷 220.59s 增量 96.25s、debug 冷 53.47s 增量 3.81s，touch foundation 重编全闭包 11 crates。夹具 `docs/review/fixtures/opt-16-01-01/build-fanout.tsv`，证据 `docs/review/opt-16-01-01-build-baseline.md`。）
 - [ ] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。
 - [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
 
@@ -4525,7 +4525,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [ ] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。
+- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。（d11c3d2；`ci/build-baseline.sh` fanout+冷/增量双腿：直接依赖者 foundation 19/resources 12/physics 6/platform 5；release 冷 220.59s 增量 96.25s、debug 冷 53.47s 增量 3.81s，touch foundation 重编全闭包 11 crates。夹具 `docs/review/fixtures/opt-16-01-01/build-fanout.tsv`，证据 `docs/review/opt-16-01-01-build-baseline.md`。）
 - [ ] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。
 - [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
 
@@ -6066,7 +6066,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [ ] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。
+- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。（d11c3d2；`ci/build-baseline.sh` fanout+冷/增量双腿：直接依赖者 foundation 19/resources 12/physics 6/platform 5；release 冷 220.59s 增量 96.25s、debug 冷 53.47s 增量 3.81s，touch foundation 重编全闭包 11 crates。夹具 `docs/review/fixtures/opt-16-01-01/build-fanout.tsv`，证据 `docs/review/opt-16-01-01-build-baseline.md`。）
 - [ ] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。
 - [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
 
@@ -7607,7 +7607,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [ ] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。
+- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。（d11c3d2；`ci/build-baseline.sh` fanout+冷/增量双腿：直接依赖者 foundation 19/resources 12/physics 6/platform 5；release 冷 220.59s 增量 96.25s、debug 冷 53.47s 增量 3.81s，touch foundation 重编全闭包 11 crates。夹具 `docs/review/fixtures/opt-16-01-01/build-fanout.tsv`，证据 `docs/review/opt-16-01-01-build-baseline.md`。）
 - [ ] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。
 - [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
 
@@ -9187,7 +9187,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [ ] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。
+- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。（d11c3d2；`ci/build-baseline.sh` fanout+冷/增量双腿：直接依赖者 foundation 19/resources 12/physics 6/platform 5；release 冷 220.59s 增量 96.25s、debug 冷 53.47s 增量 3.81s，touch foundation 重编全闭包 11 crates。夹具 `docs/review/fixtures/opt-16-01-01/build-fanout.tsv`，证据 `docs/review/opt-16-01-01-build-baseline.md`。）
 - [ ] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。
 - [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
 
@@ -10728,7 +10728,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [ ] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。
+- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。（d11c3d2；`ci/build-baseline.sh` fanout+冷/增量双腿：直接依赖者 foundation 19/resources 12/physics 6/platform 5；release 冷 220.59s 增量 96.25s、debug 冷 53.47s 增量 3.81s，touch foundation 重编全闭包 11 crates。夹具 `docs/review/fixtures/opt-16-01-01/build-fanout.tsv`，证据 `docs/review/opt-16-01-01-build-baseline.md`。）
 - [ ] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。
 - [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
 
