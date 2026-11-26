@@ -2983,12 +2983,12 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [ ] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（他席在途登记 2026-11-26：lane/opt-26-db 席 lane-only 交付 4c75e00 固定事件回放+查询基线+f512511 勾行，未进 main，本树未含其面——该席按 lane 名即本簇主人，02/03/04 归其活跃节，行保持开本席不接）。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `4c75e00`（lane/opt-26-db），main=`6973092`，本席 cherry-pick `e34dacd`。面：event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账；TSV event-query.tsv 39 行+证据页；复跑 6 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
-- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `40b58e0`（lane/opt-26-db），main=`027c6c0`，本席 cherry-pick `013f573`。面：import_batch_candidates.rs=导入批大小评估（64 行 commit 裁定+内存平坦）；TSV import-batch.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
+- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（他席在途登记 2026-11-26：lane/opt-26-db 席 lane-only 交付 4c75e00 固定事件回放+查询基线+f512511 勾行，未进 main，本树未含其面——该席按 lane 名即本簇主人，02/03/04 归其活跃节，行保持开本席不接）。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `4c75e00`（lane/opt-26-db），main=`6973092`，本席 cherry-pick `e34dacd`。面：event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账；TSV event-query.tsv 39 行+证据页；复跑 6 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
+- [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `40b58e0`（lane/opt-26-db），main=`027c6c0`，本席 cherry-pick `013f573`。面：import_batch_candidates.rs=导入批大小评估（64 行 commit 裁定+内存平坦）；TSV import-batch.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `40b58e0`（未进 main）：导入批大小评估（64 行 commit 裁定+内存平坦）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
-- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `bf335b5`（lane/opt-26-db），main=`5df3486`，本席 cherry-pick `c578a23`。面：query_aggregation_candidates.rs=查询聚合评估（name 索引 ~4700×）；TSV query-aggr.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
+- [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `bf335b5`（lane/opt-26-db），main=`5df3486`，本席 cherry-pick `c578a23`。面：query_aggregation_candidates.rs=查询聚合评估（name 索引 ~4700×）；TSV query-aggr.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `bf335b5`（未进 main）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
-- [ ] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `b34554a`（lane/opt-26-db），main=`1590095`，本席 cherry-pick `7a1867c`。面：sample_report_rerun.rs 3 测=从存储语料复算样本报表对照 TSV 基线逐项等+每项优化后复算仍等；证据页；复跑 3 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
+- [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `b34554a`（lane/opt-26-db），main=`1590095`，本席 cherry-pick `7a1867c`。面：sample_report_rerun.rs 3 测=从存储语料复算样本报表对照 TSV 基线逐项等+每项优化后复算仍等；证据页；复跑 3 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `b34554a`（未进 main）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
 
 ## 5. 实施顺序与里程碑
@@ -4587,12 +4587,12 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [ ] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（他席在途登记 2026-11-26：lane/opt-26-db 席 lane-only 交付 4c75e00 固定事件回放+查询基线+f512511 勾行，未进 main，本树未含其面——该席按 lane 名即本簇主人，02/03/04 归其活跃节，行保持开本席不接）。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `4c75e00`（lane/opt-26-db），main=`6973092`，本席 cherry-pick `e34dacd`。面：event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账；TSV event-query.tsv 39 行+证据页；复跑 6 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
-- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `40b58e0`（lane/opt-26-db），main=`027c6c0`，本席 cherry-pick `013f573`。面：import_batch_candidates.rs=导入批大小评估（64 行 commit 裁定+内存平坦）；TSV import-batch.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
+- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（他席在途登记 2026-11-26：lane/opt-26-db 席 lane-only 交付 4c75e00 固定事件回放+查询基线+f512511 勾行，未进 main，本树未含其面——该席按 lane 名即本簇主人，02/03/04 归其活跃节，行保持开本席不接）。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `4c75e00`（lane/opt-26-db），main=`6973092`，本席 cherry-pick `e34dacd`。面：event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账；TSV event-query.tsv 39 行+证据页；复跑 6 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
+- [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `40b58e0`（lane/opt-26-db），main=`027c6c0`，本席 cherry-pick `013f573`。面：import_batch_candidates.rs=导入批大小评估（64 行 commit 裁定+内存平坦）；TSV import-batch.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `40b58e0`（未进 main）：导入批大小评估（64 行 commit 裁定+内存平坦）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
-- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `bf335b5`（lane/opt-26-db），main=`5df3486`，本席 cherry-pick `c578a23`。面：query_aggregation_candidates.rs=查询聚合评估（name 索引 ~4700×）；TSV query-aggr.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
+- [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `bf335b5`（lane/opt-26-db），main=`5df3486`，本席 cherry-pick `c578a23`。面：query_aggregation_candidates.rs=查询聚合评估（name 索引 ~4700×）；TSV query-aggr.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `bf335b5`（未进 main）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
-- [ ] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `b34554a`（lane/opt-26-db），main=`1590095`，本席 cherry-pick `7a1867c`。面：sample_report_rerun.rs 3 测=从存储语料复算样本报表对照 TSV 基线逐项等+每项优化后复算仍等；证据页；复跑 3 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
+- [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `b34554a`（lane/opt-26-db），main=`1590095`，本席 cherry-pick `7a1867c`。面：sample_report_rerun.rs 3 测=从存储语料复算样本报表对照 TSV 基线逐项等+每项优化后复算仍等；证据页；复跑 3 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `b34554a`（未进 main）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
 
 ## 5. 实施顺序与里程碑
@@ -6152,12 +6152,12 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [ ] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（他席在途登记 2026-11-26：lane/opt-26-db 席 lane-only 交付 4c75e00 固定事件回放+查询基线+f512511 勾行，未进 main，本树未含其面——该席按 lane 名即本簇主人，02/03/04 归其活跃节，行保持开本席不接）。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `4c75e00`（lane/opt-26-db），main=`6973092`，本席 cherry-pick `e34dacd`。面：event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账；TSV event-query.tsv 39 行+证据页；复跑 6 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
-- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `40b58e0`（lane/opt-26-db），main=`027c6c0`，本席 cherry-pick `013f573`。面：import_batch_candidates.rs=导入批大小评估（64 行 commit 裁定+内存平坦）；TSV import-batch.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
+- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（他席在途登记 2026-11-26：lane/opt-26-db 席 lane-only 交付 4c75e00 固定事件回放+查询基线+f512511 勾行，未进 main，本树未含其面——该席按 lane 名即本簇主人，02/03/04 归其活跃节，行保持开本席不接）。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `4c75e00`（lane/opt-26-db），main=`6973092`，本席 cherry-pick `e34dacd`。面：event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账；TSV event-query.tsv 39 行+证据页；复跑 6 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
+- [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `40b58e0`（lane/opt-26-db），main=`027c6c0`，本席 cherry-pick `013f573`。面：import_batch_candidates.rs=导入批大小评估（64 行 commit 裁定+内存平坦）；TSV import-batch.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `40b58e0`（未进 main）：导入批大小评估（64 行 commit 裁定+内存平坦）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
-- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `bf335b5`（lane/opt-26-db），main=`5df3486`，本席 cherry-pick `c578a23`。面：query_aggregation_candidates.rs=查询聚合评估（name 索引 ~4700×）；TSV query-aggr.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
+- [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `bf335b5`（lane/opt-26-db），main=`5df3486`，本席 cherry-pick `c578a23`。面：query_aggregation_candidates.rs=查询聚合评估（name 索引 ~4700×）；TSV query-aggr.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `bf335b5`（未进 main）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
-- [ ] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `b34554a`（lane/opt-26-db），main=`1590095`，本席 cherry-pick `7a1867c`。面：sample_report_rerun.rs 3 测=从存储语料复算样本报表对照 TSV 基线逐项等+每项优化后复算仍等；证据页；复跑 3 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
+- [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `b34554a`（lane/opt-26-db），main=`1590095`，本席 cherry-pick `7a1867c`。面：sample_report_rerun.rs 3 测=从存储语料复算样本报表对照 TSV 基线逐项等+每项优化后复算仍等；证据页；复跑 3 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `b34554a`（未进 main）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
 
 ## 5. 实施顺序与里程碑
@@ -7717,12 +7717,12 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [ ] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（他席在途登记 2026-11-26：lane/opt-26-db 席 lane-only 交付 4c75e00 固定事件回放+查询基线+f512511 勾行，未进 main，本树未含其面——该席按 lane 名即本簇主人，02/03/04 归其活跃节，行保持开本席不接）。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `4c75e00`（lane/opt-26-db），main=`6973092`，本席 cherry-pick `e34dacd`。面：event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账；TSV event-query.tsv 39 行+证据页；复跑 6 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
-- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `40b58e0`（lane/opt-26-db），main=`027c6c0`，本席 cherry-pick `013f573`。面：import_batch_candidates.rs=导入批大小评估（64 行 commit 裁定+内存平坦）；TSV import-batch.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
+- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（他席在途登记 2026-11-26：lane/opt-26-db 席 lane-only 交付 4c75e00 固定事件回放+查询基线+f512511 勾行，未进 main，本树未含其面——该席按 lane 名即本簇主人，02/03/04 归其活跃节，行保持开本席不接）。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `4c75e00`（lane/opt-26-db），main=`6973092`，本席 cherry-pick `e34dacd`。面：event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账；TSV event-query.tsv 39 行+证据页；复跑 6 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
+- [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `40b58e0`（lane/opt-26-db），main=`027c6c0`，本席 cherry-pick `013f573`。面：import_batch_candidates.rs=导入批大小评估（64 行 commit 裁定+内存平坦）；TSV import-batch.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `40b58e0`（未进 main）：导入批大小评估（64 行 commit 裁定+内存平坦）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
-- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `bf335b5`（lane/opt-26-db），main=`5df3486`，本席 cherry-pick `c578a23`。面：query_aggregation_candidates.rs=查询聚合评估（name 索引 ~4700×）；TSV query-aggr.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
+- [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `bf335b5`（lane/opt-26-db），main=`5df3486`，本席 cherry-pick `c578a23`。面：query_aggregation_candidates.rs=查询聚合评估（name 索引 ~4700×）；TSV query-aggr.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `bf335b5`（未进 main）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
-- [ ] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `b34554a`（lane/opt-26-db），main=`1590095`，本席 cherry-pick `7a1867c`。面：sample_report_rerun.rs 3 测=从存储语料复算样本报表对照 TSV 基线逐项等+每项优化后复算仍等；证据页；复跑 3 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
+- [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `b34554a`（lane/opt-26-db），main=`1590095`，本席 cherry-pick `7a1867c`。面：sample_report_rerun.rs 3 测=从存储语料复算样本报表对照 TSV 基线逐项等+每项优化后复算仍等；证据页；复跑 3 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `b34554a`（未进 main）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
 
 ## 5. 实施顺序与里程碑
@@ -9321,12 +9321,12 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [ ] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（他席在途登记 2026-11-26：lane/opt-26-db 席 lane-only 交付 4c75e00 固定事件回放+查询基线+f512511 勾行，未进 main，本树未含其面——该席按 lane 名即本簇主人，02/03/04 归其活跃节，行保持开本席不接）。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `4c75e00`（lane/opt-26-db），main=`6973092`，本席 cherry-pick `e34dacd`。面：event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账；TSV event-query.tsv 39 行+证据页；复跑 6 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
-- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `40b58e0`（lane/opt-26-db），main=`027c6c0`，本席 cherry-pick `013f573`。面：import_batch_candidates.rs=导入批大小评估（64 行 commit 裁定+内存平坦）；TSV import-batch.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
+- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（他席在途登记 2026-11-26：lane/opt-26-db 席 lane-only 交付 4c75e00 固定事件回放+查询基线+f512511 勾行，未进 main，本树未含其面——该席按 lane 名即本簇主人，02/03/04 归其活跃节，行保持开本席不接）。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `4c75e00`（lane/opt-26-db），main=`6973092`，本席 cherry-pick `e34dacd`。面：event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账；TSV event-query.tsv 39 行+证据页；复跑 6 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
+- [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `40b58e0`（lane/opt-26-db），main=`027c6c0`，本席 cherry-pick `013f573`。面：import_batch_candidates.rs=导入批大小评估（64 行 commit 裁定+内存平坦）；TSV import-batch.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `40b58e0`（未进 main）：导入批大小评估（64 行 commit 裁定+内存平坦）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
-- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `bf335b5`（lane/opt-26-db），main=`5df3486`，本席 cherry-pick `c578a23`。面：query_aggregation_candidates.rs=查询聚合评估（name 索引 ~4700×）；TSV query-aggr.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
+- [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `bf335b5`（lane/opt-26-db），main=`5df3486`，本席 cherry-pick `c578a23`。面：query_aggregation_candidates.rs=查询聚合评估（name 索引 ~4700×）；TSV query-aggr.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `bf335b5`（未进 main）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
-- [ ] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `b34554a`（lane/opt-26-db），main=`1590095`，本席 cherry-pick `7a1867c`。面：sample_report_rerun.rs 3 测=从存储语料复算样本报表对照 TSV 基线逐项等+每项优化后复算仍等；证据页；复跑 3 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
+- [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `b34554a`（lane/opt-26-db），main=`1590095`，本席 cherry-pick `7a1867c`。面：sample_report_rerun.rs 3 测=从存储语料复算样本报表对照 TSV 基线逐项等+每项优化后复算仍等；证据页；复跑 3 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `b34554a`（未进 main）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
 
 ## 5. 实施顺序与里程碑
@@ -10886,12 +10886,12 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [ ] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（他席在途登记 2026-11-26：lane/opt-26-db 席 lane-only 交付 4c75e00 固定事件回放+查询基线+f512511 勾行，未进 main，本树未含其面——该席按 lane 名即本簇主人，02/03/04 归其活跃节，行保持开本席不接）。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `4c75e00`（lane/opt-26-db），main=`6973092`，本席 cherry-pick `e34dacd`。面：event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账；TSV event-query.tsv 39 行+证据页；复跑 6 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
-- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `40b58e0`（lane/opt-26-db），main=`027c6c0`，本席 cherry-pick `013f573`。面：import_batch_candidates.rs=导入批大小评估（64 行 commit 裁定+内存平坦）；TSV import-batch.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
+- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（他席在途登记 2026-11-26：lane/opt-26-db 席 lane-only 交付 4c75e00 固定事件回放+查询基线+f512511 勾行，未进 main，本树未含其面——该席按 lane 名即本簇主人，02/03/04 归其活跃节，行保持开本席不接）。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `4c75e00`（lane/opt-26-db），main=`6973092`，本席 cherry-pick `e34dacd`。面：event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账；TSV event-query.tsv 39 行+证据页；复跑 6 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
+- [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `40b58e0`（lane/opt-26-db），main=`027c6c0`，本席 cherry-pick `013f573`。面：import_batch_candidates.rs=导入批大小评估（64 行 commit 裁定+内存平坦）；TSV import-batch.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `40b58e0`（未进 main）：导入批大小评估（64 行 commit 裁定+内存平坦）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
-- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `bf335b5`（lane/opt-26-db），main=`5df3486`，本席 cherry-pick `c578a23`。面：query_aggregation_candidates.rs=查询聚合评估（name 索引 ~4700×）；TSV query-aggr.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
+- [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `bf335b5`（lane/opt-26-db），main=`5df3486`，本席 cherry-pick `c578a23`。面：query_aggregation_candidates.rs=查询聚合评估（name 索引 ~4700×）；TSV query-aggr.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `bf335b5`（未进 main）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
-- [ ] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `b34554a`（lane/opt-26-db），main=`1590095`，本席 cherry-pick `7a1867c`。面：sample_report_rerun.rs 3 测=从存储语料复算样本报表对照 TSV 基线逐项等+每项优化后复算仍等；证据页；复跑 3 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
+- [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `b34554a`（lane/opt-26-db），main=`1590095`，本席 cherry-pick `7a1867c`。面：sample_report_rerun.rs 3 测=从存储语料复算样本报表对照 TSV 基线逐项等+每项优化后复算仍等；证据页；复跑 3 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `b34554a`（未进 main）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
 
 ## 5. 实施顺序与里程碑
