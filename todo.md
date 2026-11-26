@@ -2937,7 +2937,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。；**证据（Linux 腿实测，行仍开=三端 runner 缺）**：`crates/platform/tests/io_timer_baseline.rs` 统一负载 512 ops@64KiB——顺序写 30.33µs/读 9.04µs/atomic_replace 55.81µs（fsync 大头）/mmap 单遍 ~1µs/时钟分辨率 1µs/1ms sleep 均值 1.0864ms/wakeup 往返 0.95µs；断言全数据面（往返/映射内容/节拍±10%），墙钟读数不入断言；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、macOS 卡 darwin SDK，同测试三端可跑待 BW-15-05 runner。夹具 `docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv`，证据 `docs/review/opt-15-01-01-io-timer-baseline.md`。
 - [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
@@ -4517,7 +4517,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。；**证据（Linux 腿实测，行仍开=三端 runner 缺）**：`crates/platform/tests/io_timer_baseline.rs` 统一负载 512 ops@64KiB——顺序写 30.33µs/读 9.04µs/atomic_replace 55.81µs（fsync 大头）/mmap 单遍 ~1µs/时钟分辨率 1µs/1ms sleep 均值 1.0864ms/wakeup 往返 0.95µs；断言全数据面（往返/映射内容/节拍±10%），墙钟读数不入断言；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、macOS 卡 darwin SDK，同测试三端可跑待 BW-15-05 runner。夹具 `docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv`，证据 `docs/review/opt-15-01-01-io-timer-baseline.md`。
 - [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
@@ -6058,7 +6058,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。；**证据（Linux 腿实测，行仍开=三端 runner 缺）**：`crates/platform/tests/io_timer_baseline.rs` 统一负载 512 ops@64KiB——顺序写 30.33µs/读 9.04µs/atomic_replace 55.81µs（fsync 大头）/mmap 单遍 ~1µs/时钟分辨率 1µs/1ms sleep 均值 1.0864ms/wakeup 往返 0.95µs；断言全数据面（往返/映射内容/节拍±10%），墙钟读数不入断言；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、macOS 卡 darwin SDK，同测试三端可跑待 BW-15-05 runner。夹具 `docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv`，证据 `docs/review/opt-15-01-01-io-timer-baseline.md`。
 - [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
@@ -7599,7 +7599,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。；**证据（Linux 腿实测，行仍开=三端 runner 缺）**：`crates/platform/tests/io_timer_baseline.rs` 统一负载 512 ops@64KiB——顺序写 30.33µs/读 9.04µs/atomic_replace 55.81µs（fsync 大头）/mmap 单遍 ~1µs/时钟分辨率 1µs/1ms sleep 均值 1.0864ms/wakeup 往返 0.95µs；断言全数据面（往返/映射内容/节拍±10%），墙钟读数不入断言；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、macOS 卡 darwin SDK，同测试三端可跑待 BW-15-05 runner。夹具 `docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv`，证据 `docs/review/opt-15-01-01-io-timer-baseline.md`。
 - [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
@@ -9179,7 +9179,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。；**证据（Linux 腿实测，行仍开=三端 runner 缺）**：`crates/platform/tests/io_timer_baseline.rs` 统一负载 512 ops@64KiB——顺序写 30.33µs/读 9.04µs/atomic_replace 55.81µs（fsync 大头）/mmap 单遍 ~1µs/时钟分辨率 1µs/1ms sleep 均值 1.0864ms/wakeup 往返 0.95µs；断言全数据面（往返/映射内容/节拍±10%），墙钟读数不入断言；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、macOS 卡 darwin SDK，同测试三端可跑待 BW-15-05 runner。夹具 `docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv`，证据 `docs/review/opt-15-01-01-io-timer-baseline.md`。
 - [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
@@ -10720,7 +10720,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。；**证据（Linux 腿实测，行仍开=三端 runner 缺）**：`crates/platform/tests/io_timer_baseline.rs` 统一负载 512 ops@64KiB——顺序写 30.33µs/读 9.04µs/atomic_replace 55.81µs（fsync 大头）/mmap 单遍 ~1µs/时钟分辨率 1µs/1ms sleep 均值 1.0864ms/wakeup 往返 0.95µs；断言全数据面（往返/映射内容/节拍±10%），墙钟读数不入断言；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、macOS 卡 darwin SDK，同测试三端可跑待 BW-15-05 runner。夹具 `docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv`，证据 `docs/review/opt-15-01-01-io-timer-baseline.md`。
 - [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
