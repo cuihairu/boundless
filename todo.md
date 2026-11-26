@@ -2930,7 +2930,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化发布包和 Demo 首次启动，衡量体积和安装耗时，复跑干净安装、升级及脚本导入。
 
 - [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。；**证据（本席 lane/bw15-platform，行仍开=三端基线未齐）**：`ci/release-baseline.sh` 可复跑（size/archive/first-run 三行+绿红自测），夹具 `docs/review/fixtures/opt-14-01-01/release-baseline.tsv`：linux x86_64 release 二进制 116126768 B、tar 23678496 B（sha256 56708c3…），首跑 `BaseApp is running` min 17 ms/median 26 ms/max 85 ms（14 次）；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、darwin 卡 libsqlite3-sys 无 SDK，两腿 PENDING。`ci/package.sh` 解压 prefix 无 res/server/bw.xml 致 package-smoke exit 124（BW-14-04 剩余面）。证据页 `docs/review/opt-14-01-01-release-baseline.md`。
-- [ ] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。
+- [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（4cff41e；**A/B 实测**：release `strip=symbols`，二进制 116126768→792160 B（146.60×）、tar 23678579→401146 B（59.03×），首跑同 17–26 ms 区间无回归；`ci/package-size-ab.sh` 两腿独立 target dir 复跑，夹具 `docs/review/fixtures/opt-14-01-02/package-layout-ab.tsv`，证据 `docs/review/opt-14-01-02-package-layout.md`。坑：`strip` 合法值 none/debuginfo/symbols，非 false。）
 - [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
@@ -4510,7 +4510,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化发布包和 Demo 首次启动，衡量体积和安装耗时，复跑干净安装、升级及脚本导入。
 
 - [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。；**证据（本席 lane/bw15-platform，行仍开=三端基线未齐）**：`ci/release-baseline.sh` 可复跑（size/archive/first-run 三行+绿红自测），夹具 `docs/review/fixtures/opt-14-01-01/release-baseline.tsv`：linux x86_64 release 二进制 116126768 B、tar 23678496 B（sha256 56708c3…），首跑 `BaseApp is running` min 17 ms/median 26 ms/max 85 ms（14 次）；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、darwin 卡 libsqlite3-sys 无 SDK，两腿 PENDING。`ci/package.sh` 解压 prefix 无 res/server/bw.xml 致 package-smoke exit 124（BW-14-04 剩余面）。证据页 `docs/review/opt-14-01-01-release-baseline.md`。
-- [ ] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。
+- [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（4cff41e；**A/B 实测**：release `strip=symbols`，二进制 116126768→792160 B（146.60×）、tar 23678579→401146 B（59.03×），首跑同 17–26 ms 区间无回归；`ci/package-size-ab.sh` 两腿独立 target dir 复跑，夹具 `docs/review/fixtures/opt-14-01-02/package-layout-ab.tsv`，证据 `docs/review/opt-14-01-02-package-layout.md`。坑：`strip` 合法值 none/debuginfo/symbols，非 false。）
 - [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
@@ -6051,7 +6051,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化发布包和 Demo 首次启动，衡量体积和安装耗时，复跑干净安装、升级及脚本导入。
 
 - [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。；**证据（本席 lane/bw15-platform，行仍开=三端基线未齐）**：`ci/release-baseline.sh` 可复跑（size/archive/first-run 三行+绿红自测），夹具 `docs/review/fixtures/opt-14-01-01/release-baseline.tsv`：linux x86_64 release 二进制 116126768 B、tar 23678496 B（sha256 56708c3…），首跑 `BaseApp is running` min 17 ms/median 26 ms/max 85 ms（14 次）；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、darwin 卡 libsqlite3-sys 无 SDK，两腿 PENDING。`ci/package.sh` 解压 prefix 无 res/server/bw.xml 致 package-smoke exit 124（BW-14-04 剩余面）。证据页 `docs/review/opt-14-01-01-release-baseline.md`。
-- [ ] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。
+- [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（4cff41e；**A/B 实测**：release `strip=symbols`，二进制 116126768→792160 B（146.60×）、tar 23678579→401146 B（59.03×），首跑同 17–26 ms 区间无回归；`ci/package-size-ab.sh` 两腿独立 target dir 复跑，夹具 `docs/review/fixtures/opt-14-01-02/package-layout-ab.tsv`，证据 `docs/review/opt-14-01-02-package-layout.md`。坑：`strip` 合法值 none/debuginfo/symbols，非 false。）
 - [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
@@ -7592,7 +7592,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化发布包和 Demo 首次启动，衡量体积和安装耗时，复跑干净安装、升级及脚本导入。
 
 - [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。；**证据（本席 lane/bw15-platform，行仍开=三端基线未齐）**：`ci/release-baseline.sh` 可复跑（size/archive/first-run 三行+绿红自测），夹具 `docs/review/fixtures/opt-14-01-01/release-baseline.tsv`：linux x86_64 release 二进制 116126768 B、tar 23678496 B（sha256 56708c3…），首跑 `BaseApp is running` min 17 ms/median 26 ms/max 85 ms（14 次）；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、darwin 卡 libsqlite3-sys 无 SDK，两腿 PENDING。`ci/package.sh` 解压 prefix 无 res/server/bw.xml 致 package-smoke exit 124（BW-14-04 剩余面）。证据页 `docs/review/opt-14-01-01-release-baseline.md`。
-- [ ] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。
+- [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（4cff41e；**A/B 实测**：release `strip=symbols`，二进制 116126768→792160 B（146.60×）、tar 23678579→401146 B（59.03×），首跑同 17–26 ms 区间无回归；`ci/package-size-ab.sh` 两腿独立 target dir 复跑，夹具 `docs/review/fixtures/opt-14-01-02/package-layout-ab.tsv`，证据 `docs/review/opt-14-01-02-package-layout.md`。坑：`strip` 合法值 none/debuginfo/symbols，非 false。）
 - [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
@@ -9172,7 +9172,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化发布包和 Demo 首次启动，衡量体积和安装耗时，复跑干净安装、升级及脚本导入。
 
 - [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。；**证据（本席 lane/bw15-platform，行仍开=三端基线未齐）**：`ci/release-baseline.sh` 可复跑（size/archive/first-run 三行+绿红自测），夹具 `docs/review/fixtures/opt-14-01-01/release-baseline.tsv`：linux x86_64 release 二进制 116126768 B、tar 23678496 B（sha256 56708c3…），首跑 `BaseApp is running` min 17 ms/median 26 ms/max 85 ms（14 次）；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、darwin 卡 libsqlite3-sys 无 SDK，两腿 PENDING。`ci/package.sh` 解压 prefix 无 res/server/bw.xml 致 package-smoke exit 124（BW-14-04 剩余面）。证据页 `docs/review/opt-14-01-01-release-baseline.md`。
-- [ ] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。
+- [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（4cff41e；**A/B 实测**：release `strip=symbols`，二进制 116126768→792160 B（146.60×）、tar 23678579→401146 B（59.03×），首跑同 17–26 ms 区间无回归；`ci/package-size-ab.sh` 两腿独立 target dir 复跑，夹具 `docs/review/fixtures/opt-14-01-02/package-layout-ab.tsv`，证据 `docs/review/opt-14-01-02-package-layout.md`。坑：`strip` 合法值 none/debuginfo/symbols，非 false。）
 - [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
@@ -10713,7 +10713,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化发布包和 Demo 首次启动，衡量体积和安装耗时，复跑干净安装、升级及脚本导入。
 
 - [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。；**证据（本席 lane/bw15-platform，行仍开=三端基线未齐）**：`ci/release-baseline.sh` 可复跑（size/archive/first-run 三行+绿红自测），夹具 `docs/review/fixtures/opt-14-01-01/release-baseline.tsv`：linux x86_64 release 二进制 116126768 B、tar 23678496 B（sha256 56708c3…），首跑 `BaseApp is running` min 17 ms/median 26 ms/max 85 ms（14 次）；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、darwin 卡 libsqlite3-sys 无 SDK，两腿 PENDING。`ci/package.sh` 解压 prefix 无 res/server/bw.xml 致 package-smoke exit 124（BW-14-04 剩余面）。证据页 `docs/review/opt-14-01-01-release-baseline.md`。
-- [ ] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。
+- [x] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。（4cff41e；**A/B 实测**：release `strip=symbols`，二进制 116126768→792160 B（146.60×）、tar 23678579→401146 B（59.03×），首跑同 17–26 ms 区间无回归；`ci/package-size-ab.sh` 两腿独立 target dir 复跑，夹具 `docs/review/fixtures/opt-14-01-02/package-layout-ab.tsv`，证据 `docs/review/opt-14-01-02-package-layout.md`。坑：`strip` 合法值 none/debuginfo/symbols，非 false。）
 - [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
