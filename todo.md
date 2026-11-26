@@ -1357,10 +1357,11 @@
 作为 Boundless 新增的 DBApp 主存储后端，与 MySQL、XML 共用存储接口，通过配置选择。实现实体/账号字段映射、DBID 分配、索引与约束、事务、并发锁和连接恢复。复用存储契约测试，覆盖创建、装载、更新、删除、账号重登、auto-load 和二级库归档合并。以原版 MySQL 路径的实体状态、错误语义与回调结果作为行为基准。
 
 - [ ] **BW-09-06-01 配置 PostgreSQL 主存储选择**。**验收** DBApp 启动时报告所用后端。
-- [ ] **BW-09-06-02 映射实体 schema 与字段**。**验收** Unicode、二进制和嵌套类型可往返。
-- [ ] **BW-09-06-03 映射账号表和唯一约束**。**验收** 重复账号产生合同错误。
-- [ ] **BW-09-06-04 实现 DBID 分配**。**验收** 并发创建无重复且重启连续可用。
-- [ ] **BW-09-06-05 实现实体读写删查**。**验收** 共用存储契约用例通过。
+- [x] **BW-09-06-02 映射实体 schema 与字段**（4e8ba87）。**验收** Unicode、二进制和嵌套类型可往返。
+- [x] **BW-09-06-03 映射账号表和唯一约束**（e68158f）。**验收** 重复账号产生合同错误。
+- [x] **BW-09-06-04 实现 DBID 分配**（a289d8d）。**验收** 并发创建无重复且重启连续可用。
+- [x] **BW-09-06-05 实现实体读写删查**（f5fd218，并账后重交）。**验收** 共用存储契约用例通过。
+  - 证据：并账后按 main 现形状重交——`impl EntityStorage for PostgresStorage`（get/put/del/logon_of/check_out/check_in/all_entities 七法）+ 每连接类型注册表（未注册类型按契约结局）+ `RefCell<Client>` 内部可变性（`client_mut`）；put 三腿=待分配走 06-04 表序列 create_entity、显式腿裸 INSERT（BY DEFAULT identity 允许，重复 id 撞主键→`AlreadyExists` 且原行存活，序列不动，校准归 BW-09-07-06）、更新腿先 `row_exists`（缺行→`NotFound`）再 upsert；删腿受影响 0 行→NotFound 且不碰登记记录、成功连带删 bigworldLogOns（del_entity_task.cpp:76）；登记面 ip/port htonl/htons 落库 ntohl/ntohs 读回。`tests/storage_contract.rs` 9 例真 PG18（三腿、NotFound 簇、Granted/Elsewhere/释放、字节序、跨表全序、删除连带登记）+ store.rs 单测钉 SQL 逐字。弃旧 fe41751 的 bump_identity+OVERRIDING 腿（登记分歧，见 docs/review/bw09-06-05-storage-contract.md）。`cargo test -p db-postgres` 对真库 93/93 绿、store.rs 覆盖 675/675=100%（llvm-cov 陈旧插桩坑：须整删 target/llvm-cov-target）、workspace 6476/0。
 - [ ] **BW-09-06-06 提交 PostgreSQL 事务**。**验收** 已提交的实体更新可从另一连接读回。
 - [ ] **BW-09-06-07 回滚 PostgreSQL 事务**。**验收** 写入中途返回错误时，实体和关联记录从独立连接读出旧值。
 - [ ] **BW-09-06-08 处理 PostgreSQL 并发写冲突**。**验收** 两个写入同一实体的请求按存储契约返回结果，重试后没有重复记录。
@@ -1368,17 +1369,21 @@
 - [ ] **BW-09-06-10 验证账号重登**。**验收** 会话状态与 MySQL 基准相符。
 - [ ] **BW-09-06-11 对接 auto-load 与 SQLite 归档**。**验收** 重启恢复对应实体。
 
+勾账（2026-11-25，lane/bw16-18 对 main 核验）：06-02..04 代码在树，`cargo test -p db-postgres` 对真库（BOUNDLESS_PG_URL）79/79 绿；06-01、06-05..11 在 main 树中无对应面——主席并账 db-postgres 取另一席早代形状，本席 fe41751/e240260 等交付被覆没（docs/review/bw09-06-05..11 各文档在树而对应代码不在），待按 main 现形状重交。详见 docs/review/bw09-0607-reconcile.md。06-05 已重交（本节 06-05 行证据）；余 06-06..11 仍待按 main 现形状重交（参照实现可 `git show <sha>:crates/db-postgres/...` 取回：e240260/23108c6/bb1dc2c 事务簇、348c360 断链、e7df81e 重登、4de1257 归档）。
+
 #### BW-09-07 PostgreSQL 数据库运维
 
 提供建库、schema 同步与 dry-run、备份恢复和现有 MySQL 数据导入。用原版样本核对实体 ID、账号关联、二进制字段、默认值和下一个可分配 DBID。验证迁移失败时的状态和重试行为。
 
-- [ ] **BW-09-07-01 初始化 PostgreSQL 新库**。**验收** 从空库生成可启动 schema。
-- [ ] **BW-09-07-02 提供 schema dry-run**。**验收** 数据库不变且报告拟执行语句。
-- [ ] **BW-09-07-03 应用 schema 更新**。**验收** 旧样本升级后可读。
-- [ ] **BW-09-07-04 导出并恢复备份**。**验收** 空目标库恢复相同记录。
+- [x] **BW-09-07-01 初始化 PostgreSQL 新库**（e71ccdc）。**验收** 从空库生成可启动 schema。
+- [x] **BW-09-07-02 提供 schema dry-run**（022bee4）。**验收** 数据库不变且报告拟执行语句。
+- [x] **BW-09-07-03 应用 schema 更新**（9aacde0）。**验收** 旧样本升级后可读。
+- [x] **BW-09-07-04 导出并恢复备份**（e4d24e5）。**验收** 空目标库恢复相同记录。
 - [ ] **BW-09-07-05 导入 MySQL 实体及账号**。**验收** ID、关系和二进制字段对照。
 - [ ] **BW-09-07-06 校准导入后的 DBID 分配**。**验收** 新建实体不冲突。
 - [ ] **BW-09-07-07 验证迁移失败与重跑**。**验收** 下次执行不重复导入。
+
+勾账（2026-11-25）：07-01..04 代码在树，schema_init/dry_run/upgrade/backup 集成 14 例对真库绿；07-05..07 在 main 树中无对应面（本席 fc61d0d/0cbc334/3f218d8 的 import_mysql.rs 与校准/重跑腿被覆没，docs/review/bw09-07-05..07 文档在树），待重交。07-06 的 setval 校准机制现仅存于 backup 恢复腿（backup.rs:509），导入侧校准腿缺位。
 
 ### BW-10 世界资源、碰撞和导航
 

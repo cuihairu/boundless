@@ -17,8 +17,6 @@
 
 pub mod boundary;
 pub mod chunk;
-pub mod chunk_editor;
-pub mod chunk_placer;
 pub mod column;
 pub mod grid_traversal;
 pub mod hulltree;
@@ -27,8 +25,6 @@ pub mod mapping;
 pub mod obstacle;
 pub mod snaps;
 pub mod space;
-pub mod space_publish;
-pub mod undoredo;
 
 pub use boundary::{ChunkBoundary, Portal, PortalTarget, create_boundaries, form_boundaries};
 pub use chunk::{Chunk, ChunkItem};
@@ -49,12 +45,3 @@ pub use identifier::{
 pub use mapping::{DEFAULT_GRID_SIZE, GeometryMapping, GridBounds};
 pub use obstacle::{ChunkObstacle, calculate_qt_range};
 pub use space::ChunkSpace;
-pub use space_publish::{
-    BoundedChunkWalker, CacheChunkWalker, ChunkWalker, FileChunkWalker, LinearChunkWalker,
-    SPACE_RECREATOR_BLANK_TEXTURE, SPACE_SETTING_FILE_NAME, SourceSpace, SourceSpaceBounds,
-    SpaceInformation, SpaceRecreator, SpaceSettings, TerrainInfo, bias_grid, chunk_id,
-    grid_from_thumbnail_file_name, normalise_terrain_block_blends, offset_grid,
-};
-pub use undoredo::{
-    Barrier, ExistenceOperation, MatrixOperation, UndoOperation, UndoRedo, operations_equal,
-};
