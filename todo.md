@@ -2922,7 +2922,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化发布包和 Demo 首次启动，衡量体积和安装耗时，复跑干净安装、升级及脚本导入。
 
-- [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。
+- [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。他席已交付未进 main（bw15-platform `7ae598b`，该席行仍开=三端未齐）：ci/release-baseline.sh 168 行可复跑测量（release-size/archive/first-run 三行+缺启动行红/绿自测，CI_RELEASE_TARGET 允许他 runner 追加，未跑腿报 PENDING 不报 PASS）+docs/review/fixtures/opt-14-01-01/release-baseline.tsv 11 行；linux x86_64 实测：release 二进制 116126768 B（~111 MiB，未 strip debuginfo）、tar.gz 23678496 B（~23 MiB，sha256 见 TSV）、到 `BaseApp is running` 14 次 min 17/median 26/max 85 ms；Windows 卡 mercury 16 处 Windows 臂（BW-15-03 留白）、macOS 卡 libsqlite3-sys C 构建无 darwin SDK；**红线遵守**=只本地测量不打 tag/不建 Release；**坑**=安装前缀缺 res/server/bw.xml 但进程仍印 running，package-smoke 30s 超时 exit 124，故 first-run 从仓库根测（基线=可启动面）；主席并入后按勾行态处理，三端未齐前本行保持开。
 - [ ] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。
 - [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
 
@@ -4486,7 +4486,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化发布包和 Demo 首次启动，衡量体积和安装耗时，复跑干净安装、升级及脚本导入。
 
-- [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。
+- [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。他席已交付未进 main（bw15-platform `7ae598b`，该席行仍开=三端未齐）：ci/release-baseline.sh 168 行可复跑测量（release-size/archive/first-run 三行+缺启动行红/绿自测，CI_RELEASE_TARGET 允许他 runner 追加，未跑腿报 PENDING 不报 PASS）+docs/review/fixtures/opt-14-01-01/release-baseline.tsv 11 行；linux x86_64 实测：release 二进制 116126768 B（~111 MiB，未 strip debuginfo）、tar.gz 23678496 B（~23 MiB，sha256 见 TSV）、到 `BaseApp is running` 14 次 min 17/median 26/max 85 ms；Windows 卡 mercury 16 处 Windows 臂（BW-15-03 留白）、macOS 卡 libsqlite3-sys C 构建无 darwin SDK；**红线遵守**=只本地测量不打 tag/不建 Release；**坑**=安装前缀缺 res/server/bw.xml 但进程仍印 running，package-smoke 30s 超时 exit 124，故 first-run 从仓库根测（基线=可启动面）；主席并入后按勾行态处理，三端未齐前本行保持开。
 - [ ] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。
 - [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
 
@@ -6011,7 +6011,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化发布包和 Demo 首次启动，衡量体积和安装耗时，复跑干净安装、升级及脚本导入。
 
-- [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。
+- [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。他席已交付未进 main（bw15-platform `7ae598b`，该席行仍开=三端未齐）：ci/release-baseline.sh 168 行可复跑测量（release-size/archive/first-run 三行+缺启动行红/绿自测，CI_RELEASE_TARGET 允许他 runner 追加，未跑腿报 PENDING 不报 PASS）+docs/review/fixtures/opt-14-01-01/release-baseline.tsv 11 行；linux x86_64 实测：release 二进制 116126768 B（~111 MiB，未 strip debuginfo）、tar.gz 23678496 B（~23 MiB，sha256 见 TSV）、到 `BaseApp is running` 14 次 min 17/median 26/max 85 ms；Windows 卡 mercury 16 处 Windows 臂（BW-15-03 留白）、macOS 卡 libsqlite3-sys C 构建无 darwin SDK；**红线遵守**=只本地测量不打 tag/不建 Release；**坑**=安装前缀缺 res/server/bw.xml 但进程仍印 running，package-smoke 30s 超时 exit 124，故 first-run 从仓库根测（基线=可启动面）；主席并入后按勾行态处理，三端未齐前本行保持开。
 - [ ] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。
 - [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
 
@@ -7536,7 +7536,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化发布包和 Demo 首次启动，衡量体积和安装耗时，复跑干净安装、升级及脚本导入。
 
-- [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。
+- [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。他席已交付未进 main（bw15-platform `7ae598b`，该席行仍开=三端未齐）：ci/release-baseline.sh 168 行可复跑测量（release-size/archive/first-run 三行+缺启动行红/绿自测，CI_RELEASE_TARGET 允许他 runner 追加，未跑腿报 PENDING 不报 PASS）+docs/review/fixtures/opt-14-01-01/release-baseline.tsv 11 行；linux x86_64 实测：release 二进制 116126768 B（~111 MiB，未 strip debuginfo）、tar.gz 23678496 B（~23 MiB，sha256 见 TSV）、到 `BaseApp is running` 14 次 min 17/median 26/max 85 ms；Windows 卡 mercury 16 处 Windows 臂（BW-15-03 留白）、macOS 卡 libsqlite3-sys C 构建无 darwin SDK；**红线遵守**=只本地测量不打 tag/不建 Release；**坑**=安装前缀缺 res/server/bw.xml 但进程仍印 running，package-smoke 30s 超时 exit 124，故 first-run 从仓库根测（基线=可启动面）；主席并入后按勾行态处理，三端未齐前本行保持开。
 - [ ] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。
 - [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
 
@@ -9100,7 +9100,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化发布包和 Demo 首次启动，衡量体积和安装耗时，复跑干净安装、升级及脚本导入。
 
-- [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。
+- [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。他席已交付未进 main（bw15-platform `7ae598b`，该席行仍开=三端未齐）：ci/release-baseline.sh 168 行可复跑测量（release-size/archive/first-run 三行+缺启动行红/绿自测，CI_RELEASE_TARGET 允许他 runner 追加，未跑腿报 PENDING 不报 PASS）+docs/review/fixtures/opt-14-01-01/release-baseline.tsv 11 行；linux x86_64 实测：release 二进制 116126768 B（~111 MiB，未 strip debuginfo）、tar.gz 23678496 B（~23 MiB，sha256 见 TSV）、到 `BaseApp is running` 14 次 min 17/median 26/max 85 ms；Windows 卡 mercury 16 处 Windows 臂（BW-15-03 留白）、macOS 卡 libsqlite3-sys C 构建无 darwin SDK；**红线遵守**=只本地测量不打 tag/不建 Release；**坑**=安装前缀缺 res/server/bw.xml 但进程仍印 running，package-smoke 30s 超时 exit 124，故 first-run 从仓库根测（基线=可启动面）；主席并入后按勾行态处理，三端未齐前本行保持开。
 - [ ] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。
 - [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
 
@@ -10625,7 +10625,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化发布包和 Demo 首次启动，衡量体积和安装耗时，复跑干净安装、升级及脚本导入。
 
-- [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。
+- [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。他席已交付未进 main（bw15-platform `7ae598b`，该席行仍开=三端未齐）：ci/release-baseline.sh 168 行可复跑测量（release-size/archive/first-run 三行+缺启动行红/绿自测，CI_RELEASE_TARGET 允许他 runner 追加，未跑腿报 PENDING 不报 PASS）+docs/review/fixtures/opt-14-01-01/release-baseline.tsv 11 行；linux x86_64 实测：release 二进制 116126768 B（~111 MiB，未 strip debuginfo）、tar.gz 23678496 B（~23 MiB，sha256 见 TSV）、到 `BaseApp is running` 14 次 min 17/median 26/max 85 ms；Windows 卡 mercury 16 处 Windows 臂（BW-15-03 留白）、macOS 卡 libsqlite3-sys C 构建无 darwin SDK；**红线遵守**=只本地测量不打 tag/不建 Release；**坑**=安装前缀缺 res/server/bw.xml 但进程仍印 running，package-smoke 30s 超时 exit 124，故 first-run 从仓库根测（基线=可启动面）；主席并入后按勾行态处理，三端未齐前本行保持开。
 - [ ] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。
 - [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
 
