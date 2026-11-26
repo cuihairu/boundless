@@ -2870,7 +2870,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
 - [x] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。(da8035c)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `61b7880`（`eee8fde`：aoi_baseline.rs 全 shipped 栈逐 tick 接线 cross 范围列表/AoI+vision trigger/Witness 预算 772B/tick，120 实体 10×12 格单观察者账本）；主席择一，未决前行保持本勾态。
-- [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。他席已交付并勾行未进 main：bw14-script-host `98725ed`+勾 `9ddc3ac`（aoi_tuning.rs 同负载双比较（01-01 种子/轨迹全 same-load）：①扇区预过滤索引 水平角>vision_angle+0.25rad 保守丢目标——48 tick 走行 5760→2471 行省 57.1%，可见集/seeing-start 逐 tick 零失配 48/48，探针 2.645→1.917ms；②Witness 容量扫描）；主席并入后按勾行态处理，本行保持开。
+- [x] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。(df56239)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `9ddc3ac`（`98725ed`：aoi_tuning.rs 同负载双比较——扇区预过滤水平角保守丢目标 48 tick 走行省 57.1% 可见集零失配 48/48 探针 2.645→1.917ms+Witness 容量扫描）；主席择一，未决前行保持本勾态。
 - [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。他席已交付并勾行未进 main：bw14-script-host `5e4181c`+勾 `36c1fde`（space_parallel.rs 复用 BW-08-05-01 decide_offload/collect_offload 实面，120 实体密场 x=16m 分裂面真跨面：crossings=2/offloads=2 逐 crossing 恰一次/stays=118；分支规则 coordinate<position 分界平面判右子 x/z 双轴实证；check_ms≈0.009-0.012 打印不断言）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。他席已交付并勾行未进 main：bw14-script-host `616a885`+勾 `cd7a39a`（aoi_rerun.rs 密场景两遍逐 tick 审计：TickLedger 增有序 starts/stops/enters/leaves+整份 bundle 发送序；视距触发器窗谓词双轴、start/stop 差分自洽复现 visible_entities、EnterAoI/LeaveAoI 消息对账）；主席并入后按勾行态处理，本行保持开。
 
@@ -4434,7 +4434,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
 - [x] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。(da8035c)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `61b7880`（`eee8fde`：aoi_baseline.rs 全 shipped 栈逐 tick 接线 cross 范围列表/AoI+vision trigger/Witness 预算 772B/tick，120 实体 10×12 格单观察者账本）；主席择一，未决前行保持本勾态。
-- [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。他席已交付并勾行未进 main：bw14-script-host `98725ed`+勾 `9ddc3ac`（aoi_tuning.rs 同负载双比较（01-01 种子/轨迹全 same-load）：①扇区预过滤索引 水平角>vision_angle+0.25rad 保守丢目标——48 tick 走行 5760→2471 行省 57.1%，可见集/seeing-start 逐 tick 零失配 48/48，探针 2.645→1.917ms；②Witness 容量扫描）；主席并入后按勾行态处理，本行保持开。
+- [x] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。(df56239)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `9ddc3ac`（`98725ed`：aoi_tuning.rs 同负载双比较——扇区预过滤水平角保守丢目标 48 tick 走行省 57.1% 可见集零失配 48/48 探针 2.645→1.917ms+Witness 容量扫描）；主席择一，未决前行保持本勾态。
 - [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。他席已交付并勾行未进 main：bw14-script-host `5e4181c`+勾 `36c1fde`（space_parallel.rs 复用 BW-08-05-01 decide_offload/collect_offload 实面，120 实体密场 x=16m 分裂面真跨面：crossings=2/offloads=2 逐 crossing 恰一次/stays=118；分支规则 coordinate<position 分界平面判右子 x/z 双轴实证；check_ms≈0.009-0.012 打印不断言）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。他席已交付并勾行未进 main：bw14-script-host `616a885`+勾 `cd7a39a`（aoi_rerun.rs 密场景两遍逐 tick 审计：TickLedger 增有序 starts/stops/enters/leaves+整份 bundle 发送序；视距触发器窗谓词双轴、start/stop 差分自洽复现 visible_entities、EnterAoI/LeaveAoI 消息对账）；主席并入后按勾行态处理，本行保持开。
 
@@ -5959,7 +5959,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
 - [x] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。(da8035c)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `61b7880`（`eee8fde`：aoi_baseline.rs 全 shipped 栈逐 tick 接线 cross 范围列表/AoI+vision trigger/Witness 预算 772B/tick，120 实体 10×12 格单观察者账本）；主席择一，未决前行保持本勾态。
-- [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。他席已交付并勾行未进 main：bw14-script-host `98725ed`+勾 `9ddc3ac`（aoi_tuning.rs 同负载双比较（01-01 种子/轨迹全 same-load）：①扇区预过滤索引 水平角>vision_angle+0.25rad 保守丢目标——48 tick 走行 5760→2471 行省 57.1%，可见集/seeing-start 逐 tick 零失配 48/48，探针 2.645→1.917ms；②Witness 容量扫描）；主席并入后按勾行态处理，本行保持开。
+- [x] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。(df56239)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `9ddc3ac`（`98725ed`：aoi_tuning.rs 同负载双比较——扇区预过滤水平角保守丢目标 48 tick 走行省 57.1% 可见集零失配 48/48 探针 2.645→1.917ms+Witness 容量扫描）；主席择一，未决前行保持本勾态。
 - [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。他席已交付并勾行未进 main：bw14-script-host `5e4181c`+勾 `36c1fde`（space_parallel.rs 复用 BW-08-05-01 decide_offload/collect_offload 实面，120 实体密场 x=16m 分裂面真跨面：crossings=2/offloads=2 逐 crossing 恰一次/stays=118；分支规则 coordinate<position 分界平面判右子 x/z 双轴实证；check_ms≈0.009-0.012 打印不断言）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。他席已交付并勾行未进 main：bw14-script-host `616a885`+勾 `cd7a39a`（aoi_rerun.rs 密场景两遍逐 tick 审计：TickLedger 增有序 starts/stops/enters/leaves+整份 bundle 发送序；视距触发器窗谓词双轴、start/stop 差分自洽复现 visible_entities、EnterAoI/LeaveAoI 消息对账）；主席并入后按勾行态处理，本行保持开。
 
@@ -7484,7 +7484,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
 - [x] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。(da8035c)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `61b7880`（`eee8fde`：aoi_baseline.rs 全 shipped 栈逐 tick 接线 cross 范围列表/AoI+vision trigger/Witness 预算 772B/tick，120 实体 10×12 格单观察者账本）；主席择一，未决前行保持本勾态。
-- [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。他席已交付并勾行未进 main：bw14-script-host `98725ed`+勾 `9ddc3ac`（aoi_tuning.rs 同负载双比较（01-01 种子/轨迹全 same-load）：①扇区预过滤索引 水平角>vision_angle+0.25rad 保守丢目标——48 tick 走行 5760→2471 行省 57.1%，可见集/seeing-start 逐 tick 零失配 48/48，探针 2.645→1.917ms；②Witness 容量扫描）；主席并入后按勾行态处理，本行保持开。
+- [x] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。(df56239)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `9ddc3ac`（`98725ed`：aoi_tuning.rs 同负载双比较——扇区预过滤水平角保守丢目标 48 tick 走行省 57.1% 可见集零失配 48/48 探针 2.645→1.917ms+Witness 容量扫描）；主席择一，未决前行保持本勾态。
 - [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。他席已交付并勾行未进 main：bw14-script-host `5e4181c`+勾 `36c1fde`（space_parallel.rs 复用 BW-08-05-01 decide_offload/collect_offload 实面，120 实体密场 x=16m 分裂面真跨面：crossings=2/offloads=2 逐 crossing 恰一次/stays=118；分支规则 coordinate<position 分界平面判右子 x/z 双轴实证；check_ms≈0.009-0.012 打印不断言）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。他席已交付并勾行未进 main：bw14-script-host `616a885`+勾 `cd7a39a`（aoi_rerun.rs 密场景两遍逐 tick 审计：TickLedger 增有序 starts/stops/enters/leaves+整份 bundle 发送序；视距触发器窗谓词双轴、start/stop 差分自洽复现 visible_entities、EnterAoI/LeaveAoI 消息对账）；主席并入后按勾行态处理，本行保持开。
 
@@ -9048,7 +9048,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
 - [x] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。(da8035c)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `61b7880`（`eee8fde`：aoi_baseline.rs 全 shipped 栈逐 tick 接线 cross 范围列表/AoI+vision trigger/Witness 预算 772B/tick，120 实体 10×12 格单观察者账本）；主席择一，未决前行保持本勾态。
-- [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。他席已交付并勾行未进 main：bw14-script-host `98725ed`+勾 `9ddc3ac`（aoi_tuning.rs 同负载双比较（01-01 种子/轨迹全 same-load）：①扇区预过滤索引 水平角>vision_angle+0.25rad 保守丢目标——48 tick 走行 5760→2471 行省 57.1%，可见集/seeing-start 逐 tick 零失配 48/48，探针 2.645→1.917ms；②Witness 容量扫描）；主席并入后按勾行态处理，本行保持开。
+- [x] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。(df56239)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `9ddc3ac`（`98725ed`：aoi_tuning.rs 同负载双比较——扇区预过滤水平角保守丢目标 48 tick 走行省 57.1% 可见集零失配 48/48 探针 2.645→1.917ms+Witness 容量扫描）；主席择一，未决前行保持本勾态。
 - [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。他席已交付并勾行未进 main：bw14-script-host `5e4181c`+勾 `36c1fde`（space_parallel.rs 复用 BW-08-05-01 decide_offload/collect_offload 实面，120 实体密场 x=16m 分裂面真跨面：crossings=2/offloads=2 逐 crossing 恰一次/stays=118；分支规则 coordinate<position 分界平面判右子 x/z 双轴实证；check_ms≈0.009-0.012 打印不断言）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。他席已交付并勾行未进 main：bw14-script-host `616a885`+勾 `cd7a39a`（aoi_rerun.rs 密场景两遍逐 tick 审计：TickLedger 增有序 starts/stops/enters/leaves+整份 bundle 发送序；视距触发器窗谓词双轴、start/stop 差分自洽复现 visible_entities、EnterAoI/LeaveAoI 消息对账）；主席并入后按勾行态处理，本行保持开。
 
@@ -10573,7 +10573,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
 - [x] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。(da8035c)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `61b7880`（`eee8fde`：aoi_baseline.rs 全 shipped 栈逐 tick 接线 cross 范围列表/AoI+vision trigger/Witness 预算 772B/tick，120 实体 10×12 格单观察者账本）；主席择一，未决前行保持本勾态。
-- [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。他席已交付并勾行未进 main：bw14-script-host `98725ed`+勾 `9ddc3ac`（aoi_tuning.rs 同负载双比较（01-01 种子/轨迹全 same-load）：①扇区预过滤索引 水平角>vision_angle+0.25rad 保守丢目标——48 tick 走行 5760→2471 行省 57.1%，可见集/seeing-start 逐 tick 零失配 48/48，探针 2.645→1.917ms；②Witness 容量扫描）；主席并入后按勾行态处理，本行保持开。
+- [x] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。(df56239)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `9ddc3ac`（`98725ed`：aoi_tuning.rs 同负载双比较——扇区预过滤水平角保守丢目标 48 tick 走行省 57.1% 可见集零失配 48/48 探针 2.645→1.917ms+Witness 容量扫描）；主席择一，未决前行保持本勾态。
 - [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。他席已交付并勾行未进 main：bw14-script-host `5e4181c`+勾 `36c1fde`（space_parallel.rs 复用 BW-08-05-01 decide_offload/collect_offload 实面，120 实体密场 x=16m 分裂面真跨面：crossings=2/offloads=2 逐 crossing 恰一次/stays=118；分支规则 coordinate<position 分界平面判右子 x/z 双轴实证；check_ms≈0.009-0.012 打印不断言）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。他席已交付并勾行未进 main：bw14-script-host `616a885`+勾 `cd7a39a`（aoi_rerun.rs 密场景两遍逐 tick 审计：TickLedger 增有序 starts/stops/enters/leaves+整份 bundle 发送序；视距触发器窗谓词双轴、start/stop 差分自洽复现 visible_entities、EnterAoI/LeaveAoI 消息对账）；主席并入后按勾行态处理，本行保持开。
 
