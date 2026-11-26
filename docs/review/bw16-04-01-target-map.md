@@ -97,12 +97,17 @@ BW-00-03-05）承载：
 exporter 族个别目标存在 lane 候选双交付（animation `e299957`、maya `c37ba81`），择一归主席裁，
 登记面以在树代际为准（早期引用 hash `f4bd3b2`/`c784ed3` 的在树落点以上行标注为准）。
 
+### 1.6 勘误迁入（2026-11-26，自 §2）
+
+| `visual_studio`（调试器字段视图，勘误迁移） | `crates/scene/src/{bigworld.natvis,bigworld_gdb.py}` + `SceneObject::debug_view_string()` | 内联 2 测（asset 保真+字符串核，scene 40 测全绿） | BW-13-06-04 `06ea15d`；`lib.rs` `debugger_visualizer` 真接线，2026-11-26 自 §2 迁入 |
+| `exporter_common`（无独立构建目标，源并入导出器） | `crates/asset-pipeline/src/{visual_exporter,maya_visual_exporter,world_machine_import}.rs` | 导出器内联 98 测（19/31/48） | BW-13-06-02 `8e9b8d0` 登记+导出器模块承载，2026-11-26 自 §2 迁入 |
+
 ## 2. 未建目标（有归属，无模块/测试路径）
 
 | 原版目标 | 计划归属 | 解锁项 | 现状 |
 |---|---|---|---|
 | `appmgr`/`moo`/`romp`/`chunk_loading`/`model`/`speedtree`/`ual`/`gizmo`/`guimanager`/`guitabs`/`controls`/`input`/`duplo`/`navigation_recast`/`connection`/`connection_model`/`bwentity`/`delegate_interface`/`visual_manipulator`/`ashes` | `crates/`（客户端/渲染/工具库） | BW-11 / BW-13 | 未建（`moo` 的设备生命周期面已由 `crates/client/src/device` 等建模，完整渲染器待 BW-11；`navigation_recast` 用户挂起 BW-10-05-03；三方 SDK 面 `fmodsound`/`scaleform`/`emptyvoip`/`memhook`/`open_automate` 在 `conditional_integrations.rs` 登记缺席） |
-| `bw_lsp`/`visual_studio`/`exporter_common` | `crates/`（工具） | BW-13 | 未建 |
+| `bw_lsp` | `crates/`（工具） | BW-13 | 未建（原版 `bw_lsp_test` 亦声明未构建）；槽位保留 |
 
 （编辑器 GUI 外壳行已于 2026-11-26 自 §2 迁出：`apps/editor` 可执行外壳
 `02bedbb` 建成（headless Linux 腿），GUI 窗口面/Windows·macOS 入口余量并入
@@ -121,8 +126,8 @@ exporter 族个别目标存在 lane 候选双交付（animation `e299957`、maya
   8 个角色目标（单二进制面）、3 个扩展目标（模块面）、`client`/`process_defs`/`plugin_system`。
 - **并轨清空（§1.5，2026-11-26）**：原四行+`launcher` 全部入库迁 §1.4；仅余 exporter 族
   lane 候选双交付（animation `e299957`、maya `c37ba81`）待主席择一，不阻塞登记面。
-- **未建（§2）**：客户端/渲染/工具库残余、
-  `bw_lsp`/`visual_studio`/`exporter_common`——**无模块与测试路径**，各随 BW-11/BW-13 立项解锁。
+- **未建（§2）**：客户端/渲染/工具库残余、`bw_lsp`——**无模块与测试路径**，随 BW-13 立项解锁；
+  `visual_studio`/`exporter_common` 已于 2026-11-26 勘误自 §2 移出（按面入库，见 §1.6）。
   （`bwmachined` 已于 2026-11-25 勘误迁入 §1.4——`server-runtime/src/machined.rs` daemon+discovery 在树；
   编辑器 GUI 外壳行已于 2026-11-26 迁入 §1.4——`apps/editor` 可执行外壳 `02bedbb` 建成，
   Windows/macOS 入口仍待 BW-15-03/04。）
