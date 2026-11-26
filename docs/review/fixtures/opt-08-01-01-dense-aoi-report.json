@@ -1,0 +1,22 @@
+{
+  "faces": {
+    "enter_cycle": {
+      "messages_per_entity": 2,
+      "wire_bytes_per_entity": 16,
+      "first_alias": 254,
+      "note": "EnterAoI (8) + CreateEntity (8) per observed entity"
+    },
+    "steady_tick": {
+      "messages_per_entity": 1,
+      "wire_bytes_per_entity": 16,
+      "projection": "Relative PackedXZ (3) + YawPitchRoll (12) + alias (1)",
+      "note": "one EntityUpdate per moved entity, events empty"
+    },
+    "migration_wave": {
+      "messages_per_entity": 3,
+      "wire_bytes_per_entity": 24,
+      "note": "LeaveAoI (8) + re-EnterAoI (8) + CreateEntity (8); alias pool round-trips exactly"
+    }
+  },
+  "grid": { "spacing": 5.0, "fleet": [64, 512], "aoi_membership": "harness-decided (all entities in AoI, dense worst case)" }
+}
