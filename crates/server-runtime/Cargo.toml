@@ -79,3 +79,7 @@ harness = false
 [[bench]]
 name = "shared_data"
 harness = false
+
+[[bench]]
+name = "dense_aoi"
+harness = false
