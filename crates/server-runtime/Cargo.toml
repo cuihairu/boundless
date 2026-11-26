@@ -82,3 +82,8 @@ harness = false
 [[bench]]
 name = "download_drain"
 harness = false
+
+# OPT-06-01-03: the client download assembly completion bench (6ffd9af).
+[[bench]]
+name = "download_assembly"
+harness = false
