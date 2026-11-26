@@ -1772,8 +1772,7 @@
 - [x] **BW-14-04-03 布置配置及样例资源**。**验收** 首次启动可定位。（commit 5da86a6）
   - 证据：`ci/install-layout.sh` + `docs/review/bw14-04-installable-artifact-layout.md`（b0a4d3e 起，5da86a6 完成）——`res/server/bw.xml` + `res/scripts/`（21 项样例资源镜像）随包布置（install-layout PASS：配置/资源/二进制/模块/`data/` 齐全）。**工具半**：装后 `process_defs -r <prefix>/res` 首启定位并加载安装资源树（install-cli-res PASS）。**服务器半**：`apps/server/src/main.rs`（5da86a6）按参考 `BIGWORLD_MAIN` 接入 `BWResource`/`BWConfig` 链，装后 `boundless-server <role>` 以 `BW_RES_PATH=<prefix>/res` 首启定位安装配置（install-res-server PASS：无「Could not find」/「No configuration section」，正常启动/停止 exit 0）；`role_lifecycle.rs` 首启定位/未定位双测试钉死观测差（定位静默、未定位记参考失败行）。
 - [ ] **BW-14-04-04 执行干净安装烟测**。**验收** 三端能启动和停止。
-  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
-  - 他席复测登记（2026-11-26，本席）：bw10-terrain 席 `1dba9be` 转记 bw16-18 席 `a05a849` 复测——本席 `b0a4d3e` install-layout.sh install-clean→install-smoke-server 装后启停绿，bw16-18 席跑 self-test 10/10 PASS 含 red/green 双验；三端行保持开待 Windows/macOS runner（BW-15-03/04）。
+  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**复测登记（2026-11-26，main 吸收 lane/bw16-18 `a05a849`←bw10-terrain `1dba9be`）**：`ci/install-layout.sh` self-test 10/10 PASS 含红/绿双验（他席独立跑过），同脚本装后启停绿；两席同证据链镜像非新交付，行保持开。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
 - [x] **BW-14-04-05 执行升级与卸载**。**验收** 验证用户数据保留行为。（commit b0a4d3e）
   - 证据：`ci/install-layout.sh`（b0a4d3e）——归档只携带包属树（`bin lib res`），用户数据在 `data/`（**不在归档**）。装后种子 `data/db/user.db`，篡改包属文件 `res/server/bw.xml` 后**升级**解包：包属文件还原为打包字节、`data/db/user.db` 保留（install-upgrade PASS）；**卸载**删除 `bin/ lib/ res/`、`data/db/user.db` 保留（install-uninstall PASS）。self-test 绿色全链路 + 4 条红色臂（启动失败/CLI 失败/坏模块/缺定义资源树均按预期咬合）。
 
@@ -3417,8 +3416,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-14-04-03 布置配置及样例资源**。**验收** 首次启动可定位。（commit 5da86a6）
   - 证据：`ci/install-layout.sh` + `docs/review/bw14-04-installable-artifact-layout.md`（b0a4d3e 起，5da86a6 完成）——`res/server/bw.xml` + `res/scripts/`（21 项样例资源镜像）随包布置（install-layout PASS：配置/资源/二进制/模块/`data/` 齐全）。**工具半**：装后 `process_defs -r <prefix>/res` 首启定位并加载安装资源树（install-cli-res PASS）。**服务器半**：`apps/server/src/main.rs`（5da86a6）按参考 `BIGWORLD_MAIN` 接入 `BWResource`/`BWConfig` 链，装后 `boundless-server <role>` 以 `BW_RES_PATH=<prefix>/res` 首启定位安装配置（install-res-server PASS：无「Could not find」/「No configuration section」，正常启动/停止 exit 0）；`role_lifecycle.rs` 首启定位/未定位双测试钉死观测差（定位静默、未定位记参考失败行）。
 - [ ] **BW-14-04-04 执行干净安装烟测**。**验收** 三端能启动和停止。
-  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
-  - 他席复测登记（2026-11-26，本席）：bw10-terrain 席 `1dba9be` 转记 bw16-18 席 `a05a849` 复测——本席 `b0a4d3e` install-layout.sh install-clean→install-smoke-server 装后启停绿，bw16-18 席跑 self-test 10/10 PASS 含 red/green 双验；三端行保持开待 Windows/macOS runner（BW-15-03/04）。
+  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**复测登记（2026-11-26，main 吸收 lane/bw16-18 `a05a849`←bw10-terrain `1dba9be`）**：`ci/install-layout.sh` self-test 10/10 PASS 含红/绿双验（他席独立跑过），同脚本装后启停绿；两席同证据链镜像非新交付，行保持开。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
 - [x] **BW-14-04-05 执行升级与卸载**。**验收** 验证用户数据保留行为。（commit b0a4d3e）
   - 证据：`ci/install-layout.sh`（b0a4d3e）——归档只携带包属树（`bin lib res`），用户数据在 `data/`（**不在归档**）。装后种子 `data/db/user.db`，篡改包属文件 `res/server/bw.xml` 后**升级**解包：包属文件还原为打包字节、`data/db/user.db` 保留（install-upgrade PASS）；**卸载**删除 `bin/ lib/ res/`、`data/db/user.db` 保留（install-uninstall PASS）。self-test 绿色全链路 + 4 条红色臂（启动失败/CLI 失败/坏模块/缺定义资源树均按预期咬合）。
 
@@ -5023,8 +5021,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-14-04-03 布置配置及样例资源**。**验收** 首次启动可定位。（commit 5da86a6）
   - 证据：`ci/install-layout.sh` + `docs/review/bw14-04-installable-artifact-layout.md`（b0a4d3e 起，5da86a6 完成）——`res/server/bw.xml` + `res/scripts/`（21 项样例资源镜像）随包布置（install-layout PASS：配置/资源/二进制/模块/`data/` 齐全）。**工具半**：装后 `process_defs -r <prefix>/res` 首启定位并加载安装资源树（install-cli-res PASS）。**服务器半**：`apps/server/src/main.rs`（5da86a6）按参考 `BIGWORLD_MAIN` 接入 `BWResource`/`BWConfig` 链，装后 `boundless-server <role>` 以 `BW_RES_PATH=<prefix>/res` 首启定位安装配置（install-res-server PASS：无「Could not find」/「No configuration section」，正常启动/停止 exit 0）；`role_lifecycle.rs` 首启定位/未定位双测试钉死观测差（定位静默、未定位记参考失败行）。
 - [ ] **BW-14-04-04 执行干净安装烟测**。**验收** 三端能启动和停止。
-  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
-  - 他席复测登记（2026-11-26，本席）：bw10-terrain 席 `1dba9be` 转记 bw16-18 席 `a05a849` 复测——本席 `b0a4d3e` install-layout.sh install-clean→install-smoke-server 装后启停绿，bw16-18 席跑 self-test 10/10 PASS 含 red/green 双验；三端行保持开待 Windows/macOS runner（BW-15-03/04）。
+  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**复测登记（2026-11-26，main 吸收 lane/bw16-18 `a05a849`←bw10-terrain `1dba9be`）**：`ci/install-layout.sh` self-test 10/10 PASS 含红/绿双验（他席独立跑过），同脚本装后启停绿；两席同证据链镜像非新交付，行保持开。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
 - [x] **BW-14-04-05 执行升级与卸载**。**验收** 验证用户数据保留行为。（commit b0a4d3e）
   - 证据：`ci/install-layout.sh`（b0a4d3e）——归档只携带包属树（`bin lib res`），用户数据在 `data/`（**不在归档**）。装后种子 `data/db/user.db`，篡改包属文件 `res/server/bw.xml` 后**升级**解包：包属文件还原为打包字节、`data/db/user.db` 保留（install-upgrade PASS）；**卸载**删除 `bin/ lib/ res/`、`data/db/user.db` 保留（install-uninstall PASS）。self-test 绿色全链路 + 4 条红色臂（启动失败/CLI 失败/坏模块/缺定义资源树均按预期咬合）。
 
@@ -6629,8 +6626,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-14-04-03 布置配置及样例资源**。**验收** 首次启动可定位。（commit 5da86a6）
   - 证据：`ci/install-layout.sh` + `docs/review/bw14-04-installable-artifact-layout.md`（b0a4d3e 起，5da86a6 完成）——`res/server/bw.xml` + `res/scripts/`（21 项样例资源镜像）随包布置（install-layout PASS：配置/资源/二进制/模块/`data/` 齐全）。**工具半**：装后 `process_defs -r <prefix>/res` 首启定位并加载安装资源树（install-cli-res PASS）。**服务器半**：`apps/server/src/main.rs`（5da86a6）按参考 `BIGWORLD_MAIN` 接入 `BWResource`/`BWConfig` 链，装后 `boundless-server <role>` 以 `BW_RES_PATH=<prefix>/res` 首启定位安装配置（install-res-server PASS：无「Could not find」/「No configuration section」，正常启动/停止 exit 0）；`role_lifecycle.rs` 首启定位/未定位双测试钉死观测差（定位静默、未定位记参考失败行）。
 - [ ] **BW-14-04-04 执行干净安装烟测**。**验收** 三端能启动和停止。
-  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
-  - 他席复测登记（2026-11-26，本席）：bw10-terrain 席 `1dba9be` 转记 bw16-18 席 `a05a849` 复测——本席 `b0a4d3e` install-layout.sh install-clean→install-smoke-server 装后启停绿，bw16-18 席跑 self-test 10/10 PASS 含 red/green 双验；三端行保持开待 Windows/macOS runner（BW-15-03/04）。
+  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**复测登记（2026-11-26，main 吸收 lane/bw16-18 `a05a849`←bw10-terrain `1dba9be`）**：`ci/install-layout.sh` self-test 10/10 PASS 含红/绿双验（他席独立跑过），同脚本装后启停绿；两席同证据链镜像非新交付，行保持开。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
 - [x] **BW-14-04-05 执行升级与卸载**。**验收** 验证用户数据保留行为。（commit b0a4d3e）
   - 证据：`ci/install-layout.sh`（b0a4d3e）——归档只携带包属树（`bin lib res`），用户数据在 `data/`（**不在归档**）。装后种子 `data/db/user.db`，篡改包属文件 `res/server/bw.xml` 后**升级**解包：包属文件还原为打包字节、`data/db/user.db` 保留（install-upgrade PASS）；**卸载**删除 `bin/ lib/ res/`、`data/db/user.db` 保留（install-uninstall PASS）。self-test 绿色全链路 + 4 条红色臂（启动失败/CLI 失败/坏模块/缺定义资源树均按预期咬合）。
 
@@ -8274,8 +8270,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-14-04-03 布置配置及样例资源**。**验收** 首次启动可定位。（commit 5da86a6）
   - 证据：`ci/install-layout.sh` + `docs/review/bw14-04-installable-artifact-layout.md`（b0a4d3e 起，5da86a6 完成）——`res/server/bw.xml` + `res/scripts/`（21 项样例资源镜像）随包布置（install-layout PASS：配置/资源/二进制/模块/`data/` 齐全）。**工具半**：装后 `process_defs -r <prefix>/res` 首启定位并加载安装资源树（install-cli-res PASS）。**服务器半**：`apps/server/src/main.rs`（5da86a6）按参考 `BIGWORLD_MAIN` 接入 `BWResource`/`BWConfig` 链，装后 `boundless-server <role>` 以 `BW_RES_PATH=<prefix>/res` 首启定位安装配置（install-res-server PASS：无「Could not find」/「No configuration section」，正常启动/停止 exit 0）；`role_lifecycle.rs` 首启定位/未定位双测试钉死观测差（定位静默、未定位记参考失败行）。
 - [ ] **BW-14-04-04 执行干净安装烟测**。**验收** 三端能启动和停止。
-  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
-  - 他席复测登记（2026-11-26，本席）：bw10-terrain 席 `1dba9be` 转记 bw16-18 席 `a05a849` 复测——本席 `b0a4d3e` install-layout.sh install-clean→install-smoke-server 装后启停绿，bw16-18 席跑 self-test 10/10 PASS 含 red/green 双验；三端行保持开待 Windows/macOS runner（BW-15-03/04）。
+  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**复测登记（2026-11-26，main 吸收 lane/bw16-18 `a05a849`←bw10-terrain `1dba9be`）**：`ci/install-layout.sh` self-test 10/10 PASS 含红/绿双验（他席独立跑过），同脚本装后启停绿；两席同证据链镜像非新交付，行保持开。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
 - [x] **BW-14-04-05 执行升级与卸载**。**验收** 验证用户数据保留行为。（commit b0a4d3e）
   - 证据：`ci/install-layout.sh`（b0a4d3e）——归档只携带包属树（`bin lib res`），用户数据在 `data/`（**不在归档**）。装后种子 `data/db/user.db`，篡改包属文件 `res/server/bw.xml` 后**升级**解包：包属文件还原为打包字节、`data/db/user.db` 保留（install-upgrade PASS）；**卸载**删除 `bin/ lib/ res/`、`data/db/user.db` 保留（install-uninstall PASS）。self-test 绿色全链路 + 4 条红色臂（启动失败/CLI 失败/坏模块/缺定义资源树均按预期咬合）。
 
@@ -9880,8 +9875,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-14-04-03 布置配置及样例资源**。**验收** 首次启动可定位。（commit 5da86a6）
   - 证据：`ci/install-layout.sh` + `docs/review/bw14-04-installable-artifact-layout.md`（b0a4d3e 起，5da86a6 完成）——`res/server/bw.xml` + `res/scripts/`（21 项样例资源镜像）随包布置（install-layout PASS：配置/资源/二进制/模块/`data/` 齐全）。**工具半**：装后 `process_defs -r <prefix>/res` 首启定位并加载安装资源树（install-cli-res PASS）。**服务器半**：`apps/server/src/main.rs`（5da86a6）按参考 `BIGWORLD_MAIN` 接入 `BWResource`/`BWConfig` 链，装后 `boundless-server <role>` 以 `BW_RES_PATH=<prefix>/res` 首启定位安装配置（install-res-server PASS：无「Could not find」/「No configuration section」，正常启动/停止 exit 0）；`role_lifecycle.rs` 首启定位/未定位双测试钉死观测差（定位静默、未定位记参考失败行）。
 - [ ] **BW-14-04-04 执行干净安装烟测**。**验收** 三端能启动和停止。
-  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
-  - 他席复测登记（2026-11-26，本席）：bw10-terrain 席 `1dba9be` 转记 bw16-18 席 `a05a849` 复测——本席 `b0a4d3e` install-layout.sh install-clean→install-smoke-server 装后启停绿，bw16-18 席跑 self-test 10/10 PASS 含 red/green 双验；三端行保持开待 Windows/macOS runner（BW-15-03/04）。
+  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**复测登记（2026-11-26，main 吸收 lane/bw16-18 `a05a849`←bw10-terrain `1dba9be`）**：`ci/install-layout.sh` self-test 10/10 PASS 含红/绿双验（他席独立跑过），同脚本装后启停绿；两席同证据链镜像非新交付，行保持开。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
 - [x] **BW-14-04-05 执行升级与卸载**。**验收** 验证用户数据保留行为。（commit b0a4d3e）
   - 证据：`ci/install-layout.sh`（b0a4d3e）——归档只携带包属树（`bin lib res`），用户数据在 `data/`（**不在归档**）。装后种子 `data/db/user.db`，篡改包属文件 `res/server/bw.xml` 后**升级**解包：包属文件还原为打包字节、`data/db/user.db` 保留（install-upgrade PASS）；**卸载**删除 `bin/ lib/ res/`、`data/db/user.db` 保留（install-uninstall PASS）。self-test 绿色全链路 + 4 条红色臂（启动失败/CLI 失败/坏模块/缺定义资源树均按预期咬合）。
 
