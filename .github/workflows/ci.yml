@@ -958,6 +958,8 @@ jobs:
           ci/fault.sh self-test
           ci/report.sh self-test
           ci/package.sh self-test
+          ci/package-baseline.sh self-test
+          ci/package-baseline.sh verify
           ci/docs-package.sh self-test
           ci/sdk-archive.sh self-test
           ci/vsix.sh self-test
