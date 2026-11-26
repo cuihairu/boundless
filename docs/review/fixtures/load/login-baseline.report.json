@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "scenario": "login-hurricane",
+  "generator": "load 0.1.0",
+  "topology": "offline",
+  "seed": 20261123,
+  "values": {
+    "login_attempts": 500,
+    "login_admitted": 500,
+    "login_refused": 177,
+    "login_success_rate": 1,
+    "online_peak": 500,
+    "online_final": 500,
+    "login_refusal_rate": 0.2614475627769572,
+    "download_payload_bytes": 4096,
+    "download_ticks": 4,
+    "download_queue_bytes": 4096
+  }
+}
