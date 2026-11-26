@@ -74,18 +74,18 @@ pub struct Chunk {
     pub items: Vec<ChunkItem>,
     /// The owning mapping (kept so `load` can form the synthetic boundaries).
     pub mapping: GeometryMapping,
-    /// `bounds_` (`chunk.cpp:856`): indices into `boundaries` of the planes
+    /// `bounds_` (`chunk.cpp:903`): indices into `boundaries` of the planes
     /// that contain the chunk (formed by `form_boundaries`, BW-10-01-02).
     pub bounds: Vec<usize>,
     /// `joints_`: indices into `boundaries` of the passable faces.
     pub joints: Vec<usize>,
     pub boundaries: Vec<ChunkBoundary>,
-    /// `loaded_` (`chunk.cpp:397,497`): the chunk section was read.
+    /// `loaded_` (`chunk.cpp:395,497`): the chunk section was read.
     pub is_loaded: bool,
     /// `isBound_` (`chunk.cpp:1069`): the chunk's portals were bound.
     pub is_bound: bool,
-    /// `removable_` (`chunk.cpp:190`): wired and locked chunks refuse the
-    /// unload pass (`chunk_manager.cpp:2241`).
+    /// `removable_` (`chunk.cpp:190`, default true): a marked or locked
+    /// chunk refuses `ChunkSpace::unloadChunk` (`chunk_space.cpp:1270`).
     pub removable: bool,
     /// `focusCount_`: how the space tracks whether this chunk's hull is in
     /// the focus grid; `completed()` is `focussed()` over it
@@ -94,7 +94,7 @@ pub struct Chunk {
 }
 
 impl Chunk {
-    /// `Chunk::Chunk` (`chunk.cpp:157-247`): the transform and bounds for an
+    /// `Chunk::Chunk` (`chunk.cpp:158-250`): the transform and bounds for an
     /// outside chunk come from the grid coordinates, scaled by the grid size.
     /// `mapper` is the mapping's transform (identity for the common case).
     pub fn new(identifier: &str, mapping: &GeometryMapping, mapper: &Matrix) -> Self {
@@ -177,7 +177,44 @@ impl Chunk {
         border
     }
 
-    /// `Chunk::load` (`chunk.cpp:370-499`): fill in the transform, bounding
+    /// `Chunk::unload` (`chunk.cpp:914-980`): return the chunk to its
+    /// unloaded state — items released, the boundary index lists and the
+    /// boundary pool dropped (the reference's `bounds_.clear()`/
+    /// `joints_.clear()` release the last `ChunkBoundaryPtr`s), caches
+    /// deleted and `loaded_` false. A still-bound chunk refuses (the
+    /// reference errors out and returns); an unloaded chunk is a no-op.
+    pub fn unload(&mut self) {
+        // make sure we're not bound
+        if self.is_bound {
+            // ERROR_MSG "Tried to unload a chunk while still bound"
+            return;
+        }
+
+        // if we're not loaded, then there's nothing to do
+        if !self.is_loaded {
+            return;
+        }
+
+        // ok, get rid of all our items, boundaries and caches then!
+        //
+        // The reference walks dynoItems_ (delDynamicItem + the space's
+        // homeless store) and selfItems_ (delStaticItem, wantsNest to the
+        // homeless store) before clearing; this port's item model is one
+        // plain list (BW-10-01-01), so the release is the clear. The
+        // homeless-item face and the lender/borrower and cache release
+        // have no port-side objects and stay registered.
+        self.items.clear();
+
+        // now the boundaries
+        self.bounds.clear();
+        self.joints.clear();
+        self.boundaries.clear();
+
+        // so we are now unloaded!
+        self.is_loaded = false;
+    }
+
+    /// `Chunk::load` (`chunk.cpp:359-499`): fill in the transform, bounding
     /// box, boundaries and object set from the section. Outside chunks keep
     /// their grid-derived transform and get their six boundaries synthesised
     /// from the grid; inside chunks read `<transform>` and `<boundingBox>`
@@ -214,7 +251,7 @@ impl Chunk {
     }
 }
 
-/// `Chunk::loadInclude` (`chunk.cpp:555-640`): iterate the section's children
+/// `Chunk::loadInclude` (`chunk.cpp:550-647`): iterate the section's children
 /// recording every scene object. `<shell>` and (for a shell-less inside
 /// chunk) the first `<model>` are the shell, not items; `<transform>` and
 /// `<boundingBox>` are chunk-level, not items. `include_resolver` loads an

@@ -566,6 +566,79 @@ impl BspTree {
         );
     }
 
+    /// `BSPTreeTool::saveBSPInMemory` (`bsp.cpp:1200-1284`): the
+    /// current-format bytes. The bounding box is regenerated from the
+    /// triangles first (the reference's `generateBoundingBox()` call), and
+    /// the two `BoundingBox` outcode words the reference carries after
+    /// min/max go out zero — the port's reader drops them like its loader.
+    pub fn save(&self) -> Vec<u8> {
+        assert!(
+            self.num_nodes() >= 1,
+            "reference MF_ASSERTs at least one node"
+        );
+        self.validate();
+
+        let bounding_box = Self::generate_bounding_box(&self.triangles);
+
+        let mut out = Vec::new();
+        let word = |out: &mut Vec<u8>, v: u32| out.extend_from_slice(&v.to_le_bytes());
+        // bsp magic, version and the three structure sizes, then the counts.
+        word(&mut out, BSP_FILE_CUR_TOKEN);
+        word(&mut out, PLANE_EQ_SIZE);
+        word(&mut out, WORLD_TRIANGLE_SIZE as u32);
+        word(&mut out, BSP_NODE_PACKED_SIZE);
+        word(&mut out, self.triangles.len() as u32);
+        word(&mut out, self.nodes.len() as u32);
+        word(&mut out, self.shared_ptrs.len() as u32);
+
+        // The 32-byte BoundingBox: min, max, the outcode pair.
+        for v in [&bounding_box.min, &bounding_box.max] {
+            out.extend_from_slice(&v.x.to_le_bytes());
+            out.extend_from_slice(&v.y.to_le_bytes());
+            out.extend_from_slice(&v.z.to_le_bytes());
+        }
+        out.extend_from_slice(&[0u8; 8]);
+
+        for triangle in &self.triangles {
+            out.extend_from_slice(&triangle.to_row());
+        }
+
+        // `writePtrAsOffset`: element indices, OFFSET_32BIT_NULL for null.
+        let encode = |target: Option<usize>| -> i32 {
+            target.map_or(OFFSET_32BIT_NULL, |index| index as i32)
+        };
+        for ptr in &self.shared_ptrs {
+            out.extend_from_slice(&encode(Some(*ptr)).to_le_bytes());
+        }
+
+        for node in &self.nodes {
+            out.extend_from_slice(&encode(node.front).to_le_bytes());
+            out.extend_from_slice(&encode(node.back).to_le_bytes());
+            let normal = node.plane_eq.normal();
+            out.extend_from_slice(&normal.x.to_le_bytes());
+            out.extend_from_slice(&normal.y.to_le_bytes());
+            out.extend_from_slice(&normal.z.to_le_bytes());
+            out.extend_from_slice(&node.plane_eq.d().to_le_bytes());
+            out.extend_from_slice(&encode(node.triangles).to_le_bytes());
+            out.extend_from_slice(&node.num_triangles.to_le_bytes());
+            out.extend_from_slice(&encode(node.shared).to_le_bytes());
+            out.extend_from_slice(&node.num_shared.to_le_bytes());
+        }
+
+        for (key, blob) in &self.user_data {
+            word(&mut out, *key);
+            out.extend_from_slice(&(blob.len() as i32).to_le_bytes());
+            out.extend_from_slice(blob);
+        }
+        out
+    }
+
+    /// `BSPTreeTool::saveBSPInFile` (`bsp.cpp:1286-1303`): the in-memory
+    /// block straight to a file.
+    pub fn save_to_file(&self, path: &std::path::Path) -> std::io::Result<()> {
+        std::fs::write(path, self.save())
+    }
+
     /// `triangles()` (`bsp.ipp`).
     pub fn triangles(&self) -> &[WorldTriangle] {
         &self.triangles

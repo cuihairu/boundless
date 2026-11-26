@@ -38,7 +38,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::movement::Vec3;
+use foundation::math::Vector3;
 
 /// A routing address (a cell or base entity, simplified).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -62,7 +62,7 @@ pub type PropertyValue = f64;
 #[derive(Debug, Clone, PartialEq)]
 pub struct GhostState {
     /// `localPosition_`.
-    pub position: Vec3,
+    pub position: Vector3,
     /// `localDirection_`.
     pub direction: Direction,
     /// `isOnGround_`.
@@ -149,7 +149,7 @@ impl Ghost {
 
     /// Apply a volatile position update so the Ghost matches the Real's new
     /// position (`localPosition_`).
-    pub fn apply_position(&mut self, position: Vec3) {
+    pub fn apply_position(&mut self, position: Vector3) {
         self.state.position = position;
     }
 
@@ -210,7 +210,7 @@ mod tests {
             entity_type_id: 3,
             num_times_real_offloaded: 0,
             state: GhostState {
-                position: Vec3::new(10.0, 0.0, 20.0),
+                position: Vector3::new(10.0, 0.0, 20.0),
                 direction: Direction {
                     yaw: 0.5,
                     pitch: 0.0,
@@ -250,7 +250,7 @@ mod tests {
         let mut ghost = Ghost::from_snapshot(&snapshot);
 
         // The Real moves and turns.
-        snapshot.state.position = Vec3::new(11.0, 0.0, 21.0);
+        snapshot.state.position = Vector3::new(11.0, 0.0, 21.0);
         snapshot.state.direction = Direction {
             yaw: 0.6,
             pitch: 0.1,

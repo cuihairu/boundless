@@ -289,6 +289,103 @@ mod tests {
         assert!(!is_active_mailbox(None));
     }
 
+    /// BW-09-04-04: two clients authenticating the same account at once,
+    /// interleaved — the records must end with exactly one session and no
+    /// stale checkout or pending attempt.
+    #[test]
+    fn concurrent_logins_for_one_account_leave_one_record() {
+        let mut records = LogOnRecords::new();
+
+        // Client A starts its checkout; client B's checkout of the same
+        // account at the same time is refused.
+        assert!(records.start_checkout(key()));
+        assert!(!records.start_checkout(key()));
+
+        // A completes the checkout and its base mailbox is reserved and
+        // recorded.
+        assert!(records.complete_checkout(key()));
+        records.insert_record(key(), active_base());
+
+        // B authenticates while A's session is live: the duplicate login is
+        // handed to A's base, and the attempt is pending.
+        let existing = records.look_up_record(key());
+        let mut attempt = match on_duplicate_login(&mut records, key(), existing) {
+            DuplicateLoginOutcome::StartRelogon {
+                key: k,
+                existing_base,
+            } => {
+                assert_eq!(k, key());
+                assert_eq!(existing_base, active_base());
+                RelogonAttempt::new(k)
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        };
+        assert!(records.has_pending_relogon(key()));
+
+        // A third client piling on during the wait is refused outright, and
+        // the refusal leaves the pending attempt untouched.
+        let existing = records.look_up_record(key());
+        assert_eq!(
+            on_duplicate_login(&mut records, key(), existing),
+            DuplicateLoginOutcome::Rejected {
+                message: "A relogin of same name still in progress.",
+            }
+        );
+        assert!(records.has_pending_relogon(key()));
+
+        // The base refuses B: A's session and record stay exactly as they
+        // were.
+        assert_eq!(
+            attempt.on_reply(&mut records, LOG_ON_ATTEMPT_REJECTED, (0, 0)),
+            RelogonOutcome::Rejected {
+                message: "Relogin denied.",
+            }
+        );
+        assert_eq!(records.look_up_record(key()), Some(active_base()));
+        assert!(!records.has_pending_relogon(key()));
+
+        // B retries and the base waits for the old session to go away.
+        let existing = records.look_up_record(key());
+        let mut attempt = match on_duplicate_login(&mut records, key(), existing) {
+            DuplicateLoginOutcome::StartRelogon { key: k, .. } => RelogonAttempt::new(k),
+            other => panic!("unexpected outcome: {other:?}"),
+        };
+        assert_eq!(
+            attempt.on_reply(&mut records, LOG_ON_ATTEMPT_WAIT_FOR_DESTROY, (0, 0)),
+            RelogonOutcome::WaitForDestroy
+        );
+
+        // The old entity logs off during the wait: the record is erased and
+        // B's login is re-run.
+        assert_eq!(
+            records.apply_logoff(key()),
+            crate::log_on_records::LogOffOutcome::RelogonWaiting
+        );
+        assert_eq!(
+            attempt.on_entity_logoff(&mut records),
+            RelogonOutcome::RetryLogin
+        );
+        assert!(records.look_up_record(key()).is_none());
+        assert!(!records.has_pending_relogon(key()));
+        assert!(!records.is_checking_out(key()));
+
+        // B's retried login records its own base — one record, B's proxy.
+        let b_base = BaseMailbox {
+            type_id: ACCOUNT_TYPE,
+            id: 9,
+            addr: (0x7f00_0002, 30000),
+        };
+        records.insert_record(key(), b_base);
+        assert_eq!(records.look_up_record(key()), Some(b_base));
+
+        // B logs off: the record set is empty again.
+        assert_eq!(
+            records.apply_logoff(key()),
+            crate::log_on_records::LogOffOutcome::None
+        );
+        assert!(records.look_up_record(key()).is_none());
+    }
+
     #[test]
     fn a_take_control_reply_logs_the_new_session_on() {
         let mut records = LogOnRecords::new();

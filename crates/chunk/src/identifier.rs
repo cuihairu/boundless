@@ -4,7 +4,7 @@
 //!
 //! - `lib/chunk/chunk_format.hpp` `ChunkFormat::outsideChunkIdentifier`:
 //!   grid coordinates → the `xxxxzzzzo` identifier, optionally prefixed with
-//!   the hashed subdirectory levels (`001xx001xx/sep/…`) that keep wide
+//!   the hashed subdirectory levels (`001x001x/sep/…`) that keep wide
 //!   spaces from putting every `.chunk` file in one directory.
 //! - `lib/chunk/geometry_mapping.cpp` `GeometryMapping::gridFromChunkName`:
 //!   the loader's parse — it takes the last `xxxxxxxxo` tail of whatever
@@ -98,6 +98,9 @@ pub fn outside_chunk_identifier(grid_x: i32, grid_z: i32, single_dir: bool) -> S
     let gridzs = grid_z as u16;
     let mut id = String::new();
     if !single_dir {
+        // The reference formats are "%01xxxx%01xxxx/sep/",
+        // "%02xxx%02xxx/sep/" and "%03xx%03xx/sep/" — 3, 2 and 1 literal
+        // x per side after the `%01x`/`%02x`/`%03x` fields.
         if gridxs.wrapping_add(4096) >= 8192 || gridzs.wrapping_add(4096) >= 8192 {
             id.push_str(&format!(
                 "{:01x}xxx{:01x}xxx/sep/",
@@ -106,14 +109,10 @@ pub fn outside_chunk_identifier(grid_x: i32, grid_z: i32, single_dir: bool) -> S
             ));
         }
         if gridxs.wrapping_add(256) >= 512 || gridzs.wrapping_add(256) >= 512 {
-            id.push_str(&format!(
-                "{:02x}xxx{:02x}xxx/sep/",
-                gridxs >> 8,
-                gridzs >> 8
-            ));
+            id.push_str(&format!("{:02x}xx{:02x}xx/sep/", gridxs >> 8, gridzs >> 8));
         }
         if gridxs.wrapping_add(16) >= 32 || gridzs.wrapping_add(16) >= 32 {
-            id.push_str(&format!("{:03x}xx{:03x}xx/sep/", gridxs >> 4, gridzs >> 4));
+            id.push_str(&format!("{:03x}x{:03x}x/sep/", gridxs >> 4, gridzs >> 4));
         }
     }
     id.push_str(&format!("{:04x}{:04x}o", gridxs, gridzs));
@@ -139,7 +138,7 @@ mod tests {
         assert_eq!(grid_from_chunk_name("00100010o"), Some((0x0010, 0x0010)));
         // Subdirectory prefixes are ignored: only the last nine bytes count.
         assert_eq!(
-            grid_from_chunk_name("001xx001xx/sep/00100010o"),
+            grid_from_chunk_name("001x001x/sep/00100010o"),
             Some((16, 16))
         );
         // 0xe000 as u16 has bit 15 set: the i16 view is negative.
@@ -202,32 +201,32 @@ mod tests {
         // x=16 trips the 4-bit level only: "%03xx%03xx/sep/" with (1, 1).
         assert_eq!(
             outside_chunk_identifier(16, 16, false),
-            "001xx001xx/sep/00100010o"
+            "001x001x/sep/00100010o"
         );
         // One axis outside the flat range is enough for a prefix; the other
         // axis contributes its own wrapped high bits.
         assert_eq!(
             outside_chunk_identifier(17, 0, false),
-            "001xx000xx/sep/00110000o"
+            "001x000x/sep/00110000o"
         );
         assert_eq!(
             outside_chunk_identifier(100, -200, false),
-            "006xxff3xx/sep/0064ff38o"
+            "006xff3x/sep/0064ff38o"
         );
         // |coord| >= 4096 trips all three levels.
         assert_eq!(
             outside_chunk_identifier(4096, 4096, false),
-            "1xxx1xxx/sep/10xxx10xxx/sep/100xx100xx/sep/10001000o"
+            "1xxx1xxx/sep/10xx10xx/sep/100x100x/sep/10001000o"
         );
         // x = -4097 wraps to 0xefff: prefixes "e", "ef", "eff".
         assert_eq!(
             outside_chunk_identifier(-4097, -4097, false),
-            "exxxexxx/sep/efxxxefxxx/sep/effxxeffxx/sep/efffefffo"
+            "exxxexxx/sep/efxxefxx/sep/effxeffx/sep/efffefffo"
         );
         // -32768 wraps to 0x8000: prefixes "8", "80", "800".
         assert_eq!(
             outside_chunk_identifier(-32768, 32767, false),
-            "8xxx7xxx/sep/80xxx7fxxx/sep/800xx7ffxx/sep/80007fffo"
+            "8xxx7xxx/sep/80xx7fxx/sep/800x7ffx/sep/80007fffo"
         );
     }
 

@@ -17,7 +17,7 @@
 //!   (`as_int64`, `as_vector2/4` with the strict eof check), because the
 //!   reference mixes both freely.
 
-use foundation::math::{Vector2, Vector3, Vector4};
+use foundation::math::{Matrix, Vector2, Vector3, Vector4};
 
 use crate::special_chars;
 
@@ -533,6 +533,18 @@ impl DataSection {
         self.children.clear();
     }
 
+    /// Remove the child at `index`, shifting the survivors down. `None`
+    /// when the index is out of range. The xml database's row slots move
+    /// by position (`delChild` on the child pointer, kept positional
+    /// here).
+    pub fn remove_child_at(&mut self, index: usize) -> Option<DataSection> {
+        if index < self.children.len() {
+            Some(self.children.remove(index))
+        } else {
+            None
+        }
+    }
+
     pub fn is_attribute(&self) -> bool {
         self.is_attribute
     }
@@ -787,9 +799,11 @@ impl DataSection {
         )
     }
 
-    /// `DataSection::readVector3`: find the child, convert or default.
+    /// `DataSection::readVector3`: walk the (possibly slash-delimited)
+    /// path, convert or default — the reference goes through
+    /// `openSection`, so `boundingBox/min` reaches a grandchild.
     pub fn read_vector3(&self, tag: &str, default: Vector3) -> Vector3 {
-        match self.find_child(tag) {
+        match self.open_section(tag) {
             Some(child) => child.as_vector3(default),
             None => default,
         }
@@ -829,6 +843,31 @@ impl DataSection {
         match self.open_section(path) {
             Some(section) => section.as_string().to_string(),
             None => default.to_string(),
+        }
+    }
+
+    /// `DataSection::readBool` (`datasection.cpp:407-416`).
+    pub fn read_bool(&self, path: &str, default: bool) -> bool {
+        match self.open_section(path) {
+            Some(section) => section.as_bool(default),
+            None => default,
+        }
+    }
+
+    /// `DataSection::readInt` (`datasection.cpp:430-439`).
+    pub fn read_int(&self, path: &str, default: i32) -> i32 {
+        match self.open_section(path) {
+            Some(section) => section.as_int(default),
+            None => default,
+        }
+    }
+
+    /// `DataSection::readFloat` (`datasection.cpp`): the float twin of
+    /// [`DataSection::read_int`].
+    pub fn read_float(&self, path: &str, default: f32) -> f32 {
+        match self.open_section(path) {
+            Some(section) => section.as_float(default),
+            None => default,
         }
     }
 
@@ -876,6 +915,40 @@ impl DataSection {
         }
     }
 
+    /// `DataSection::writeBool` (`datasection.cpp:788-797`).
+    pub fn write_bool(&mut self, path: &str, value: bool) -> bool {
+        match self.open_or_make(path) {
+            Some(section) => {
+                section.set_bool(value);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// `DataSection::writeInt` (`datasection.cpp:809-818`).
+    pub fn write_int(&mut self, path: &str, value: i32) -> bool {
+        match self.open_or_make(path) {
+            Some(section) => {
+                section.set_int(value);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// `DataSection::writeFloat` (`datasection.cpp`): the float twin of
+    /// [`DataSection::write_int`].
+    pub fn write_float(&mut self, path: &str, value: f32) -> bool {
+        match self.open_or_make(path) {
+            Some(section) => {
+                section.set_float(value);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// The `makeNewSection = true` lookup the typed writers hand their
     /// value to (`openSection(path, true)`): the first node at `path`,
     /// with every missing intermediate and leaf tag appended. The empty
@@ -894,6 +967,81 @@ impl DataSection {
             }
             None => false,
         }
+    }
+
+    /// `delChild(DataSectionPtr)`: removes the child at `index` — the
+    /// overload duplicate-named children need (res_packer's entity
+    /// filtering deletes specific sections, not first matches).
+    pub fn del_child_at(&mut self, index: usize) -> bool {
+        if index < self.children.len() {
+            self.children.remove(index);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// `DataSection::writeVector3` (`datasection.cpp:1022-1032`): create
+    /// the path as needed and set its Vector3 value.
+    pub fn write_vector3(&mut self, path: &str, value: Vector3) -> bool {
+        match self.open_or_make(path) {
+            Some(section) => {
+                section.set_vector3(value);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// `DataSection::writeVector2` (`datasection.cpp`): the two-component
+    /// twin of [`DataSection::write_vector3`].
+    pub fn write_vector2(&mut self, path: &str, value: Vector2) -> bool {
+        match self.open_or_make(path) {
+            Some(section) => {
+                section.set_vector2(value);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// `DataSection::writeVector4` (`datasection.cpp`): the four-component
+    /// twin of [`DataSection::write_vector3`].
+    pub fn write_vector4(&mut self, path: &str, value: Vector4) -> bool {
+        match self.open_or_make(path) {
+            Some(section) => {
+                section.set_vector4(value);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// `DataSection::writeUInt` (`datasection.cpp`): the unsigned twin of
+    /// [`DataSection::write_int`].
+    pub fn write_uint(&mut self, path: &str, value: u32) -> bool {
+        match self.open_or_make(path) {
+            Some(section) => {
+                section.set_uint(value);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// `DataSection::writeMatrix34` (`datasection.cpp:1066-1076`): create
+    /// the path as needed and set its matrix value.
+    pub fn write_matrix34(&mut self, path: &str, value: &Matrix) -> bool {
+        match self.open_or_make(path) {
+            Some(section) => section.set_matrix34(value),
+            None => false,
+        }
+    }
+
+    /// `DataSection::deleteSections` (`datasection.cpp:364-370`): remove
+    /// every match, `while deleteSection(tagPath) {}`.
+    pub fn delete_sections(&mut self, tag_path: &str) {
+        while self.delete_section(tag_path) {}
     }
 
     /// `DataSection::deleteSection(tagPath)`: walks the `'/'`-separated
@@ -981,6 +1129,18 @@ impl DataSection {
 
     pub fn set_vector4(&mut self, v: Vector4) {
         self.set_string(&format!("{:.6} {:.6} {:.6} {:.6}", v.x, v.y, v.z, v.w));
+    }
+
+    /// `XMLSection::setMatrix34` (`xml_section.cpp:1246-1260`): the four
+    /// row vectors as `row0`..`row3` children (the homogeneous column is
+    /// implied and never written).
+    pub fn set_matrix34(&mut self, value: &Matrix) -> bool {
+        let mut good = true;
+        for (row, name) in ["row0", "row1", "row2", "row3"].iter().enumerate() {
+            let v = Vector3::new(value.m[row][0], value.m[row][1], value.m[row][2]);
+            good &= self.write_vector3(name, v);
+        }
+        good
     }
 
     /// Serialise as the reference `writeToStream` does from level 0:
@@ -1283,6 +1443,16 @@ mod tests {
         assert_eq!(doc.open_child(1).unwrap().as_string(), "2");
         assert_eq!(doc.open_child(2).unwrap().section_name(), "c");
         assert!(doc.open_child(3).is_none());
+    }
+
+    #[test]
+    fn del_child_at_removes_the_exact_duplicate() {
+        let mut doc = parse_doc("<a><b>1</b><b>2</b><b>3</b></a>");
+        assert!(doc.del_child_at(1));
+        assert_eq!(doc.count_children(), 2);
+        assert_eq!(doc.open_child(0).unwrap().as_string(), "1");
+        assert_eq!(doc.open_child(1).unwrap().as_string(), "3");
+        assert!(!doc.del_child_at(9), "out of range reports false");
     }
 
     #[test]
@@ -1674,6 +1844,28 @@ mod tests {
         );
         assert_eq!(
             doc.read_vector3("missing", Vector3::new(7.0, 8.0, 9.0)),
+            Vector3::new(7.0, 8.0, 9.0)
+        );
+    }
+
+    #[test]
+    fn read_vector3_walks_slash_paths() {
+        // The reference's readVector3 goes through openSection, so
+        // "boundingBox/min" is a two-hop path, not a literal child name
+        // (the resourcechecker reads visual bounding boxes exactly this
+        // way).
+        let doc =
+            parse_doc("<r><boundingBox><min>-1 -2 -3</min><max>1 2 3</max></boundingBox></r>");
+        assert_eq!(
+            doc.read_vector3("boundingBox/min", Vector3::ZERO),
+            Vector3::new(-1.0, -2.0, -3.0)
+        );
+        assert_eq!(
+            doc.read_vector3("boundingBox/max", Vector3::ZERO),
+            Vector3::new(1.0, 2.0, 3.0)
+        );
+        assert_eq!(
+            doc.read_vector3("boundingBox/missing", Vector3::new(7.0, 8.0, 9.0)),
             Vector3::new(7.0, 8.0, 9.0)
         );
     }
@@ -2228,6 +2420,87 @@ mod tests {
         let mut dup = parse_doc("<r><b>1</b><b>2</b></r>");
         assert!(dup.delete_section("b"));
         assert_eq!(dup.open_child(0).unwrap().as_string(), "2");
+    }
+
+    #[test]
+    fn write_vector3_creates_the_path_and_formats_setprecision6() {
+        let mut doc = parse_doc("<r><boundingBox/></r>");
+        assert!(doc.write_vector3("boundingBox/min", Vector3::new(1.5, -2.25, 3.0)));
+        assert_eq!(
+            doc.write_to_string(),
+            "<root>\n\t<boundingBox>\n\t\t<min>\t1.500000 -2.250000 3.000000\t</min>\n\t</boundingBox>\n</root>\n"
+        );
+        // The path is made when missing, and an existing leaf is replaced.
+        assert!(doc.write_vector3("boundingBox/max", Vector3::new(9.0, 8.0, 7.0)));
+        assert_eq!(
+            doc.open_section("boundingBox/max")
+                .unwrap()
+                .as_vector3(Vector3::ZERO),
+            Vector3::new(9.0, 8.0, 7.0)
+        );
+        assert!(doc.write_vector3("boundingBox/max", Vector3::new(4.0, 5.0, 6.0)));
+        assert_eq!(
+            doc.open_section("boundingBox/max")
+                .unwrap()
+                .as_vector3(Vector3::ZERO),
+            Vector3::new(4.0, 5.0, 6.0)
+        );
+    }
+
+    #[test]
+    fn write_vector2_vector4_and_uint_create_the_path_and_overwrite() {
+        let mut doc = parse_doc("<r/>");
+        assert!(doc.write_vector2("initialRotation_", Vector2::new(1.5, -2.0)));
+        assert!(doc.write_vector4("initialColour_", Vector4::new(1.0, 0.6, 0.2, 1.0)));
+        assert!(doc.write_uint("helperModelCenterOnHardPoint", 4294967295));
+        assert_eq!(
+            doc.write_to_string(),
+            "<root>\n\t<initialRotation_>\t1.500000 -2.000000\t</initialRotation_>\n\t<initialColour_>\t1.000000 0.600000 0.200000 1.000000\t</initialColour_>\n\t<helperModelCenterOnHardPoint>\t4294967295\t</helperModelCenterOnHardPoint>\n</root>\n"
+        );
+        // The path is made when missing, and an existing leaf is replaced.
+        assert!(doc.write_vector2("initialRotation_", Vector2::new(3.0, 4.0)));
+        assert_eq!(
+            doc.open_section("initialRotation_")
+                .unwrap()
+                .as_vector2(Vector2::ZERO),
+            Vector2::new(3.0, 4.0)
+        );
+    }
+
+    #[test]
+    fn write_matrix34_writes_four_row_vectors() {
+        let mut doc = parse_doc("<r/>");
+        let mut m = Matrix::identity();
+        m.set_translate(5.0, 10.0, 15.0);
+        assert!(doc.write_matrix34("transform", &m));
+        // The homogeneous column is implied and never written.
+        assert_eq!(
+            doc.write_to_string(),
+            "<root>\n\t<transform>\n\t\t<row0>\t1.000000 0.000000 0.000000\t</row0>\n\t\t<row1>\t0.000000 1.000000 0.000000\t</row1>\n\t\t<row2>\t0.000000 0.000000 1.000000\t</row2>\n\t\t<row3>\t5.000000 10.000000 15.000000\t</row3>\n\t</transform>\n</root>\n"
+        );
+        // The written tree reads back through the path-aware reader the
+        // reference `readMatrix34` uses (`as_matrix34` is the chunk-crate
+        // reader face, so here the rows are checked directly).
+        let back = parse("", doc.write_to_string().as_bytes()).unwrap();
+        let ts = back.open_section("transform").unwrap();
+        assert_eq!(
+            ts.read_vector3("row3", Vector3::ZERO),
+            Vector3::new(5.0, 10.0, 15.0)
+        );
+    }
+
+    #[test]
+    fn delete_sections_removes_every_match() {
+        let mut doc = parse_doc(
+            "<r><processed>a</processed><b>keep</b><processed/><boundary>1</boundary><processed>c</processed><boundary>2</boundary></r>",
+        );
+        doc.delete_sections("processed");
+        doc.delete_sections("boundary");
+        assert_eq!(doc.count_children(), 1);
+        assert_eq!(doc.open_child(0).unwrap().section_name(), "b");
+        // An all-miss pass is a silent no-op.
+        doc.delete_sections("processed");
+        assert_eq!(doc.count_children(), 1);
     }
 
     #[test]

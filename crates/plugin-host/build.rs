@@ -22,6 +22,10 @@ fn fixture_sources() -> Vec<PathBuf> {
 fn main() {
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
     let mut built = Vec::new();
+    // Track the directory too, so a newly added fixture triggers a rerun even
+    // though no previously listed source changed.
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+    println!("cargo:rerun-if-changed={}", dir.display());
     for source in fixture_sources() {
         println!("cargo:rerun-if-changed={}", source.display());
         let crate_name = source

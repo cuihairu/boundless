@@ -5,11 +5,9 @@
 //! instead of the message handler, and the filter delivers by calling
 //! the handler itself (udp_bundle_processor.cpp:161-170,
 //! tcp_bundle_processor.cpp:178-185). The reference documents
-//! rate-limited dispatch as the use case, and the baseapp's
-//! `RateLimitMessageFilter` is that concrete filter
-//! ([`crate::rate_limit_message_filter`]).
-
-use std::rc::Rc;
+//! rate-limited dispatch as the use case, and Mercury ships no concrete
+//! subclass: the trait is deliberately bare, so an app's filter is a
+//! plain `impl MessageFilter`.
 
 use foundation::stream::BinaryStream;
 
@@ -18,24 +16,17 @@ use crate::interfaces::InputMessageHandler;
 use crate::unpacked_message_header::UnpackedMessageHeader;
 
 /// `Mercury::MessageFilter` (message_filter.hpp:25).
-///
-/// The reference hands the destination handler over as a raw
-/// `Mercury::InputMessageHandler *`; the port hands an `&Rc` of it,
-/// because a filter that defers a message (the rate limiter) has to
-/// keep the handler alive to replay the message later -- the raw
-/// pointer the reference stores in its `BufferedMessage` works only
-/// because the interface table outlives every buffered message.
 pub trait MessageFilter {
-    /// `filterMessage`: first-pass handling of one delivered message.
-    /// The filter is handed the destination handler so that it can
-    /// deliver the message itself, possibly rewritten, held back or
-    /// dropped; not calling it drops the message.
+    /// `filterMessage`: first-pass handling of one delivered message. The
+    /// filter is handed the destination handler so that it can deliver
+    /// the message itself, possibly rewritten or held back; not calling
+    /// it drops the message.
     fn filter_message(
         &self,
         src_addr: &Address,
         header: &mut UnpackedMessageHeader,
         data: &mut BinaryStream,
-        handler: &Rc<dyn InputMessageHandler>,
+        handler: &dyn InputMessageHandler,
     );
 }
 

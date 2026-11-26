@@ -7,12 +7,13 @@
 //! parses, indexes and reads back, and everything this module writes parses
 //! again (`BWResource::openSection` in `startup`, `xml_database.cpp:100-179`).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 use std::path::Path;
 
 use entitydef::entity_description::EntityDescription;
 use entitydef::entity_map::EntityDescriptionMap;
 use entitydef::flags::{BASE_DATA, CELL_DATA, ONLY_PERSISTENT_DATA};
+use entitydef::value::PropertyValue;
 use foundation::ids::{
     DatabaseId, EntityId, EntityTypeId, FIRST_ENTITY_ID, FIRST_LOCAL_ENTITY_ID, PENDING_DATABASE_ID,
 };
@@ -21,9 +22,8 @@ use foundation::stream::{BinaryStream, StreamError};
 use resources::datasection::DataSection;
 
 use crate::error::DbError;
-use crate::log_on::LogOnRecord;
 use crate::record::EntityRecord;
-use crate::storage::{EntityKey, EntityStorage};
+use crate::storage::{BaseMailbox, CheckOut, EntityKey, EntityStorage};
 
 /// `DATABASE_INFO_SECTION` (`xml_database.cpp:34`): the bookkeeping child of
 /// the database root.
@@ -155,6 +155,9 @@ pub struct XmlDatabase {
     num_archives: i32,
     /// The file this database saves to (`Constants::xmlDatabaseFile()`).
     file_path: Option<String>,
+    /// `activeSet_`: the checked-out entities, holder by database id
+    /// (`IDatabase`'s logon-record face).
+    active_set: BTreeMap<DatabaseId, BaseMailbox>,
 }
 
 impl XmlDatabase {
@@ -172,6 +175,7 @@ impl XmlDatabase {
             next_id: FIRST_ENTITY_ID,
             num_archives: DEFAULT_NUM_ARCHIVES,
             file_path: None,
+            active_set: BTreeMap::new(),
         };
         database.init();
         database
@@ -193,6 +197,7 @@ impl XmlDatabase {
             next_id: FIRST_ENTITY_ID,
             num_archives: DEFAULT_NUM_ARCHIVES,
             file_path: None,
+            active_set: BTreeMap::new(),
         };
         database.init();
         Ok(database)
@@ -292,12 +297,13 @@ impl XmlDatabase {
                     // A second entity with the same name stays in the file
                     // but is not retrievable by name
                     // (`xml_database.cpp:271-287`).
-                    if map.contains_key(&name) {
-                        eprintln!(
+                    match map.entry(name) {
+                        Entry::Occupied(_) => eprintln!(
                             "XMLDatabase::initEntityMap: Multiple entities of type '{type_name}' have the same name - second entity will not be retrievable by name"
-                        );
-                    } else {
-                        map.insert(name, id);
+                        ),
+                        Entry::Vacant(slot) => {
+                            slot.insert(id);
+                        }
                     }
                 }
             }
@@ -398,10 +404,10 @@ impl XmlDatabase {
                         Err(_) => return false,
                     },
                 };
-                if let Err(_) = property.data_type.add_persistent_to_stream(&value, stream) {
-                    return false;
-                }
-                true
+                property
+                    .data_type
+                    .add_persistent_to_stream(&value, stream)
+                    .is_ok()
             }) {
                 failed = true;
             }
@@ -513,10 +519,7 @@ impl XmlDatabase {
                     Err(_) => return false,
                 };
                 let child = props.add_child(&property_section_name(property));
-                if let Err(_) = property.data_type.value_to_section(&value, child) {
-                    return false;
-                }
-                true
+                property.data_type.value_to_section(&value, child).is_ok()
             }) {
                 failed = true;
             }
@@ -577,10 +580,10 @@ impl XmlDatabase {
         self.id_to_data.insert(target, desc.name.clone());
         if let Some(new_name) = new_name {
             let map = self.name_to_id.entry(type_id).or_default();
-            if let Some(old_name) = old_name {
-                if old_name != new_name {
-                    map.remove(&old_name);
-                }
+            if let Some(old_name) = old_name
+                && old_name != new_name
+            {
+                map.remove(&old_name);
             }
             map.insert(new_name, target);
         }
@@ -641,10 +644,10 @@ impl XmlDatabase {
             .section
             .open_child(index)
             .and_then(|section| registered_name(desc, section));
-        if let Some(name) = name {
-            if let Some(map) = self.name_to_id.get_mut(&type_id) {
-                map.remove(&name);
-            }
+        if let Some(name) = name
+            && let Some(map) = self.name_to_id.get_mut(&type_id)
+        {
+            map.remove(&name);
         }
         self.id_to_data.remove(&id);
         self.section.remove_child_at(index);
@@ -697,7 +700,7 @@ impl XmlDatabase {
             .child_mut(info_index)
             .and_then(|info| info.child_mut(child_index))
             .expect("info child just ensured");
-        archive.clear_children();
+        archive.del_children();
 
         let num_spaces = stream.read_u32().map_err(stream_error)?;
         for _ in 0..num_spaces {
@@ -744,7 +747,7 @@ impl XmlDatabase {
                 .filter(|space| {
                     space
                         .find_child("id")
-                        .map_or(false, |id| id.as_int(0) == *space_id)
+                        .is_some_and(|id| id.as_int(0) == *space_id)
                 })
                 .and_then(|space| space.find_child("dataItems"));
             match items {
@@ -841,11 +844,11 @@ impl XmlDatabase {
             .and_then(|info| info.child_mut(child_index))
             .expect("info child just ensured");
         for index in 0..list.count_children() {
-            let matches = list
+            if list
                 .open_child(index)
                 .filter(|child| child.section_name() == DATABASE_ID_TAG)
-                .map_or(false, |child| child.as_long(0) == database_id);
-            if matches {
+                .is_some_and(|child| child.as_long(0) == database_id)
+            {
                 list.remove_child_at(index);
                 return;
             }
@@ -1052,9 +1055,9 @@ fn stream_error(error: StreamError) -> DbError {
 // ----------------------------------------------------------------------
 
 /// The XML database behind the BW-09-01 storage contract. Online state has
-/// no file representation — `set_log_on_record` is refused, `log_on_record`
-/// always answers offline, matching a database whose `activeSet_` is never
-/// populated.
+/// no file representation: the reference's XML `activeSet_` is never
+/// populated, so occupancy lives only in the in-memory `active_set` and
+/// never reaches a save or an archive.
 impl EntityStorage for XmlDatabase {
     fn get_entity(&self, key: &EntityKey) -> Result<Option<EntityRecord>, DbError> {
         let mut stream = BinaryStream::new();
@@ -1088,19 +1091,25 @@ impl EntityStorage for XmlDatabase {
         if failed {
             return Err(DbError::Storage("malformed entity stream".into()));
         }
+        let _ = outcome.name;
         Ok(Some(EntityRecord {
             type_id: key.type_id,
             db_id: outcome.db_id,
-            name: outcome.name,
             values,
         }))
     }
 
     fn put_entity(
         &mut self,
-        record: &EntityRecord,
+        key: &EntityKey,
+        values: &[PropertyValue],
         put_explicit_id: bool,
     ) -> Result<DatabaseId, DbError> {
+        let record = EntityRecord {
+            type_id: key.type_id,
+            db_id: key.db_id,
+            values: values.to_vec(),
+        };
         let desc = self
             .defs
             .entity_description(record.type_id)
@@ -1133,18 +1142,18 @@ impl EntityStorage for XmlDatabase {
         // pose instead of clobbering it.
         let mut pose = CellPose::default();
         if desc.can_be_on_cell() {
-            if let Some(index) = self.entity_child_index(desc.name.as_str(), record.db_id) {
-                if let Some(section) = self.section.open_child(index) {
-                    pose = CellPose {
-                        position: section.read_vector3("position", Vector3::ZERO),
-                        direction: vector_to_direction(
-                            section.read_vector3("direction", Vector3::ZERO),
-                        ),
-                        space_id: section
-                            .find_child("spaceID")
-                            .map_or(0, |space| space.as_int(0)),
-                    };
-                }
+            if let Some(index) = self.entity_child_index(desc.name.as_str(), record.db_id)
+                && let Some(section) = self.section.open_child(index)
+            {
+                pose = CellPose {
+                    position: section.read_vector3("position", Vector3::ZERO),
+                    direction: vector_to_direction(
+                        section.read_vector3("direction", Vector3::ZERO),
+                    ),
+                    space_id: section
+                        .find_child("spaceID")
+                        .map_or(0, |space| space.as_int(0)),
+                };
             }
             pose.write_to(&mut stream);
         }
@@ -1166,10 +1175,60 @@ impl EntityStorage for XmlDatabase {
         if key.db_id == PENDING_DATABASE_ID || key.db_id == 0 {
             return Err(DbError::NotFound);
         }
+        self.active_set.remove(&key.db_id);
         self.del_entity(key.type_id, key.db_id, None)
     }
 
-    fn lookup_entity_by_name(
+    fn logon_of(&self, key: &EntityKey) -> Result<Option<BaseMailbox>, DbError> {
+        Ok(self.active_set.get(&key.db_id).cloned())
+    }
+
+    fn check_out(&mut self, key: &EntityKey, mailbox: BaseMailbox) -> Result<CheckOut, DbError> {
+        let known = self
+            .id_to_data
+            .get(&key.db_id)
+            .is_some_and(|name| self.defs.name_to_index(name) == Some(key.type_id));
+        if !known {
+            return Err(DbError::NotFound);
+        }
+        match self.active_set.get(&key.db_id) {
+            Some(holder) => Ok(CheckOut::Elsewhere(holder.clone())),
+            None => {
+                self.active_set.insert(key.db_id, mailbox);
+                Ok(CheckOut::Granted)
+            }
+        }
+    }
+
+    fn check_in(&mut self, key: &EntityKey) -> Result<(), DbError> {
+        self.active_set.remove(&key.db_id);
+        Ok(())
+    }
+
+    fn all_entities(&self) -> Result<Vec<EntityRecord>, DbError> {
+        let mut records = Vec::new();
+        for (db_id, type_name) in &self.id_to_data {
+            let Some(type_id) = self.defs.name_to_index(type_name) else {
+                continue;
+            };
+            if let Some(record) = self.get_entity(&EntityKey {
+                type_id,
+                db_id: *db_id,
+            })? {
+                records.push(record);
+            }
+        }
+        records.sort_by_key(|record| (record.type_id, record.db_id));
+        Ok(records)
+    }
+}
+
+/// The lookup face of the pre-image generation, kept as inherent
+/// queries on top of the storage contract above.
+impl XmlDatabase {
+    /// Every row whose identifier column is `name`, at most one of
+    /// them (`getDatabaseIDFromName`).
+    pub fn lookup_entity_by_name(
         &self,
         type_id: EntityTypeId,
         name: &str,
@@ -1180,7 +1239,9 @@ impl EntityStorage for XmlDatabase {
         }
     }
 
-    fn lookup_entities(&self, type_id: EntityTypeId) -> Result<Vec<EntityRecord>, DbError> {
+    /// Every stored row of the type, in database-id order
+    /// (`xml_database.cpp` iterates its type section).
+    pub fn lookup_entities(&self, type_id: EntityTypeId) -> Result<Vec<EntityRecord>, DbError> {
         let desc = self
             .defs
             .entity_description(type_id)
@@ -1206,20 +1267,6 @@ impl EntityStorage for XmlDatabase {
         records.sort_by_key(|record| record.db_id);
         Ok(records)
     }
-
-    fn set_log_on_record(&mut self, _key: &EntityKey, _record: LogOnRecord) -> Result<(), DbError> {
-        Err(DbError::Storage(
-            "the xml database tracks no online state".into(),
-        ))
-    }
-
-    fn remove_log_on_record(&mut self, _key: &EntityKey) -> Result<(), DbError> {
-        Ok(())
-    }
-
-    fn log_on_record(&self, _key: &EntityKey) -> Result<Option<LogOnRecord>, DbError> {
-        Ok(None)
-    }
 }
 
 // ----------------------------------------------------------------------
@@ -1235,6 +1282,7 @@ pub(crate) mod tests {
     use entitydef::diagnostics::Diagnostics;
     use entitydef::entity_description::DefResolver;
     use entitydef::value::PropertyValue;
+    use mercury::endpoint::Address;
     use std::collections::HashMap;
 
     const RES: &str = "scripts/entities.xml";
@@ -1816,10 +1864,17 @@ pub(crate) mod tests {
         let mut database = XmlDatabase::new(defs());
         let avatar = database.defs.name_to_index("Avatar").unwrap();
 
-        let mut record = EntityRecord::new(avatar);
-        record.name = Some("moe".into());
-        record.values = vec![PropertyValue::String("moe".into()), PropertyValue::Int(30)];
-        let db_id = database.put_entity(&record, false).expect("create");
+        let moe = vec![PropertyValue::String("moe".into()), PropertyValue::Int(30)];
+        let db_id = database
+            .put_entity(
+                &EntityKey {
+                    type_id: avatar,
+                    db_id: PENDING_DATABASE_ID,
+                },
+                &moe,
+                false,
+            )
+            .expect("create");
         assert_eq!(db_id, 1);
 
         let loaded = load_entity(
@@ -1830,8 +1885,7 @@ pub(crate) mod tests {
             },
         )
         .expect("load");
-        assert_eq!(loaded.name.as_deref(), Some("moe"));
-        assert_eq!(loaded.values, record.values);
+        assert_eq!(loaded.values, moe);
 
         // By name (`idatabase.hpp:131-135`).
         let loaded = database
@@ -1841,13 +1895,20 @@ pub(crate) mod tests {
         assert_eq!(loaded.db_id, 1);
 
         // Every row of the type.
-        let mut second = EntityRecord::new(avatar);
-        second.name = Some("curly".into());
-        second.values = vec![
+        let curly = vec![
             PropertyValue::String("curly".into()),
             PropertyValue::Int(30),
         ];
-        let second_id = database.put_entity(&second, false).expect("create 2");
+        let second_id = database
+            .put_entity(
+                &EntityKey {
+                    type_id: avatar,
+                    db_id: PENDING_DATABASE_ID,
+                },
+                &curly,
+                false,
+            )
+            .expect("create 2");
         let rows = database.lookup_entities(avatar).expect("lookup all");
         assert_eq!(
             rows.iter().map(|r| r.db_id).collect::<Vec<_>>(),
@@ -1882,11 +1943,17 @@ pub(crate) mod tests {
                           </Guard> \
                       </root>";
         let mut cell_database = XmlDatabase::from_xml(xml_in, defs()).expect("parse");
-        let mut cell_record = EntityRecord::new(guard);
-        cell_record.db_id = 9;
-        cell_record.name = Some("g".into());
-        cell_record.values = vec![PropertyValue::String("g".into())];
-        cell_database.put_entity(&cell_record, false).expect("put");
+        let g_values = vec![PropertyValue::String("g".into())];
+        cell_database
+            .put_entity(
+                &EntityKey {
+                    type_id: guard,
+                    db_id: 9,
+                },
+                &g_values,
+                false,
+            )
+            .expect("put");
         let loaded = cell_database
             .get_entity(&EntityKey {
                 type_id: guard,
@@ -1894,7 +1961,7 @@ pub(crate) mod tests {
             })
             .expect("get")
             .expect("found");
-        assert_eq!(loaded.values, cell_record.values);
+        assert_eq!(loaded.values, g_values);
 
         // Deletes and refusals.
         EntityStorage::del_entity(
@@ -1936,33 +2003,75 @@ pub(crate) mod tests {
         ));
         // The delete released the name, so the record creates anew past
         // `maxID_` (`xml_database.cpp:601-603`).
-        assert_eq!(database.put_entity(&record, false).expect("recreate"), 3);
+        assert_eq!(
+            database
+                .put_entity(
+                    &EntityKey {
+                        type_id: avatar,
+                        db_id: PENDING_DATABASE_ID,
+                    },
+                    &moe,
+                    false,
+                )
+                .expect("recreate"),
+            3
+        );
     }
 
     #[test]
-    fn the_xml_database_tracks_no_online_state() {
+    fn the_checkout_face_tracks_occupancy_in_memory() {
         let mut database = XmlDatabase::new(defs());
         let avatar = database.defs.name_to_index("Avatar").unwrap();
+        database
+            .put_entity(
+                &EntityKey {
+                    type_id: avatar,
+                    db_id: PENDING_DATABASE_ID,
+                },
+                &[PropertyValue::String("moe".into()), PropertyValue::Int(30)],
+                false,
+            )
+            .expect("create");
         let key = EntityKey {
             type_id: avatar,
             db_id: 1,
         };
+        let holder = BaseMailbox {
+            addr: Address::new(0x0100_0007, 40000),
+            entity_id: 7,
+        };
+
+        assert!(database.logon_of(&key).expect("query").is_none());
         assert!(matches!(
-            database.set_log_on_record(
-                &key,
-                LogOnRecord {
-                    entity_id: 1,
-                    ip: 0,
-                    port: 0,
-                    salt: 0
-                }
-            ),
-            Err(DbError::Storage(msg)) if msg.contains("no online state")
+            database.check_out(&key, holder.clone()),
+            Ok(CheckOut::Granted)
         ));
-        database
-            .remove_log_on_record(&key)
-            .expect("remove is a no-op");
-        assert!(database.log_on_record(&key).expect("query").is_none());
+        assert_eq!(
+            database.logon_of(&key).expect("query"),
+            Some(holder.clone())
+        );
+
+        // A repeated logon for an occupied entity never steals the holder
+        // (the acceptance for BW-09-01-05).
+        assert!(matches!(
+            database.check_out(&key, holder.clone()),
+            Ok(CheckOut::Elsewhere(found)) if found == holder
+        ));
+
+        database.check_in(&key).expect("check in");
+        assert!(database.logon_of(&key).expect("query").is_none());
+
+        // Occupancy grants only for a stored row.
+        assert!(matches!(
+            database.check_out(
+                &EntityKey {
+                    type_id: avatar,
+                    db_id: 99
+                },
+                holder,
+            ),
+            Err(DbError::NotFound)
+        ));
     }
 
     #[test]
@@ -1999,11 +2108,10 @@ pub(crate) mod tests {
         // Only the name duplicates for id 2, so it stays in idToData_
         // (`xml_database.cpp:271-287`: the second same-named entity is not
         // retrievable by name, but remains retrievable by id).
-        assert_eq!(
+        assert!(
             database
                 .get_entity_stream(avatar, 2, None, &mut BinaryStream::new())
-                .found,
-            true
+                .found
         );
     }
 
@@ -2017,5 +2125,318 @@ pub(crate) mod tests {
         assert_eq!(property_section_name(&property), "hp");
         property.component_name = "movement".into();
         assert_eq!(property_section_name(&property), "movement.hp");
+    }
+
+    /// A stream in [`put_entity_stream`]'s read order: the persistent
+    /// values, then the cell payload for a cell entity, then the game time
+    /// slot.
+    fn value_stream(
+        database: &XmlDatabase,
+        type_id: EntityTypeId,
+        values: &[PropertyValue],
+        pose: Option<CellPose>,
+    ) -> BinaryStream {
+        let desc = database.defs.entity_description(type_id).expect("type");
+        let mut stream = BinaryStream::new();
+        let mut next = values.iter();
+        desc.visit(DATABASE_DATA_DOMAINS, &mut |property| {
+            let value = next
+                .next()
+                .cloned()
+                .or_else(|| property.data_type.initial_value().ok());
+            match value {
+                Some(value) => property
+                    .data_type
+                    .add_persistent_to_stream(&value, &mut stream)
+                    .is_ok(),
+                None => false,
+            }
+        });
+        if let Some(pose) = pose {
+            pose.write_to(&mut stream);
+        }
+        stream.write_i64(0);
+        stream
+    }
+
+    /// The contract's refusal arms and the paths the round-trip above does
+    /// not walk: unknown types, taken ids, updates that rename and keep
+    /// stored values, deletion by name, and the file-less save paths.
+    #[test]
+    fn the_contract_guards_refuse_and_updates_rename() {
+        let mut database = XmlDatabase::new(defs());
+        let avatar = database.defs.name_to_index("Avatar").unwrap();
+        let missing = EntityKey {
+            type_id: INVALID_ENTITY_TYPE_ID,
+            db_id: PENDING_DATABASE_ID,
+        };
+
+        // Unknown types read as absent rows and refuse to store.
+        assert!(
+            database
+                .get_entity(&EntityKey {
+                    type_id: INVALID_ENTITY_TYPE_ID,
+                    db_id: 1
+                })
+                .expect("get")
+                .is_none()
+        );
+        assert!(matches!(
+            database.put_entity(&missing, &[], false),
+            Err(DbError::NotFound)
+        ));
+        // The stream-level put reports the unknown type by name
+        // (`put_entity_task.cpp`'s status text).
+        assert!(matches!(
+            database.put_entity_stream(
+                INVALID_ENTITY_TYPE_ID,
+                1,
+                &mut BinaryStream::new(),
+                AutoLoadUpdate::Retain,
+                false
+            ),
+            Err(DbError::Storage(ref msg)) if msg.contains("unknown entity type")
+        ));
+
+        // A pending id with no name to resolve stays absent
+        // (`getEntity` resolves 0 through the name map).
+        assert!(
+            database
+                .get_entity(&EntityKey {
+                    type_id: avatar,
+                    db_id: PENDING_DATABASE_ID
+                })
+                .expect("get")
+                .is_none()
+        );
+
+        // `insertExplicit` onto a taken id
+        // (`put_entity_task.cpp:105-110`).
+        let moe = vec![PropertyValue::String("moe".into()), PropertyValue::Int(30)];
+        let key = EntityKey {
+            type_id: avatar,
+            db_id: database
+                .put_entity(
+                    &EntityKey {
+                        type_id: avatar,
+                        db_id: PENDING_DATABASE_ID,
+                    },
+                    &moe,
+                    false,
+                )
+                .expect("create"),
+        };
+        assert!(matches!(
+            database.put_entity(&key, &moe, true),
+            Err(DbError::Storage(ref msg)) if msg.contains("already in use")
+        ));
+
+        // The same refusal when the explicit id belongs to another type's
+        // row (`entity_child_index_by_id` finds it across types).
+        let guard = database.defs.name_to_index("Guard").unwrap();
+        assert!(matches!(
+            database.put_entity(
+                &EntityKey {
+                    type_id: guard,
+                    db_id: key.db_id
+                },
+                &[PropertyValue::String("x".into())],
+                true
+            ),
+            Err(DbError::Storage(ref msg)) if msg.contains("already in use")
+        ));
+
+        // An update by existing id: the record carries only the name, so
+        // `hp` falls back to the type default (a record owns its whole
+        // value vector; only the pose survives from the stored row), and
+        // the rename frees "moe".
+        let renamed = vec![PropertyValue::String("larry".into())];
+        database.put_entity(&key, &renamed, false).expect("update");
+        let loaded = database
+            .lookup_entity_by_name(avatar, "larry")
+            .expect("lookup")
+            .expect("renamed");
+        assert_eq!(loaded.values[1], PropertyValue::Int(0));
+        assert!(
+            database
+                .lookup_entity_by_name(avatar, "moe")
+                .expect("lookup")
+                .is_none()
+        );
+
+        // `delEntity` resolves a 0/pending id through the name
+        // (`xml_database.cpp:793-796`).
+        database
+            .del_entity(avatar, PENDING_DATABASE_ID, Some("larry"))
+            .expect("delete by name");
+        assert!(matches!(
+            database.del_entity(avatar, 99, None),
+            Err(DbError::NotFound)
+        ));
+
+        // Without a file both writers are no-ops (`xml_database.cpp:368`).
+        database.save().expect("save");
+        database.archive().expect("archive");
+        assert_eq!(database.num_archives(), DEFAULT_NUM_ARCHIVES);
+    }
+
+    /// A file that does not parse, and a stored value that cannot be read
+    /// back, fail startup/load instead of inventing defaults.
+    #[test]
+    fn a_malformed_file_fails_startup() {
+        // An unbalanced document is a parse error, not a partial database
+        // (`BWResource::openSection`'s reader).
+        assert!(XmlDatabase::from_xml("<root> <Avatar>", defs()).is_err());
+    }
+
+    /// Startup assigns ids to entities stored without one, in a second
+    /// pass (`xml_database.cpp:181-227`).
+    #[test]
+    fn startup_assigns_ids_in_a_second_pass() {
+        let xml = "<root> \
+                       <Avatar> <name> anon </name> </Avatar> \
+                   </root>";
+        let database = XmlDatabase::from_xml(xml, defs()).expect("parse");
+        let avatar = database.defs.name_to_index("Avatar").unwrap();
+        assert_eq!(database.max_id(), 1);
+        assert_eq!(
+            database
+                .lookup_entity_by_name(avatar, "anon")
+                .expect("lookup")
+                .expect("indexed")
+                .db_id,
+            1
+        );
+        assert!(database.auto_load_ids().is_empty());
+    }
+
+    /// Auto-load ids that are not valid database ids are reported and
+    /// skipped (`xml_database.cpp:1246-1253`).
+    #[test]
+    fn an_auto_load_entry_with_an_invalid_id_is_skipped() {
+        let xml = "<root> \
+                       <Avatar> <name> moe </name> <databaseID> 1 </databaseID> </Avatar> \
+                       <_BigWorldInfo> <AutoLoadedEntities> \
+                           <databaseID> -5 </databaseID> \
+                           <databaseID> 1 </databaseID> \
+                       </AutoLoadedEntities> </_BigWorldInfo> \
+                   </root>";
+        let database = XmlDatabase::from_xml(xml, defs()).expect("parse");
+        assert_eq!(database.auto_load_ids(), vec![1]);
+    }
+
+    /// A truncated cell stream fails the put (`xml_database.cpp:616-621`),
+    /// auto-load membership follows the update flag, a space with nothing
+    /// archived still lists its zero items
+    /// (`xml_database.cpp:1046-1050`), and a truncated archive stream is a
+    /// stream error.
+    #[test]
+    fn stream_shapes_are_enforced() {
+        let mut database = XmlDatabase::new(defs());
+        let avatar = database.defs.name_to_index("Avatar").unwrap();
+        let guard = database.defs.name_to_index("Guard").unwrap();
+
+        // A cell entity's stream without the pose payload.
+        let mut stream = value_stream(&database, guard, &[PropertyValue::String("g".into())], None);
+        stream.rewind();
+        assert!(matches!(
+            database.put_entity_stream(
+                guard,
+                PENDING_DATABASE_ID,
+                &mut stream,
+                AutoLoadUpdate::Retain,
+                false
+            ),
+            Err(DbError::Storage(ref msg)) if msg.contains("malformed entity stream")
+        ));
+
+        // A full stream with a pose joins the auto-load set. The failed
+        // put above still consumed a create slot, so this row is id 2
+        // (`xml_database.cpp:601-603` bumps `maxID_` before the stream is
+        // read).
+        let pose = CellPose {
+            position: Vector3::new(8.0, 0.0, 0.0),
+            direction: [0.0, 0.0, 0.0],
+            space_id: 4,
+        };
+        // A stream whose value block is empty: every property falls back
+        // to its type default.
+        let mut stream = value_stream(&database, guard, &[], Some(pose));
+        stream.rewind();
+        assert_eq!(
+            database
+                .put_entity_stream(
+                    guard,
+                    PENDING_DATABASE_ID,
+                    &mut stream,
+                    AutoLoadUpdate::True,
+                    false
+                )
+                .expect("put"),
+            2
+        );
+        assert_eq!(database.auto_load_ids(), vec![2]);
+
+        // Updating the row with the flag off drops the membership again.
+        let mut stream = value_stream(
+            &database,
+            guard,
+            &[PropertyValue::String("g".into())],
+            Some(pose),
+        );
+        stream.rewind();
+        database
+            .put_entity_stream(guard, 2, &mut stream, AutoLoadUpdate::False, false)
+            .expect("put again");
+        assert!(database.auto_load_ids().is_empty());
+
+        // And the flag on restores it.
+        let mut stream = value_stream(
+            &database,
+            guard,
+            &[PropertyValue::String("g".into())],
+            Some(pose),
+        );
+        stream.rewind();
+        database
+            .put_entity_stream(guard, 2, &mut stream, AutoLoadUpdate::True, false)
+            .expect("put again");
+        let mut stream = BinaryStream::new();
+        database.get_spaces_data(&mut stream).expect("spaces");
+        stream.rewind();
+        assert_eq!(stream.read_i32(), Ok(1));
+        assert_eq!(stream.read_i32(), Ok(4));
+        assert_eq!(stream.read_i32(), Ok(0));
+
+        // A stream that stops before the space count.
+        let mut stream = BinaryStream::new();
+        assert!(database.write_space_data(&mut stream).is_err());
+
+        // A base-data entity keeps auto-load off the same way.
+        let mut stream = value_stream(
+            &database,
+            avatar,
+            &[PropertyValue::String("moe".into()), PropertyValue::Int(30)],
+            None,
+        );
+        stream.rewind();
+        database
+            .put_entity_stream(
+                avatar,
+                PENDING_DATABASE_ID,
+                &mut stream,
+                AutoLoadUpdate::False,
+                false,
+            )
+            .expect("put avatar");
+        // Every stored row, in `(type_id, db_id)` order: the avatar then
+        // the guard.
+        let all = database.all_entities().expect("all");
+        assert_eq!(
+            all.iter()
+                .map(|record| (record.type_id, record.db_id))
+                .collect::<Vec<_>>(),
+            vec![(avatar, 3), (guard, 2)]
+        );
     }
 }

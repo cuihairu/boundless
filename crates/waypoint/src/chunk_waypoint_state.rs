@@ -41,7 +41,7 @@ impl ChunkWaypointState {
     /// dstPoint )` (`chunk_waypoint_state.cpp:29-43`): a goal-only state on
     /// the destination set — waypoint -1, the point lifted by `clip`.
     pub fn for_destination(set: Rc<ChunkWaypointSetData>, dst_point: Vector3) -> Self {
-        let mut nav_loc = NavLoc::from_parts(set, -1, dst_point);
+        let mut nav_loc = NavLoc::from_parts(set, -1, dst_point, 0.0);
         nav_loc.clip_in_place();
         Self {
             nav_loc,
@@ -58,6 +58,32 @@ impl ChunkWaypointState {
             distance_from_parent: 0.0,
             crossed_portal: false,
         }
+    }
+
+    /// `desc` (`chunk_waypoint_state.cpp:53-70`): the waypoint, the point,
+    /// the owning chunk identifier and the portal flag. The reference
+    /// prefixes `no set` / `no chunk`; the port answers `no set` for a
+    /// stateless location and reports the set's `baseIndex_` in the chunk
+    /// identifier's place, since the chunk mounting is out of this face
+    /// (registered).
+    pub fn desc(&self) -> String {
+        let set = match self.nav_loc.p_set() {
+            Some(set) => set,
+            None => return "no set".to_owned(),
+        };
+        let point = self.nav_loc.point();
+        let mut out = format!(
+            "{} ({}, {}, {})",
+            self.nav_loc.waypoint(),
+            point.x,
+            point.y,
+            point.z
+        );
+        out.push_str(&format!(" in {}", set.base_index()));
+        if self.crossed_portal {
+            out.push_str(" (portal)");
+        }
+        out
     }
 
     /// `compare` (`chunk_waypoint_state.hpp:37-45`): the same set compares
@@ -121,14 +147,18 @@ impl ChunkWaypointState {
         0
     }
 
-    /// `getAdjacency` (`chunk_waypoint_state.cpp:53-190`): the neighbour
+    /// `getAdjacency` (`chunk_waypoint_state.cpp:53-232`): the neighbour
     /// over edge `index`, its connection point computed where the straight
     /// line to the goal crosses the shared edge (or the closer of the
-    /// edge's two vertices).
+    /// edge's two vertices). Chunk-adjacent edges cross through the
+    /// bind-time `edgeLabel` with `crossedPortal_` set — no permissive
+    /// gate here; that check belongs to the neighbour iterator and the
+    /// set-level search.
     ///
-    /// Registered boundary: the cross-set branch (`waypointAdjToChunk`,
-    /// resolved through `edgeLabel`) answers false until the connections
-    /// and portal data land in the cross-chunk face (BW-10-04-05).
+    /// Registered boundary: the chunk-box clamp of the cross-set arm
+    /// (`chunk_waypoint_state.cpp:196-205`) needs the destination chunk's
+    /// bounding box; the chunk lane owns that face and the clamp is left
+    /// out (the fixture maps keep every crossing inside it).
     pub fn get_adjacency(
         &self,
         index: usize,
@@ -147,6 +177,7 @@ impl ChunkWaypointState {
         let cw = &set.waypoints()[waypoint as usize];
         let edge_range = cw.edge_range();
         let cwe = set.edges()[edge_range.start + index];
+        let absolute_edge = set.absolute_edge_index(waypoint as usize, index);
         let waypoint = cwe.neighbouring_waypoint();
         let waypoint_adj_to_chunk = cwe.adjacent_to_chunk();
 
@@ -154,16 +185,35 @@ impl ChunkWaypointState {
             return false;
         }
 
+        let neigh_set;
         if waypoint >= 0 {
             // In-set neighbour: rebuild the neighbour location in place.
-            let set2 = Rc::clone(set);
-            neigh.nav_loc = NavLoc::from_parts(set2, waypoint, Vector3::default());
+            neigh_set = Rc::clone(set);
+            neigh.nav_loc =
+                NavLoc::from_parts(Rc::clone(&neigh_set), waypoint, Vector3::default(), 0.0);
             neigh.crossed_portal = false;
         } else if waypoint_adj_to_chunk {
-            // `edgeLabel` carries the neighbouring chunk's set; the port has
-            // no edge labels yet, so the reference's null-label early-out is
-            // what always answers here.
-            return false;
+            // `edgeLabel` (`chunk_waypoint_state.cpp:104-118`): the
+            // neighbour across the boundary comes from the bind-time
+            // label. A label miss answers the reference's static
+            // `{NULL, -1}` record whose null `pSet_` the guard refuses.
+            let label = match set.edge_label(absolute_edge) {
+                Some(label) => label,
+                None => return false,
+            };
+            neigh_set = Rc::clone(&label.set);
+            neigh.nav_loc = NavLoc::from_parts(
+                Rc::clone(&neigh_set),
+                label.waypoint,
+                label.entry_point,
+                0.0,
+            );
+            neigh.crossed_portal = true;
+            if neigh_set.chunk_identity().is_none() {
+                // "!neigh.navLoc_.pSet()->chunk()": the destination set's
+                // chunk is gone (or was never mounted).
+                return false;
+            }
         } else {
             return false;
         }
@@ -200,11 +250,13 @@ impl ChunkWaypointState {
         }
 
         // `wway( way.x, cw.maxHeight_, way.y )` through the identity
-        // mapping (registered).
+        // mapping (registered): the point rides the source waypoint's
+        // max height onto the neighbour's set.
         neigh.nav_loc = NavLoc::from_parts(
-            Rc::clone(set),
+            neigh_set,
             neigh.nav_loc.waypoint(),
             Vector3::new(way.x, cw.max_height, way.y),
+            0.0,
         );
 
         search_data.set_connection(
@@ -216,8 +268,8 @@ impl ChunkWaypointState {
             vp2,
         );
 
-        // The chunk-box clamp of `waypointAdjToChunk` needs the chunk face;
-        // registered with the branch above (BW-10-04-05).
+        // The chunk-box clamp of the cross-set arm needs the destination
+        // chunk's bounding box (registered above).
 
         neigh.nav_loc.clip_in_place();
         let np = neigh.nav_loc.point();
@@ -233,9 +285,9 @@ impl ChunkWaypointState {
 
 /// The goal-only neighbour's boundary step (`neigh.navLoc_.waypoint_ ==
 /// -1` branch of `getAdjacency`): `del.normalise(); way += del * 0.2f`.
-/// The port only reaches it through edge labels landing on waypoint -1
-/// (the cross-chunk face, BW-10-04-05), so it is factored out for direct
-/// testing.
+/// A real `bind()` never labels an edge with waypoint -1, so the nudge is
+/// defensive in both engines; the port only reaches it through direct
+/// construction, so it is factored out for direct testing.
 fn nudge_past_boundary(way: &mut Vector2, del: Vector2) {
     let len = (del.x * del.x + del.y * del.y).sqrt();
     let (nx, ny) = if len > 0.0 {
@@ -245,6 +297,54 @@ fn nudge_past_boundary(way: &mut Vector2, del: Vector2) {
     };
     way.x += nx * 0.2;
     way.y += ny * 0.2;
+}
+
+/// The `AStar` template's view of `ChunkWaypointState` (`astar.hpp`'s
+/// `State` requirements): the inherent methods are the reference's own,
+/// the close-set key is the (set pointer, waypoint) pair `hash` derives.
+impl super::astar::AStarState for ChunkWaypointState {
+    type SearchData = ChunkWaypointStateSearchData;
+    type Key = (usize, WaypointIndex);
+
+    /// `hash` (`chunk_waypoint_state.hpp:65-72`): the set identity plus
+    /// the waypoint; the null-set arm mirrors the reference's hashing of
+    /// a null pointer (the search never reaches it).
+    fn search_key(&self) -> Self::Key {
+        match self.nav_loc().p_set() {
+            Some(set) => (Rc::as_ptr(set) as usize, self.nav_loc().waypoint()),
+            None => (0, self.nav_loc().waypoint()),
+        }
+    }
+
+    fn compare(&self, other: &Self) -> i64 {
+        ChunkWaypointState::compare(self, other)
+    }
+
+    fn is_goal(&self, goal: &Self) -> bool {
+        ChunkWaypointState::is_goal(self, goal)
+    }
+
+    fn distance_to_goal(&self, goal: &Self) -> f32 {
+        ChunkWaypointState::distance_to_goal(self, goal)
+    }
+
+    fn distance_from_parent(&self) -> f32 {
+        ChunkWaypointState::distance_from_parent(self)
+    }
+
+    fn adjacency_count(&self) -> usize {
+        ChunkWaypointState::adjacency_count(self)
+    }
+
+    fn get_adjacency(
+        &self,
+        index: usize,
+        neigh: &mut Self,
+        goal: &Self,
+        search_data: &mut Self::SearchData,
+    ) -> bool {
+        ChunkWaypointState::get_adjacency(self, index, neigh, goal, search_data)
+    }
 }
 
 /// The connection map's shapes: the ordered from/to (set pointer,
@@ -266,7 +366,7 @@ pub struct ChunkWaypointStateSearchData {
 
 impl ChunkWaypointStateSearchData {
     /// `setConnection` (`chunk_waypoint_state.cpp:194-210`).
-    fn set_connection(
+    pub(crate) fn set_connection(
         &mut self,
         from_set: Option<&Rc<ChunkWaypointSetData>>,
         from: WaypointIndex,
@@ -356,6 +456,7 @@ mod tests {
             Rc::clone(set),
             waypoint,
             Vector3::new(x, 0.5, z),
+            0.0,
         ))
     }
 
@@ -503,6 +604,24 @@ mod tests {
                 super::super::chunk_waypoint::ADJACENT_RANGE_END
             )
         );
+    }
+
+    #[test]
+    fn desc_reports_the_waypoint_the_point_and_the_portal_flag() {
+        let set = split_square();
+        let src = state_on(&set, 0, 0.5, 1.0);
+        assert_eq!(
+            src.desc(),
+            format!("0 (0.5, 0.5, 1) in {}", set.base_index())
+        );
+
+        // The portal suffix is the cross-chunk marker.
+        let mut portal = src.clone();
+        portal.crossed_portal = true;
+        assert!(portal.desc().ends_with(" (portal)"), "{}", portal.desc());
+
+        // The stateless location answers the reference's first guard.
+        assert_eq!(ChunkWaypointState::default().desc(), "no set");
     }
 
     #[test]

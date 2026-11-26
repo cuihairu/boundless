@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  BW-13-06-04: the debug field view of
+  tools/visual_studio/visualizers/bigworld.natvis, migrated to the Rust
+  tree. The reference visualizes `BW::SceneObject`; the Rust equivalent is
+  `scene::SceneObject` (crates/scene/src/scene_object.rs).
+
+  The reference DisplayString resolves the type name through
+  `BW::SceneTypeSystem::s_typeNameLookup.table_._Myfirst[
+  BW::SceneTypeSystem::s_objectTypeContext.externalMapping_._Myfirst[
+  type_ - 1]],s` — an MSVC std::vector dereference with no Rust-side
+  equivalent (the name table here is a LazyLock<Mutex<HashMap>>). The name
+  half of the view therefore lives in `SceneObject::debug_view_string`,
+  which runs the same `typeName` lookup chain; this asset carries the
+  Type/Handle items of the reference `<Expand>` section verbatim.
+-->
+<AutoVisualizer xmlns="http://schemas.microsoft.com/vstudio/debugger/natvis/2010">
+    <Type Name="scene::SceneObject">
+        <DisplayString>Object: {handle} of type: {type_id}</DisplayString>
+        <Expand>
+            <Item Name="Type">type_id</Item>
+            <Item Name="Handle">handle</Item>
+        </Expand>
+    </Type>
+</AutoVisualizer>

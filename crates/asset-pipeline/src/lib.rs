@@ -35,22 +35,122 @@
 //! - [`generic_conversion_rule`] — the `asset_rules.xml`-backed rule
 //!   (`compiler/generic_conversion_rule.cpp`);
 //! - [`task_processor`] — the single-threaded task driver
-//!   (`conversion/task_processor.cpp`).
+//!   (`conversion/task_processor.cpp`);
+//! - [`jit_compiler`] — the on-demand compiler: reverse-dependency
+//!   tracking, on-asset requests and modification re-queues
+//!   (`tools/jit_compiler/jit_compiler.cpp`);
+//! - [`plugin_loader`] — the plugin registry and loader that registers
+//!   converters (`tools/plugin_system/plugin_loader.cpp`);
+//! - [`task_store`] — the JIT compiler's task bookkeeping
+//!   (`tools/jit_compiler/task_store.cpp`);
+//! - [`vertex_format`] — vertex formats and the conversion matrix behind
+//!   them (`moo/vertex_format.*`, `moo/vertex_format_conversions.*`);
+//! - [`primitive_file_structs`] — the on-disk primitive headers
+//!   (`moo/primitive_file_structs.hpp`);
+//! - [`primitive_processor`] — the `.primitives` → `.processed` converter
+//!   (`tools/asset_pipeline/converters/primitive_processor/`);
+//! - [`space_converter`] — the space → `space.bin` converter and the
+//!   compiled-space writer faces behind it
+//!   (`tools/asset_pipeline/converters/space_converter/`,
+//!   `lib/compiled_space/binary_writers/`);
+//! - [`hierarchical_config_converter`] — the rule-tree baker
+//!   (`tools/asset_pipeline/converters/hierarchical_config_converter/`);
+//! - [`bsp_converter`] — the BSP collision-tree upgrader and its discovery
+//!   rule (`tools/asset_pipeline/converters/bsp_converter/`);
+//! - [`texture_detail_level`] — the per-texture conversion settings and the
+//!   D3DFMT name table (`lib/moo/texture_detail_level*`,
+//!   `format_name_map.cpp`);
+//! - [`convert_texture_tool`] — the texture pixel-work seam and its
+//!   device-free TGA→DDS face (`lib/moo/convert_texture_tool.*`);
+//! - [`texture_converter`] — the texture → `.dds`/`.c.dds` converter
+//!   (`tools/asset_pipeline/converters/texture_converter/`);
+//! - [`texformat_converter`] — the `.texformat` normaliser
+//!   (`tools/asset_pipeline/converters/texformat_converter/`);
+//! - [`effect_converter`] — the `.fx` → `.fxo` converter behind the D3DX
+//!   compile seam (`tools/asset_pipeline/converters/effect_converter/`);
+//! - [`asset_processor`] — the `_AssetProcessor` tool functions behind the
+//!   PyScript seam (`tools/assetprocessor/`);
+//! - [`offline_processor`] — the offline tool's command surface, cluster
+//!   sharding, chunk gathering, `.cdata` invalidation and its two
+//!   commands (`tools/offline_processor/`, `lib/chunk/chunk_processor_manager.cpp`);
+//! - [`res_packer`] — the release packer: the packer registry and its six
+//!   packers, the `PackedSection::convert` face and both command-line
+//!   modes (`tools/res_packer/`);
+//! - [`resource_checker`] — the `VisualChecker` that judges a `.visual`
+//!   against `visual_rules.xml` (size, triangle count, hierarchy depth,
+//!   portals, hard points, texture names)
+//!   (`tools/resourcechecker/visual_checker.*`);
+//! - [`model_editor`] — the ModelEditor's model open and save face: the
+//!   `ensureModelValid` judgement, the save/save-as flows and the metadata
+//!   block they refresh, against the `lib/model` read contract
+//!   (`tools/modeleditor_core/Models/`, `lib/gizmo/meta_data*`);
+//! - [`animation_exporter`] — the Max animation exporter's portable core:
+//!   the node tree, include munging and root sorting, the per-frame
+//!   sampling/decompose pipeline and the `.animation` binary writer
+//!   (type 1/4 node channels, type 6 cue track)
+//!   (`tools/animationexporter`, `lib/math/blend_transform.cpp`);
+//! - [`material_editor`] — the ModelEditor's material editing face: the
+//!   material/dye/tint census, mfm instantiation and overloading, the
+//!   clean/property/naming/feed/flag moves and the shader gates
+//!   (`tools/modeleditor_core/Models/mutant_materials.cpp`);
+//! - [`visual_exporter`] — the Max visual exporter's portable core: the
+//!   `ExportSettings` IO, the `BloatVertex`/`Triangle`/`Material` model
+//!   and the `VisualMesh::save` pipeline (dedup, sorting, primitive
+//!   groups, the `xyznuv`/`xyznuvi` vertex streams and the `.visual`
+//!   XML) with the Max-plugin host seams documented
+//!   (`tools/visualexporter/`);
+//! - [`maya_visual_exporter`] — the Maya visual exporter's portable core:
+//!   the exporter settings round-trip, the scene records the Maya
+//!   traversal produces, the mesh save chain into a `.visual` plus its
+//!   `.primitives`, the hierarchy/world-space handling, and the custom
+//!   hull and boundary faces
+//!   (`tools/mayavisualexporter/`);
+//! - [`world_machine_import`] — the World Machine height importer: the
+//!   `SpaceHelper` space.settings reader, the chunk `.cdata` height-map
+//!   decode and the `BWHeightImport` resample into a World Machine
+//!   height field, with the framework seam documented
+//!   (`tools/bw_world_machine_import/`).
 
+pub mod animation_exporter;
 pub mod asset_compiler;
 pub mod asset_compiler_options;
+pub mod asset_processor;
 pub mod batch_compiler;
+pub mod bsp_converter;
 pub mod compiler;
 pub mod content_addressable_cache;
 pub mod conversion_rule;
 pub mod conversion_task;
+pub mod convert_texture_tool;
 pub mod converter;
 pub mod converter_info;
 pub mod converter_map;
 pub mod dependency;
 pub mod dependency_list;
+pub mod effect_converter;
 pub mod generic_conversion_rule;
 pub mod hash64;
 pub mod hierarchical_config;
+pub mod hierarchical_config_converter;
+pub mod jit_compiler;
+pub mod material_editor;
+pub mod maya_visual_exporter;
+pub mod model_editor;
+pub mod navmesh_processor;
+pub mod offline_processor;
+pub mod plugin_loader;
+pub mod primitive_file_structs;
+pub mod primitive_processor;
+pub mod res_packer;
+pub mod resource_checker;
+pub mod space_converter;
 pub mod task_finder;
 pub mod task_processor;
+pub mod task_store;
+pub mod texformat_converter;
+pub mod texture_converter;
+pub mod texture_detail_level;
+pub mod vertex_format;
+pub mod visual_exporter;
+pub mod visual_processor;
+pub mod world_machine_import;

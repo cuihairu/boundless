@@ -1,0 +1,5 @@
+crate	touched_file	recompiled	seconds	run
+bots	apps/bots/src/main.rs	1	0.47	1
+foundation	crates/foundation/src/lib.rs	25	10.70	1
+foundation	crates/foundation/src/lib.rs	25	9.94	2
+resources	crates/resources/src/lib.rs	15	14.83	1

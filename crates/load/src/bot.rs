@@ -116,7 +116,7 @@ pub trait MovementFactory: Sync {
     fn create(
         &self,
         data: &str,
-        speed: f32,
+        speed: &mut f32,
         start_pos: &mut Vector3,
     ) -> Option<Box<dyn MovementController>>;
 }
@@ -550,7 +550,7 @@ impl Bot {
         }
 
         let mut position = self.position();
-        match registry.create(kind, data, self.speed, &mut position) {
+        match registry.create(kind, data, &mut self.speed, &mut position) {
             Ok(controller) => {
                 self.set_position(position);
                 self.movement = controller;
@@ -875,7 +875,7 @@ mod tests {
         fn create(
             &self,
             _data: &str,
-            _speed: f32,
+            _speed: &mut f32,
             _start_pos: &mut Vector3,
         ) -> Option<Box<dyn MovementController>> {
             Some(Box::new(StubController))

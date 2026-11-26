@@ -172,10 +172,10 @@ fn play_next_queue(queue: &mut VecDeque<Option<EntityTaskPtr>>) -> Option<Entity
     debug_assert!(queue.front().unwrap().is_none());
     queue.pop_front();
     let next = queue.front_mut().and_then(|head| head.take());
-    if let Some(task) = next.as_ref() {
-        if task.borrow().db_id() == PENDING_DATABASE_ID {
-            task.borrow_mut().set_db_id(0);
-        }
+    if let Some(task) = next.as_ref()
+        && task.borrow().db_id() == PENDING_DATABASE_ID
+    {
+        task.borrow_mut().set_db_id(0);
     }
     next
 }

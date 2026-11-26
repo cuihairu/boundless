@@ -15,25 +15,33 @@
 //! BW-09-05 operational tools.
 
 pub mod account;
+pub mod authenticate_account;
+pub mod auto_load_recovery;
+pub mod billing;
+pub mod billing_creator;
 pub mod buffered;
+pub mod buffered_entity_tasks;
 pub mod charset;
 pub mod config;
-pub mod consolidate_tool;
-pub mod dry_run;
+pub mod custom_billing;
 pub mod error;
+pub mod lock_recovery;
+pub mod log_on;
+pub mod log_on_status;
 pub mod lookup;
 pub mod namer;
+pub mod py_billing;
 pub mod record;
 pub mod recovery;
 pub mod retry;
-pub mod snapshot;
+pub mod schema;
+pub mod secondary_database;
 pub mod storage;
-pub mod sync_db;
+pub mod tools;
 pub mod transaction;
-pub mod transfer_db;
 pub mod xml;
+pub mod xml_database;
 
-pub use config::{DatabaseConfig, PostgresConnection, StorageBackend};
 pub use account::{
     AccountLogOn, AccountRow, BIGWORLD_ID_COLUMN, ENTITY_ID_COLUMN, ENTITY_TYPE_COLUMN,
     ENTITY_TYPES_TABLE, INFO_TABLE, IS_PASSWORD_HASHED_COLUMN, LOG_ON_MAPPING_TABLE,
@@ -44,6 +52,7 @@ pub use charset::{
     CharsetWidths, utf8_byte_length_for, utf8_char_length, utf8_char_offsets,
     utf8_truncate_to_chars,
 };
+pub use config::{DatabaseConfig, PostgresConnection, StorageBackend};
 pub use error::DbError;
 pub use lookup::{
     EntityDefIndex, LookUpEntitiesCriteria, LookUpEntitiesFilter, LookupDefs,

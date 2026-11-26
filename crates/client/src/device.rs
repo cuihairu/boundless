@@ -209,6 +209,11 @@ impl Device {
         self.backend.back_buffer()
     }
 
+    /// The back buffer itself (`GetBackBuffer`), for the screenshot face.
+    pub fn framebuffer(&self) -> &crate::render::framebuffer::Framebuffer {
+        self.backend.framebuffer()
+    }
+
     /// The cooperative level (`TestCooperativeLevel`).
     pub fn status(&self) -> DeviceStatus {
         self.status

@@ -1,0 +1,11 @@
+[package]
+name = "waypoint-gen"
+description = "BW-10-05 waypoint flood generation (lib/waypoint_generator)"
+edition.workspace = true
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+foundation = { path = "../foundation" }

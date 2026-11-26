@@ -67,4 +67,9 @@ impl SoftwareDevice {
     pub fn back_buffer(&self) -> (u32, u32) {
         (self.framebuffer.width, self.framebuffer.height)
     }
+
+    /// The back buffer itself (`GetBackBuffer`), for the screenshot face.
+    pub fn framebuffer(&self) -> &Framebuffer {
+        &self.framebuffer
+    }
 }

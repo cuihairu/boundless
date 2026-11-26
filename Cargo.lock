@@ -26,14 +26,13 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "ahash"
-version = "0.8.13"
+version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0fca89247609239eeb6915e6991111866b92d7b31025e69302bbf430cc4d2c38"
+checksum = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
 dependencies = [
  "cfg-if",
- "getrandom",
+ "getrandom 0.3.4",
  "once_cell",
- "serde",
  "version_check",
  "zerocopy",
 ]
@@ -115,8 +114,14 @@ checksum = "175571dd1d178ced59193a6fc02dde1b972eb0bc56c892cde9beeceac5bf0f6b"
 name = "asset-pipeline"
 version = "0.1.0"
 dependencies = [
+ "client",
+ "compiled-space",
+ "foundation",
+ "physics",
  "regex",
  "resources",
+ "terrain",
+ "waypoint-gen",
 ]
 
 [[package]]
@@ -185,6 +190,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2c132eebf10f5cad5289222520a4a058514204aed6d791f1cf4fe8088b82d15f"
 dependencies = [
  "objc2",
+]
+
+[[package]]
+name = "bots"
+version = "0.1.0"
+dependencies = [
+ "load",
 ]
 
 [[package]]
@@ -292,7 +304,9 @@ name = "chunk"
 version = "0.1.0"
 dependencies = [
  "foundation",
+ "physics",
  "resources",
+ "terrain",
 ]
 
 [[package]]
@@ -351,9 +365,12 @@ checksum = "e0921b3876b3a1df8a1c9f912e7f94342458022c2e84288015893d83c4d62a79"
 name = "client"
 version = "0.1.0"
 dependencies = [
+ "chunk",
  "flate2",
  "foundation",
+ "physics",
  "resources",
+ "waypoint",
  "winit",
 ]
 
@@ -577,8 +594,8 @@ version = "0.1.0"
 dependencies = [
  "entitydef",
  "foundation",
- "md-5 0.10.6",
  "mercury",
+ "resources",
  "rusqlite",
 ]
 
@@ -589,6 +606,7 @@ dependencies = [
  "db",
  "entitydef",
  "foundation",
+ "mercury",
  "postgres",
  "serde_json",
 ]
@@ -811,16 +829,26 @@ dependencies = [
 
 [[package]]
 name = "getrandom"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "r-efi 5.3.0",
+ "wasip2",
+]
+
+[[package]]
+name = "getrandom"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099"
 dependencies = [
  "cfg-if",
- "js-sys",
  "libc",
- "r-efi",
+ "r-efi 6.0.0",
  "rand_core",
- "wasm-bindgen",
 ]
 
 [[package]]
@@ -965,7 +993,7 @@ version = "0.1.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c00acbd29eabad4a2392fa0e921c874934dbbf4194312ad20f04a0ed67a3cb3"
 dependencies = [
- "getrandom",
+ "getrandom 0.4.3",
  "libc",
 ]
 
@@ -978,6 +1006,13 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "launcher"
+version = "0.1.0"
+dependencies = [
+ "resources",
 ]
 
 [[package]]
@@ -1036,8 +1071,8 @@ name = "load"
 version = "0.1.0"
 dependencies = [
  "foundation",
+ "libc",
  "resources",
- "serde_json",
  "watcher",
 ]
 
@@ -1703,6 +1738,12 @@ dependencies = [
 
 [[package]]
 name = "r-efi"
+version = "5.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
+
+[[package]]
+name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
@@ -1714,7 +1755,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f6fa277c67e6ea590466f04c3fe82cb509f0864fe470643e5570de9514a9b11"
 dependencies = [
  "chacha20",
- "getrandom",
+ "getrandom 0.4.3",
  "rand_core",
 ]
 
@@ -1987,10 +2028,15 @@ dependencies = [
  "load",
  "md-5 0.10.6",
  "mercury",
+ "message_logger",
+ "physics",
  "platform",
+ "profiler",
  "regex",
  "resources",
  "sha2 0.10.9",
+ "watcher",
+ "waypoint",
 ]
 
 [[package]]
@@ -2160,12 +2206,15 @@ version = "0.1.0"
 dependencies = [
  "crc32fast",
  "flate2",
+ "resources",
 ]
 
 [[package]]
 name = "test-support"
 version = "0.1.0"
 dependencies = [
+ "asset-pipeline",
+ "chunk",
  "foundation",
  "libc",
  "platform",
@@ -2625,6 +2674,13 @@ dependencies = [
 
 [[package]]
 name = "waypoint"
+version = "0.1.0"
+dependencies = [
+ "foundation",
+]
+
+[[package]]
+name = "waypoint-gen"
 version = "0.1.0"
 dependencies = [
  "foundation",

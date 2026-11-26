@@ -28,6 +28,15 @@ flate2 = { version = "1.1.11", default-features = false, features = ["rust_backe
 # (BW-02-01-05); a legal downward edge into the domain layer.
 mercury = { workspace = true }
 resources = { workspace = true }
+# The Controller/Extra sample's grenade simulation reflects off a
+# `WorldTriangle` (BW-14-02-04, `worldtri.cpp:504-512`); a downward edge
+# into the domain layer like mercury/db above.
+physics = { path = "../physics" }
+
+# The navigation mesh: `MeshNavigator` (BW-10-06-01) implements the
+# navigation controller's `Navigator` boundary over waypoint's two-level
+# search — the same downward-edge pattern as db/mercury.
+waypoint = { workspace = true }
 
 # The auction pages' `eregi` criteria matching (BW-14-03-04) is POSIX
 # ERE; the regex crate covers the same common forms.
@@ -53,6 +62,14 @@ criterion = "0.8"
 # BW-11-03-01/02) is the acceptance reader for the written file
 # (BW-07-05-02/03: what the writer produces must parse back losslessly).
 client = { workspace = true }
+
+# OPT-12-01-01: the observation channels' cost baseline drives the Watcher
+# registry, the MessageLogger entry writer and the profiler global from
+# outside their own crates (test-only edges; message_logger is a member,
+# not a workspace dependency, so it takes the physics-style path edge).
+watcher = { workspace = true }
+profiler = { workspace = true }
+message_logger = { path = "../message_logger" }
 
 [[bench]]
 name = "tick"

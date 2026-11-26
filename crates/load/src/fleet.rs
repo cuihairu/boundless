@@ -61,7 +61,7 @@ impl ControllerRegistry {
         &self,
         kind: &str,
         data: &str,
-        speed: f32,
+        speed: &mut f32,
         start_pos: &mut foundation::math::vector::Vector3,
     ) -> Result<Option<Box<dyn MovementController>>, UnknownControllerType> {
         if kind == "None" {
@@ -518,7 +518,7 @@ mod tests {
         fn create(
             &self,
             _data: &str,
-            _speed: f32,
+            _speed: &mut f32,
             _start_pos: &mut Vector3,
         ) -> Option<Box<dyn MovementController>> {
             Some(Box::new(StubController))
@@ -797,11 +797,11 @@ mod tests {
 
         let mut pos = Vector3::new(0.0, 0.0, 0.0);
         assert!(matches!(
-            registry.create("None", "", 6.0, &mut pos),
+            registry.create("None", "", &mut 6.0, &mut pos),
             Ok(None)
         ));
-        assert!(registry.create("Ghost", "", 6.0, &mut pos).is_err());
-        assert!(registry.create("Stub", "", 6.0, &mut pos).is_ok());
+        assert!(registry.create("Ghost", "", &mut 6.0, &mut pos).is_err());
+        assert!(registry.create("Stub", "", &mut 6.0, &mut pos).is_ok());
     }
 
     /// client_app.cpp:387 — every added bot draws a speed in [6, 8) off

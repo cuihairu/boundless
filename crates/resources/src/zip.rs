@@ -461,6 +461,16 @@ pub struct ZipFileSystem {
 }
 
 impl ZipFileSystem {
+    /// An empty archive (end-of-central-directory record only) — the
+    /// bootstrap for building one from scratch, the reference's
+    /// `ZipSection::creator()`/`convertToZip` path.
+    pub fn empty_archive() -> Vec<u8> {
+        let mut out = Vec::with_capacity(22);
+        out.extend_from_slice(&DIR_FOOTER_SIGNATURE.to_le_bytes());
+        out.extend_from_slice(&[0u8; 18]);
+        out
+    }
+
     /// `openZip`: parse the central directory. `None` on any of the
     /// reference's fatal validation failures.
     pub fn open(path: &str, data: Vec<u8>) -> Option<ZipFileSystem> {

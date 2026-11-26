@@ -261,7 +261,7 @@ fn the_debug_output_names_the_backend() {
 #[test]
 fn backend_errors_map_to_the_contract() {
     with_fresh_db(|storage| {
-        let client = storage.client_mut();
+        let mut client = storage.client_mut();
         client
             .execute("CREATE TABLE probe_uq (name TEXT NOT NULL)", &[])
             .unwrap();

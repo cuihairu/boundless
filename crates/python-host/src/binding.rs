@@ -87,6 +87,13 @@ pub struct TypeSpec {
     /// construction refusal. An extra replaces the default slot of the same
     /// id, or is appended before the terminator.
     extra_slots: Vec<(c_int, *mut std::os::raw::c_void)>,
+    /// The type's base, for the types that stand on another one: the
+    /// `tp_base = &Super::s_type_` of the reference's `Py_Header` macro
+    /// (`pyobject_base.hpp:67`). `None` is the default `object` base.
+    base: Option<PyRef>,
+    /// The `Py_TPFLAGS_*` beyond the default: `Py_TPFLAGS_BASETYPE` is what
+    /// makes a type an acceptable base for a script `class` statement.
+    flags: std::os::raw::c_uint,
 }
 
 impl TypeSpec {
@@ -99,7 +106,27 @@ impl TypeSpec {
             sequence: None,
             instance_size: 0,
             extra_slots: Vec::new(),
+            base: None,
+            flags: 0,
         }
+    }
+
+    /// Mark the type subclassable: the `Py_TPFLAGS_BASETYPE` every
+    /// `Py_Header` type carries (`pyobject_base.hpp:59`), so a script
+    /// `class X(BigWorld.Entity)` is an acceptable base type.
+    #[must_use]
+    pub fn subclassable(mut self) -> Self {
+        self.flags |= capi::Py_TPFLAGS_BASETYPE;
+        self
+    }
+
+    /// Stand the type on another one this module created: the reference's
+    /// `Py_Header( Proxy, Base )` (`proxy.hpp:76`), whose macro body sets
+    /// `tp_base = &Super::s_type_` (`pyobject_base.hpp:67`).
+    #[must_use]
+    pub fn extends(mut self, base: &PyRef) -> Self {
+        self.base = Some(base.clone());
+        self
     }
 
     /// Add an attribute: `getter` is called for every read, and `setter` is
@@ -657,11 +684,22 @@ pub fn create_type(spec: &TypeSpec) -> Result<PyRef, BindError> {
             slot: capi::Py_tp_getset,
             pfunc: attributes.as_mut_ptr().cast(),
         },
-        capi::PyTypeSlot {
-            slot: 0,
-            pfunc: std::ptr::null_mut(),
-        },
     ];
+    // A declared base joins the table ahead of the terminator as its
+    // `Py_tp_base` slot: the reference's static `tp_base = &Super::s_type_`
+    // assignment (`pyobject_base.hpp:67`). The slot value is the base type
+    // object itself, which the registry keeps alive for the process. No
+    // slot entry at all is the default `object` base.
+    if let Some(base) = &spec.base {
+        slots.push(capi::PyTypeSlot {
+            slot: capi::Py_tp_base,
+            pfunc: base.as_ptr().cast(),
+        });
+    }
+    slots.push(capi::PyTypeSlot {
+        slot: 0,
+        pfunc: std::ptr::null_mut(),
+    });
     // The spec's extra slots replace the generic entry of the same id -- a
     // `Py_tp_new` here is the real constructor standing in for the refusal
     // -- or join the table ahead of the terminator.
@@ -688,7 +726,7 @@ pub fn create_type(spec: &TypeSpec) -> Result<PyRef, BindError> {
         basicsize: (std::mem::size_of::<capi::PyObject>() + spec.instance_size)
             as std::os::raw::c_int,
         itemsize: 0,
-        flags: 0,
+        flags: spec.flags,
         slots: slots.as_mut_ptr(),
     }));
 

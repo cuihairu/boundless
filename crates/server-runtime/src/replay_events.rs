@@ -42,7 +42,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::range_list::EntityId;
+use crate::range_list::NodeRef as EntityId;
 
 /// The `ReplayData` block types (`replay_data.hpp:16-27`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

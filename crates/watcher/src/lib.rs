@@ -1105,6 +1105,141 @@ impl Watcher for NoArgFuncCallableWatcher {
     }
 }
 
+/// `SimpleCallableWatcher::Function` (`watcher.hpp:2985-2990` shape): the
+/// `onCall` contract for a callable that takes parameters -- fill the
+/// stdio `output` and the return `value` from the parameter count and the
+/// still-encoded parameter stream, `false` when the call fails.
+pub type SimpleFunc =
+    Box<dyn FnMut(&mut String, &mut String, i32, &mut stream::MemoryIStream) -> bool>;
+
+/// `SimpleCallableWatcher` (`watcher.cpp:968-1062`): a callable backed by
+/// a function that consumes the declared parameters. The protocol 2 face
+/// decodes the argument tuple, runs the function and answers with the
+/// `(stdio output, returnValue)` tuple the caller sees.
+pub struct SimpleCallableWatcher {
+    callable: CallableWatcher,
+    func: SimpleFunc,
+}
+
+impl SimpleCallableWatcher {
+    /// The reference constructor (`watcher.cpp:973-987`); declare the
+    /// parameters through
+    /// [`CallableWatcher::add_arg`](CallableWatcher::add_arg).
+    pub fn new(func: SimpleFunc, hint: ExposeHint) -> Self {
+        Self {
+            callable: CallableWatcher::new(hint),
+            func,
+        }
+    }
+
+    /// The declared-parameter face, for `addArg` and the comment.
+    pub fn callable_mut(&mut self) -> &mut CallableWatcher {
+        &mut self.callable
+    }
+
+    /// `SimpleCallableWatcher::onCall` (`watcher.cpp:1070-1090` shape):
+    /// run the function with the parameter count and the argument stream.
+    pub fn on_call(
+        &mut self,
+        output: &mut String,
+        value: &mut String,
+        parameter_count: i32,
+        parameters: &mut stream::MemoryIStream,
+    ) -> bool {
+        (self.func)(output, value, parameter_count, parameters)
+    }
+
+    /// `SimpleCallableWatcher::setFromStream` (`watcher.cpp:989-1062`):
+    /// decode the tuple header, run the function, and answer with the
+    /// `(stdio output, returnValue)` result tuple.
+    pub fn set_from_stream(&mut self, path: &str, request: &mut WatcherPathRequestV2) -> bool {
+        if !path.is_empty() || !request.has_value_stream() {
+            // ERROR_MSG: function watcher called with bad path or stream.
+            return false;
+        }
+
+        let mut output = String::new();
+        let mut value = String::from("No value");
+
+        {
+            let data = request.value_data().expect("checked value stream");
+            let mut input = stream::MemoryIStream::new(data);
+
+            let type_byte = input.read_u8();
+            let size = input.read_packed_int();
+            let remaining = input.remaining_length();
+            let parameter_count = input.read_packed_int();
+
+            if input.error() || remaining < size as usize {
+                // ERROR_MSG: called with insufficient data.
+                input.finish();
+                return false;
+            }
+
+            if type_byte != stream::TYPE_TUPLE {
+                // ERROR_MSG: called with non-tuple data as argument list.
+                input.finish();
+                return false;
+            }
+
+            if !self.on_call(&mut output, &mut value, parameter_count, &mut input) {
+                // WARNING_MSG: function call failed.
+                input.finish();
+                return false;
+            }
+
+            if input.remaining_length() != 0 {
+                // WARNING_MSG: the call did not read all argument data.
+                input.finish();
+            }
+        }
+
+        let value_size = value.len();
+        self.callable
+            .start_result_stream(request, &output, value_size);
+        stream::value_to_stream(
+            request.result_mut(),
+            &stream::StreamValue::Str(value),
+            stream::MODE_READ_ONLY,
+        );
+        self.callable.end_result_stream(request);
+
+        true
+    }
+}
+
+impl Watcher for SimpleCallableWatcher {
+    fn get_as_string(
+        &self,
+        path: &str,
+        result: &mut String,
+        desc: &mut String,
+        mode: &mut Mode,
+    ) -> bool {
+        self.callable.get_as_string(path, result, desc, mode)
+    }
+
+    fn set_from_string(&mut self, path: &str, value: &str) -> bool {
+        self.callable.set_from_string(path, value)
+    }
+
+    fn get_as_stream(&self, path: &str, request: &mut WatcherPathRequestV2) -> bool {
+        self.callable.get_as_stream(path, request)
+    }
+
+    fn set_from_stream(&mut self, path: &str, request: &mut WatcherPathRequestV2) -> bool {
+        SimpleCallableWatcher::set_from_stream(self, path, request)
+    }
+
+    fn comment(&self) -> &str {
+        &self.callable.comment
+    }
+
+    fn set_comment(&mut self, comment: String) {
+        self.callable.set_comment(comment);
+    }
+}
+
 /// `DirectoryWatcher` (`watcher.cpp:115-544`): the tree node. Children are
 /// kept sorted by label -- the reference builds with `SORTED_WATCHERS`
 /// (`watcher.cpp:96`).
@@ -2428,6 +2563,170 @@ mod tests {
         let _seq = input.read_u32();
         assert_eq!(input.read_u8(), TYPE_TUPLE);
         assert_eq!(input.read_u8(), MODE_READ_ONLY);
+    }
+
+    /// `SimpleCallableWatcher::setFromStream` (`watcher.cpp:989-1062`):
+    /// the tuple call decodes the argument and answers with the
+    /// `(stdio output, returnValue)` tuple.
+    #[test]
+    fn the_simple_callable_runs_a_tuple_call() {
+        fini();
+        let cb: Rc<RefCell<dyn Watcher>> = Rc::new(RefCell::new({
+            let mut callable = SimpleCallableWatcher::new(
+                Box::new(|output, value, parameter_count, parameters| {
+                    if parameter_count != 1 {
+                        return false;
+                    }
+                    let Some(n) = stream_to_value::<i32>(parameters) else {
+                        return false;
+                    };
+                    output.push_str("ran");
+                    *value = format!("{n}");
+                    true
+                }),
+                ExposeHint::LocalOnly,
+            );
+            callable.callable_mut().add_arg(DataType::Int, "The number");
+            callable
+        }));
+        cb.borrow_mut()
+            .set_comment("double the bot count".to_string());
+        add_watcher("scb", Rc::clone(&cb));
+
+        // args = one typed INT element; the tuple header packs the args'
+        // size and the parameter count ahead of them.
+        let mut args = MemoryOStream::new();
+        value_to_stream(&mut args, &StreamValue::Int(5), MODE_READ_ONLY);
+        let mut payload = MemoryOStream::new();
+        payload.write_u8(TYPE_TUPLE);
+        payload.write_packed_int(args.size() as i32);
+        payload.write_packed_int(1);
+        payload.add_blob(args.data());
+
+        let mut request = WatcherPathRequestV2::new("scb");
+        request.set_sequence_number(7);
+        request.set_packet_data(payload.data().to_vec());
+        assert!(request.set_watcher_value());
+
+        // The reply: the (stdio output, returnValue) tuple -- "ran" then
+        // the string form of the argument.
+        let mut expected = MemoryOStream::new();
+        expected.write_u32(7);
+        expected.write_u8(TYPE_TUPLE);
+        expected.write_u8(MODE_READ_ONLY);
+        let mut body = MemoryOStream::new();
+        body.write_packed_int(2);
+        value_to_stream(
+            &mut body,
+            &StreamValue::Str("ran".to_string()),
+            MODE_READ_ONLY,
+        );
+        value_to_stream(
+            &mut body,
+            &StreamValue::Str("5".to_string()),
+            MODE_READ_ONLY,
+        );
+        expected.write_packed_int(body.size() as i32);
+        // start_result_stream already writes the tuple count (output +
+        // returnValue) right after the size placeholder.
+        expected.add_blob(body.data());
+        // A completed set request closes with the status boolean.
+        expected.write_bool(true);
+        assert_eq!(request.data(), expected.data());
+    }
+
+    /// The `SimpleCallableWatcher` refusals (`watcher.cpp:994-1049`): a
+    /// child path or missing payload, a truncated tuple header, a
+    /// non-tuple argument list and a failing function all answer no.
+    #[test]
+    fn the_simple_callable_refuses_bad_shapes() {
+        fini();
+        add_watcher(
+            "scb",
+            Rc::new(RefCell::new(SimpleCallableWatcher::new(
+                Box::new(|_output, _value, _count, _parameters| true),
+                ExposeHint::LocalOnly,
+            ))),
+        );
+
+        // A child path falls out of the empty-path guard.
+        let mut request = WatcherPathRequestV2::new("scb/deeper");
+        request.set_packet_data(vec![TYPE_TUPLE, 0, 0]);
+        assert!(request.set_watcher_value());
+
+        // A truncated tuple header: the packed size read errors out.
+        let mut request = WatcherPathRequestV2::new("scb");
+        request.set_packet_data(vec![TYPE_TUPLE, 0xff]);
+        assert!(request.set_watcher_value());
+
+        // A non-tuple argument list is refused.
+        let mut request = WatcherPathRequestV2::new("scb");
+        request.set_packet_data(vec![TYPE_INT, MODE_READ_ONLY, 4, 1, 0, 0, 0]);
+        assert!(request.set_watcher_value());
+
+        // A failing function answers the failed-call shape.
+        add_watcher(
+            "bad",
+            Rc::new(RefCell::new(SimpleCallableWatcher::new(
+                Box::new(|_output, _value, _count, _parameters| false),
+                ExposeHint::LocalOnly,
+            ))),
+        );
+        let mut args = MemoryOStream::new();
+        value_to_stream(&mut args, &StreamValue::Int(5), MODE_READ_ONLY);
+        let mut payload = MemoryOStream::new();
+        payload.write_u8(TYPE_TUPLE);
+        payload.write_packed_int(args.size() as i32);
+        payload.write_packed_int(1);
+        payload.add_blob(args.data());
+        let mut request = WatcherPathRequestV2::new("bad");
+        request.set_packet_data(payload.data().to_vec());
+        assert!(request.set_watcher_value());
+    }
+
+    /// An unread argument is a warning, not a failure -- the call
+    /// succeeds and the leftover data is drained
+    /// (`watcher.cpp:1040-1045`).
+    #[test]
+    fn the_simple_callable_tolerates_unread_arguments() {
+        fini();
+        add_watcher(
+            "ign",
+            Rc::new(RefCell::new(SimpleCallableWatcher::new(
+                Box::new(|output, value, _count, _parameters| {
+                    output.push_str("done");
+                    *value = "ok".to_string();
+                    true
+                }),
+                ExposeHint::LocalOnly,
+            ))),
+        );
+
+        let mut args = MemoryOStream::new();
+        value_to_stream(&mut args, &StreamValue::Int(5), MODE_READ_ONLY);
+        let mut payload = MemoryOStream::new();
+        payload.write_u8(TYPE_TUPLE);
+        payload.write_packed_int(args.size() as i32);
+        payload.write_packed_int(1);
+        payload.add_blob(args.data());
+
+        let mut request = WatcherPathRequestV2::new("ign");
+        request.set_sequence_number(1);
+        request.set_packet_data(payload.data().to_vec());
+        assert!(request.set_watcher_value());
+
+        // The reply carries the untouched default "ok" value.
+        let mut input = MemoryIStream::new(request.data());
+        let _seq = input.read_u32();
+        assert_eq!(input.read_u8(), TYPE_TUPLE);
+        assert_eq!(input.read_u8(), MODE_READ_ONLY);
+        let _size = input.read_packed_int();
+        assert_eq!(input.read_packed_int(), 2);
+        let _output = stream_to_value::<String>(&mut input);
+        assert_eq!(
+            stream_to_value::<String>(&mut input),
+            Some("ok".to_string())
+        );
     }
 
     /// A directory answers its own comment on `__doc__`.

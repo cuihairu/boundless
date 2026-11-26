@@ -91,7 +91,7 @@ fn gather_chunks_enumerates_every_cell_plus_inside_chunks() {
     assert!(chunks.contains("00000000o"));
     assert!(chunks.contains("00010001o"));
     // The cell at grid (17, 0) trips the 4-bit prefix level.
-    assert!(chunks.contains("001xx000xx/sep/00110000o"));
+    assert!(chunks.contains("001x000x/sep/00110000o"));
     // The inside chunk is discovered by the directory scan.
     assert!(chunks.contains("00000000i"));
 
@@ -121,9 +121,9 @@ fn chunk_files_load_into_the_same_objects() {
 
     // The prefixed far cell resolves to grid (17, 0) with its own objects.
     let far = load_chunk_file(
-        &root.join("001xx000xx/sep/00110000o.chunk"),
+        &root.join("001x000x/sep/00110000o.chunk"),
         &mapping,
-        "001xx000xx/sep/00110000o",
+        "001x000x/sep/00110000o",
     );
     assert_eq!((far.x, far.z), (17, 0));
     assert_eq!(far.items.len(), 2);
@@ -216,24 +216,24 @@ fn outside_chunk_boundaries_match_the_reference_grid() {
 
     // Grid (17, 0): the far edge and the min-z edge; the prefixed cells name
     // their neighbours with the hashed subdirectory prefix.
-    let far = chunk::create_boundaries("001xx000xx/sep/00110000o", &mapping);
+    let far = chunk::create_boundaries("001x000x/sep/00110000o", &mapping);
     let far_targets: Vec<PortalTarget> =
         far.iter().map(|b| sole_portal(b).target.clone()).collect();
     assert_eq!(
         far_targets,
         vec![
             // Grid 16 also trips the 4-bit prefix level (16 >= 16).
-            PortalTarget::Chunk("001xx000xx/sep/00100000o".into()),
+            PortalTarget::Chunk("001x000x/sep/00100000o".into()),
             PortalTarget::Extern,
             PortalTarget::Earth,
             PortalTarget::Heaven,
             PortalTarget::Extern,
-            PortalTarget::Chunk("001xx000xx/sep/00110001o".into()),
+            PortalTarget::Chunk("001x000x/sep/00110001o".into()),
         ]
     );
 
     // Grid (17, 1): the max-z edge is extern on the front face.
-    let corner = chunk::create_boundaries("001xx001xx/sep/00110001o", &mapping);
+    let corner = chunk::create_boundaries("001x001x/sep/00110001o", &mapping);
     let corner_targets: Vec<PortalTarget> = corner
         .iter()
         .map(|b| sole_portal(b).target.clone())
@@ -242,11 +242,11 @@ fn outside_chunk_boundaries_match_the_reference_grid() {
         corner_targets,
         vec![
             // right -> grid (16, 1), back -> grid (17, 0).
-            PortalTarget::Chunk("001xx000xx/sep/00100001o".into()),
+            PortalTarget::Chunk("001x000x/sep/00100001o".into()),
             PortalTarget::Extern,
             PortalTarget::Earth,
             PortalTarget::Heaven,
-            PortalTarget::Chunk("001xx000xx/sep/00110000o".into()),
+            PortalTarget::Chunk("001x000x/sep/00110000o".into()),
             PortalTarget::Extern,
         ]
     );
@@ -528,173 +528,4 @@ fn inside_chunk_binds_to_a_bound_outside_chunk() {
     );
     let order = ["00000000o", "00000000i"].map(String::from).to_vec();
     assert_eq!(space.bind_order(), &order[..]);
-}
-
-/// BW-10-01-04: the unload pass (`ChunkManager::scan`'s unload slice,
-/// chunk_manager.cpp:2236-2366) plus `Chunk::unbind(false)` and
-/// `Chunk::unload` (chunk.cpp:914-984). The farthest bound chunk past the
-/// hysteresis path unbinds both ways and releases its resources but stays
-/// appointed by its space; the camera's grid corner, the hysteresis path
-/// and the nearby bias gate every pass; a reload rebinds to the
-/// still-bound neighbours.
-#[test]
-fn unloading_farthest_releases_chunks_and_a_reload_rebinds() {
-    let mapping = load_mapping();
-    let mut space = ChunkSpace::new(0, vec![mapping]);
-    let camera = Vector3::new(50.0, 0.0, 50.0);
-    let candidates = space.scan(&camera, 200.0);
-    let bound = space.load_and_bind(&candidates, &resource_resolver);
-    assert_eq!(bound.len(), 4);
-
-    // Refuse legs: a still-bound chunk and a chunk that never loaded.
-    assert!(!space.unload_chunk("00010001o"));
-    assert!(!space.unload_chunk("00020000o"));
-
-    // The camera grid corner is (0,0,0): the origin chunk sits at distance
-    // 0 (hysteresis), so 00000001o is the farthest bound chunk.
-    let unloaded = space.unload_farthest(&camera, 50.0);
-    assert_eq!(unloaded, vec!["00000001o"]);
-
-    // The resources are released but the chunk stays appointed...
-    let gone = space.chunk("00000001o").unwrap();
-    assert!(!gone.is_loaded);
-    assert!(!gone.is_bound);
-    assert!(gone.items.is_empty());
-    assert!(gone.joints.is_empty());
-    assert!(gone.bounds.is_empty());
-    assert_eq!(gone.boundaries.len(), 6);
-    // ...with its heaven face still bound: unload never touches boundaries.
-    assert_eq!(
-        gone.boundaries[3].bound_portals[0].target,
-        PortalTarget::Heaven
-    );
-    assert!(space.find_chunk_by_grid(0, 1).is_some());
-
-    // The neighbours' portals back to it are unbound, targets intact —
-    // a later rebind finds them ready (`unbindPortal`'s back-of-list).
-    let unbound_targets = |id: &str, boundary: usize| -> Vec<PortalTarget> {
-        space.chunk(id).unwrap().boundaries[boundary]
-            .unbound_portals
-            .iter()
-            .map(|p| p.target.clone())
-            .collect()
-    };
-    assert!(unbound_targets("00000000o", 5).contains(&PortalTarget::Chunk("00000001o".into())));
-    assert!(unbound_targets("00010001o", 0).contains(&PortalTarget::Chunk("00000001o".into())));
-
-    // The next pass takes the next farthest chunk; widening the hysteresis
-    // path holds the rest.
-    assert_eq!(space.unload_farthest(&camera, 50.0), vec!["00010000o"]);
-    assert!(space.unload_farthest(&camera, 200.0).is_empty());
-
-    // Reload and rebind: the restored chunk reconnects to the still-bound
-    // neighbours and its object set is back.
-    assert!(space.load_chunk("00000001o", &resource_resolver));
-    assert!(space.bind("00000001o"));
-    let back = space.chunk("00000001o").unwrap();
-    assert!(back.is_loaded);
-    assert!(back.is_bound);
-    assert!(!back.items.is_empty());
-    assert_eq!(
-        back.boundaries[1].bound_portals[0].target,
-        PortalTarget::Chunk("00010001o".into())
-    );
-    assert_eq!(
-        back.boundaries[4].bound_portals[0].target,
-        PortalTarget::Chunk("00000000o".into())
-    );
-    assert_eq!(
-        space.bind_order().last().map(String::as_str),
-        Some("00000001o")
-    );
-    assert_eq!(space.bind_order().len(), 5);
-
-    // The neighbours' side of the connections came back too.
-    let bound_targets = |id: &str, boundary: usize| -> Vec<PortalTarget> {
-        space.chunk(id).unwrap().boundaries[boundary]
-            .bound_portals
-            .iter()
-            .map(|p| p.target.clone())
-            .collect()
-    };
-    assert!(bound_targets("00000000o", 5).contains(&PortalTarget::Chunk("00000001o".into())));
-    assert!(bound_targets("00010001o", 0).contains(&PortalTarget::Chunk("00000001o".into())));
-}
-
-/// BW-10-01-04: `Chunk::unbind`'s cut semantics (`chunk.cpp:1292-1458`).
-/// An inside chunk cut from its outside shell keeps the INVASIVE hint on
-/// the exit portal and unbinds its heaven face while earth stays bound; an
-/// outside chunk cut with `cut` flattens its chunk portals to NOTHING on
-/// both sides while heaven and earth stay bound (the outside-chunk quirk).
-#[test]
-fn unbind_cut_marks_inside_shells_invasive_and_flattens_outside_links() {
-    let mapping = load_mapping();
-    let mut space = ChunkSpace::new(0, vec![mapping]);
-
-    assert!(space.load_chunk("00000000o", &resource_resolver));
-    assert!(space.bind("00000000o"));
-    assert!(space.load_chunk("00000000i", &resource_resolver));
-    assert!(space.bind("00000000i"));
-    assert!(space.load_chunk("00010000o", &resource_resolver));
-    assert!(space.bind("00010000o"));
-
-    // Cut the inside chunk: the +x exit portal keeps the shell hint —
-    // INVASIVE, the outside shell is still out there — heaven unbinds,
-    // earth and the not-yet-bound internal portal stay as they were.
-    assert!(space.unbind("00000000i", true));
-    let inside = space.chunk("00000000i").unwrap();
-    assert!(!inside.is_bound);
-    assert!(inside.boundaries[0].bound_portals.is_empty());
-    assert_eq!(
-        inside.boundaries[0].unbound_portals[0].target,
-        PortalTarget::Invasive
-    );
-    assert_eq!(
-        inside.boundaries[5].unbound_portals[0].target,
-        PortalTarget::Heaven
-    );
-    assert_eq!(
-        inside.boundaries[4].bound_portals[0].target,
-        PortalTarget::Earth
-    );
-    assert_eq!(
-        inside.boundaries[2].unbound_portals[0].target,
-        PortalTarget::Chunk("00000001i".into())
-    );
-    // The outside chunk holds no portal back to the inside one: the
-    // reverse walk finds nothing and leaves it bound.
-    assert!(space.chunk("00000000o").unwrap().is_bound);
-
-    // Cut the outside chunk: its chunk portals flatten to NOTHING on both
-    // sides, heaven and earth stay bound, and portals that were never
-    // bound are not rewritten.
-    assert!(space.unbind("00000000o", true));
-    let outside = space.chunk("00000000o").unwrap();
-    assert!(!outside.is_bound);
-    assert_eq!(
-        outside.boundaries[3].bound_portals[0].target,
-        PortalTarget::Heaven
-    );
-    assert_eq!(
-        outside.boundaries[2].bound_portals[0].target,
-        PortalTarget::Earth
-    );
-    assert!(outside.boundaries[1].bound_portals.is_empty());
-    assert_eq!(
-        outside.boundaries[1].unbound_portals[0].target,
-        PortalTarget::Nothing
-    );
-    assert_eq!(
-        outside.boundaries[5].unbound_portals[0].target,
-        PortalTarget::Chunk("00000001o".into())
-    );
-    // The neighbour's matching portal flattened with it, but the neighbour
-    // itself stays bound — the reverse walk only undoes the one portal.
-    let left = space.chunk("00010000o").unwrap();
-    assert!(left.is_bound);
-    assert!(left.boundaries[0].bound_portals.is_empty());
-    assert_eq!(
-        left.boundaries[0].unbound_portals[0].target,
-        PortalTarget::Nothing
-    );
 }

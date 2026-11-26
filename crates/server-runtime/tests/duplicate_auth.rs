@@ -29,12 +29,12 @@
 use server_runtime::billing::{
     AccountResolution, BillingConfig, DatabaseID, EntityKey, EntityTypeID,
 };
-use server_runtime::billing::{LogonMapBillingSystem, INVALID_ENTITY_TYPE_ID};
+use server_runtime::billing::{INVALID_ENTITY_TYPE_ID, LogonMapBillingSystem};
 use server_runtime::billing_creator::BillingSystem;
 use server_runtime::log_on_records::{LogOffOutcome, LogOnRecords};
 use server_runtime::login_entity::BaseMailbox;
 use server_runtime::loginapp::LogOnStatus;
-use server_runtime::relogon::{on_duplicate_login, DuplicateLoginOutcome};
+use server_runtime::relogon::{DuplicateLoginOutcome, on_duplicate_login};
 
 const ACCOUNT_TYPE: EntityTypeID = 3;
 const ACCOUNT_DBID: DatabaseID = 42;

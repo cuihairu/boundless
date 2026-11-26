@@ -343,7 +343,7 @@ impl Channel {
 
     /// The local transform this channel produces at `frame`, or `None` for
     /// channel kinds that carry no pose.
-    fn result(&self, frame: f32) -> Option<Matrix> {
+    pub fn result(&self, frame: f32) -> Option<Matrix> {
         match self {
             Channel::Discrete { keys, .. } => {
                 if keys.is_empty() {
@@ -456,6 +456,13 @@ impl Animation {
     /// would bind to nodes, in file order.
     pub fn channels(&self) -> &[Channel] {
         &self.channels
+    }
+
+    /// `AnimationInfo::restoreChannels`' write face
+    /// (`mutant_animations.cpp:112-128`): the editor swaps the channel list
+    /// back in after its blend-restore scratch has been applied.
+    pub fn set_channels(&mut self, channels: Vec<Channel>) {
+        self.channels = channels;
     }
 
     /// Bind each channel to a skeleton node index by identifier, mirroring

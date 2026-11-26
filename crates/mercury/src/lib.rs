@@ -19,7 +19,6 @@ pub mod interface_element;
 pub mod interface_minder;
 pub mod interface_table;
 pub mod interfaces;
-pub mod message_filter;
 pub mod message_framing;
 pub mod misc;
 #[cfg(target_os = "linux")]
@@ -40,8 +39,6 @@ pub mod packet_sender;
 #[cfg(target_os = "linux")]
 pub mod poller;
 
-pub mod rate_limit_config;
-pub mod rate_limit_message_filter;
 pub mod rate_limiter;
 pub mod reply_order;
 pub mod request;

@@ -13,6 +13,7 @@ members = [
     "crates/terrain",
     "crates/physics",
     "crates/waypoint",
+    "crates/waypoint-gen",
     "crates/db",
     "crates/db-postgres",
     "crates/python-host",
@@ -22,11 +23,13 @@ members = [
     "crates/asset-pipeline",
     "crates/python-module",
     "crates/plugin-host",
+    "crates/launcher",
     "crates/watcher",
     "crates/message_logger",
     "crates/profiler",
     "crates/client",
     "crates/load",
+    "apps/bots",
     "apps/server",
 ]
 
@@ -58,29 +61,40 @@ serde_json = "1"
 # Internal crates, dependency direction: apps -> role runtimes -> contracts &
 # domain libs -> foundation (BW-16-01).
 foundation = { path = "crates/foundation" }
+load = { path = "crates/load" }
 platform = { path = "crates/platform" }
 resources = { path = "crates/resources" }
+watcher = { path = "crates/watcher" }
 mercury = { path = "crates/mercury" }
 contracts = { path = "crates/contracts" }
 entitydef = { path = "crates/entitydef" }
 db = { path = "crates/db" }
 db-postgres = { path = "crates/db-postgres" }
 scene = { path = "crates/scene" }
-# chunk = { path = "crates/chunk" }  # re-add when a role runtime consumes it
+# The chunk space faces: the client's findDropPoint / navigatePathPoints
+# query faces run the obstacle sweep and the waypoint walk over it;
+# test-support's unified-resource-entry proof (BW-16-04-02) drives the
+# editor family's space publishing through the same BwResource the tool
+# and app faces take.
+chunk = { path = "crates/chunk" }
+# The collision faces (world triangles, BSP trees, portal pass-through,
+# quad trees); the chunk space obstacle sweep is the first consumer.
+physics = { path = "crates/physics" }
 python-host = { path = "crates/python-host" }
-# The watcher path tree (BW-12-01); load's bots command callables are its
-# first consumer (BW-17-01-06).
-watcher = { path = "crates/watcher" }
 # The profiler frame and counter compatibility layer (BW-12-03-01); the
 # `_bw_profile` module (BW-12-03-02) records through its `g_profiler`
 # global.
 profiler = { path = "crates/profiler" }
 server-runtime = { path = "crates/server-runtime" }
+# The waypoint navigation mesh reader/search (BW-10-04/05); server-runtime's
+# MeshNavigator (BW-10-06-01) is the first runtime consumer.
+waypoint = { path = "crates/waypoint" }
 client = { path = "crates/client" }  # replay_write round-trips through its reader (BW-07-05-02)
-load = { path = "crates/load" }
 # test-support = { path = "crates/test-support" }  # re-add with first consumer
 asset-pipeline = { path = "crates/asset-pipeline" }
+terrain = { path = "crates/terrain" }
 # plugin-host = { path = "crates/plugin-host" }  # re-add with first consumer
+# launcher = { path = "crates/launcher" }  # re-add with first consumer
 
 [profile.release]
 opt-level = 3

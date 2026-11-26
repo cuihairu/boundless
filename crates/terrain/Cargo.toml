@@ -13,3 +13,6 @@ repository.workspace = true
 flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
 # PNG chunk CRCs.
 crc32fast = "1.5.5"
+# The editor block face saves through the zip/BinSection faces and writes
+# the chunk terrain item section (`editor_chunk_terrain.cpp`).
+resources = { path = "../resources" }

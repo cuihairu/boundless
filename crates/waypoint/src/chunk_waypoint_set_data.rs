@@ -9,10 +9,14 @@
 //! truncation instead (the same registered divergence as the physics BSP
 //! decode).
 
+use super::chunk_bind::NeighbourEdge;
 use super::chunk_waypoint::{ChunkWaypoint, ChunkWaypointVertexProvider, Edge};
+use super::chunk_waypoint_set::{EdgeLabel, Portal};
 use super::{EdgeIndex, WaypointIndex};
-use foundation::math::{Vector2, Vector3};
-use std::collections::HashMap;
+use foundation::math::{BoundBox, Vector2, Vector3};
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, HashMap};
+use std::rc::Rc;
 
 /// `NAVPOLY_ELEMENT_SIZE` (`chunk_waypoint_set_data.cpp:437-438`):
 /// `sizeof(float) + sizeof(float) + sizeof(int32)`.
@@ -123,8 +127,18 @@ impl ChunkWaypointVertexProvider for VertexIndices {
     }
 }
 
+/// `ChunkWaypointConns` (`chunk_waypoint_set.hpp`): the neighbouring set
+/// and the portal the connection was made through, keyed by the set
+/// address (the reference's pointer-ordered `BW::map`).
+pub(crate) type ChunkWaypointConns = BTreeMap<usize, (Rc<ChunkWaypointSetData>, Rc<Portal>)>;
+
 /// `ChunkWaypointSetData` (`chunk_waypoint_set_data.hpp:39-69`): the data
-/// read in from a waypoint set, possibly shared between chunks.
+/// read in from a waypoint set, possibly shared between chunks. The
+/// runtime connection face the reference keeps on the wrapping
+/// `ChunkWaypointSet` (`connections_`/`edgeLabels_`/`backlinks_`, plus the
+/// mounted chunk identity) lands here as `RefCell` fields — see
+/// `chunk_waypoint_set.rs` for the semantics and the registered
+/// container-model boundaries.
 #[derive(Debug, Default)]
 pub struct ChunkWaypointSetData {
     /// `girth_`.
@@ -140,6 +154,24 @@ pub struct ChunkWaypointSetData {
     base_index: WaypointIndex,
     /// `vertices_`.
     vertices: Vec<Vector2>,
+    /// `ChunkWaypointSet::connections_`.
+    pub(crate) connections: RefCell<ChunkWaypointConns>,
+    /// `ChunkWaypointSet::edgeLabels_`: the per-edge labels `connect`
+    /// recorded, keyed by absolute edge index (ascending iteration).
+    pub(crate) edge_labels: RefCell<BTreeMap<EdgeIndex, EdgeLabel>>,
+    /// `ChunkWaypointSet::backlinks_`.
+    pub(crate) backlinks: RefCell<Vec<Rc<ChunkWaypointSetData>>>,
+    /// The mounted chunk identity (`ChunkWaypointSet::chunk()`).
+    pub(crate) chunk_id: Cell<Option<usize>>,
+    /// `Chunk::isOutsideChunk` of the mounted chunk.
+    pub(crate) outside_chunk: Cell<bool>,
+    /// `ChunkWaypointSet::neighbourEdges_`: the constructor's another-chunk
+    /// edge collection (see `chunk_bind.rs`).
+    pub(crate) neighbour_edges: RefCell<BTreeMap<EdgeIndex, NeighbourEdge>>,
+    /// The mounted chunk's `boundingBox()` — the seam `ChunkWaypoint::clip`'s
+    /// out-of-chunk fallback reads through `pChunk` (`chunk_waypoint.cpp:283`).
+    /// Unset (the search-lane shape) keeps that arm off.
+    pub(crate) chunk_bounding_box: RefCell<Option<BoundBox>>,
 }
 
 impl ChunkWaypointSetData {
@@ -160,6 +192,19 @@ impl ChunkWaypointSetData {
     /// `girth(girth)` (`chunk_waypoint_set_data.hpp:56-57`).
     pub fn set_girth(&mut self, girth: f32) {
         self.girth = girth;
+    }
+
+    /// Mounts the owning chunk's bounding box — the part of the
+    /// `ChunkWaypointSet(pChunk, ...)` constructor the clip fallback needs
+    /// (`chunk()` → `boundingBox()`). Interior, so the bind harness can
+    /// mount it on a shared set.
+    pub fn set_chunk_bounding_box(&self, bb: BoundBox) {
+        *self.chunk_bounding_box.borrow_mut() = Some(bb);
+    }
+
+    /// The mounted chunk's bounding box, when the harness mounted one.
+    pub fn chunk_bounding_box(&self) -> Option<BoundBox> {
+        *self.chunk_bounding_box.borrow()
     }
 
     /// `waypoints()` (`chunk_waypoint_set_data.hpp:62-63`).
@@ -221,8 +266,9 @@ impl ChunkWaypointSetData {
     /// polygon, its height clamped into the min/max band.
     pub fn find_closest(&self, point: Vector3, best_distance_squared: &mut f32) -> WaypointIndex {
         let mut best_waypoint = -1;
+        let chunk_bb = self.chunk_bounding_box();
         for (i, wp) in self.waypoints.iter().enumerate() {
-            let distance_squared = wp.distance_squared(&self.edges, self, point);
+            let distance_squared = wp.distance_squared(&self.edges, self, chunk_bb.as_ref(), point);
             if *best_distance_squared > distance_squared {
                 *best_distance_squared = distance_squared;
                 best_waypoint = i as WaypointIndex;
