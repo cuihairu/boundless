@@ -46,6 +46,7 @@ pub mod ghost_routing;
 pub mod ghost_snapshot;
 pub mod global_bases;
 pub mod headless_client;
+pub mod lifecycle_scenario;
 pub mod load_throttle;
 pub mod log_on_records;
 pub mod login_challenge;

@@ -1,0 +1,7 @@
+interrupt1_us	680
+interrupt1_iterations	1
+preset_iterations	1
+rearm1_us	112
+rearm2_us	46
+budget_iterations	5
+host	linux-x86_64
