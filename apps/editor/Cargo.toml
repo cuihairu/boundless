@@ -1,0 +1,24 @@
+[package]
+name = "boundless-editor"
+description = "BW-15-02-03 Linux editor leg: edit the fixed map through the WorldEditor save path"
+edition.workspace = true
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The WorldEditor faces the edit drives: the chunk load/binding, the
+# editor chunk cache's edSave and the resource file system it writes
+# through.
+chunk = { workspace = true }
+foundation = { workspace = true }
+resources = { workspace = true }
+
+[lib]
+name = "boundless_editor"
+path = "src/lib.rs"
+
+[[bin]]
+name = "boundless-editor"
+path = "src/main.rs"
