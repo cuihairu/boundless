@@ -2954,9 +2954,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
 
-- [ ] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。
-- [ ] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。
-- [ ] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。
+- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。(2026-11-26 跨席复测勾：他席 main 交付 38b99db(profiler/tests/long_stability_collection.rs+fixtures/long-stability/long-stability.tsv+docs/review/opt-23-01-01-long-stability-collection.md) 已 cherry-pick 入本树 5bb641c 并复跑绿，profiler 门禁 43 lib+集成全绿)
+- [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。(2026-11-26 跨席复测勾：他席 main 交付 2a26627(profiler/tests/buffer_export_evaluation.rs+fixtures/buffer-export/+docs/review/opt-23-01-02-buffer-export.md) 已 cherry-pick 入本树 98bec50 并复跑绿)
+- [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。(2026-11-26 跨席复测勾：他席 main 交付 0ee4b28(profiler/tests/collection_integrity_regression.rs+fixtures/collection-regression/+docs/review/opt-23-01-03-collection-integrity.md) 已 cherry-pick 入本树 28c1da9 并复跑绿)
 
 ### OPT-26-01 固定事件回放并采集查询基线
 
@@ -4535,9 +4535,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
 
-- [ ] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。
-- [ ] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。
-- [ ] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。
+- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。(2026-11-26 跨席复测勾：他席 main 交付 38b99db(profiler/tests/long_stability_collection.rs+fixtures/long-stability/long-stability.tsv+docs/review/opt-23-01-01-long-stability-collection.md) 已 cherry-pick 入本树 5bb641c 并复跑绿，profiler 门禁 43 lib+集成全绿)
+- [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。(2026-11-26 跨席复测勾：他席 main 交付 2a26627(profiler/tests/buffer_export_evaluation.rs+fixtures/buffer-export/+docs/review/opt-23-01-02-buffer-export.md) 已 cherry-pick 入本树 98bec50 并复跑绿)
+- [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。(2026-11-26 跨席复测勾：他席 main 交付 0ee4b28(profiler/tests/collection_integrity_regression.rs+fixtures/collection-regression/+docs/review/opt-23-01-03-collection-integrity.md) 已 cherry-pick 入本树 28c1da9 并复跑绿)
 
 ### OPT-26-01 固定事件回放并采集查询基线
 
@@ -6077,9 +6077,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
 
-- [ ] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。
-- [ ] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。
-- [ ] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。
+- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。(2026-11-26 跨席复测勾：他席 main 交付 38b99db(profiler/tests/long_stability_collection.rs+fixtures/long-stability/long-stability.tsv+docs/review/opt-23-01-01-long-stability-collection.md) 已 cherry-pick 入本树 5bb641c 并复跑绿，profiler 门禁 43 lib+集成全绿)
+- [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。(2026-11-26 跨席复测勾：他席 main 交付 2a26627(profiler/tests/buffer_export_evaluation.rs+fixtures/buffer-export/+docs/review/opt-23-01-02-buffer-export.md) 已 cherry-pick 入本树 98bec50 并复跑绿)
+- [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。(2026-11-26 跨席复测勾：他席 main 交付 0ee4b28(profiler/tests/collection_integrity_regression.rs+fixtures/collection-regression/+docs/review/opt-23-01-03-collection-integrity.md) 已 cherry-pick 入本树 28c1da9 并复跑绿)
 
 ### OPT-26-01 固定事件回放并采集查询基线
 
@@ -7619,9 +7619,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
 
-- [ ] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。
-- [ ] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。
-- [ ] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。
+- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。(2026-11-26 跨席复测勾：他席 main 交付 38b99db(profiler/tests/long_stability_collection.rs+fixtures/long-stability/long-stability.tsv+docs/review/opt-23-01-01-long-stability-collection.md) 已 cherry-pick 入本树 5bb641c 并复跑绿，profiler 门禁 43 lib+集成全绿)
+- [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。(2026-11-26 跨席复测勾：他席 main 交付 2a26627(profiler/tests/buffer_export_evaluation.rs+fixtures/buffer-export/+docs/review/opt-23-01-02-buffer-export.md) 已 cherry-pick 入本树 98bec50 并复跑绿)
+- [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。(2026-11-26 跨席复测勾：他席 main 交付 0ee4b28(profiler/tests/collection_integrity_regression.rs+fixtures/collection-regression/+docs/review/opt-23-01-03-collection-integrity.md) 已 cherry-pick 入本树 28c1da9 并复跑绿)
 
 ### OPT-26-01 固定事件回放并采集查询基线
 
@@ -9200,9 +9200,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
 
-- [ ] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。
-- [ ] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。
-- [ ] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。
+- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。(2026-11-26 跨席复测勾：他席 main 交付 38b99db(profiler/tests/long_stability_collection.rs+fixtures/long-stability/long-stability.tsv+docs/review/opt-23-01-01-long-stability-collection.md) 已 cherry-pick 入本树 5bb641c 并复跑绿，profiler 门禁 43 lib+集成全绿)
+- [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。(2026-11-26 跨席复测勾：他席 main 交付 2a26627(profiler/tests/buffer_export_evaluation.rs+fixtures/buffer-export/+docs/review/opt-23-01-02-buffer-export.md) 已 cherry-pick 入本树 98bec50 并复跑绿)
+- [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。(2026-11-26 跨席复测勾：他席 main 交付 0ee4b28(profiler/tests/collection_integrity_regression.rs+fixtures/collection-regression/+docs/review/opt-23-01-03-collection-integrity.md) 已 cherry-pick 入本树 28c1da9 并复跑绿)
 
 ### OPT-26-01 固定事件回放并采集查询基线
 
@@ -10742,9 +10742,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
 
-- [ ] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。
-- [ ] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。
-- [ ] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。
+- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。(2026-11-26 跨席复测勾：他席 main 交付 38b99db(profiler/tests/long_stability_collection.rs+fixtures/long-stability/long-stability.tsv+docs/review/opt-23-01-01-long-stability-collection.md) 已 cherry-pick 入本树 5bb641c 并复跑绿，profiler 门禁 43 lib+集成全绿)
+- [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。(2026-11-26 跨席复测勾：他席 main 交付 2a26627(profiler/tests/buffer_export_evaluation.rs+fixtures/buffer-export/+docs/review/opt-23-01-02-buffer-export.md) 已 cherry-pick 入本树 98bec50 并复跑绿)
+- [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。(2026-11-26 跨席复测勾：他席 main 交付 0ee4b28(profiler/tests/collection_integrity_regression.rs+fixtures/collection-regression/+docs/review/opt-23-01-03-collection-integrity.md) 已 cherry-pick 入本树 28c1da9 并复跑绿)
 
 ### OPT-26-01 固定事件回放并采集查询基线
 
