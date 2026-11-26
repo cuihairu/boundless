@@ -730,15 +730,15 @@ mod tests {
         let mut sender = mercury::endpoint::Endpoint::new();
         sender.socket(platform::socket::SOCK_DGRAM);
         assert_eq!(
-            sender.sendto(b"ping", interface.address().port, LOOPBACK),
-            4,
+            sender.sendto(b"\x00\x00ping", interface.address().port, LOOPBACK),
+            6,
             "the datagram is queued"
         );
 
         dispatcher.process_once(true);
         assert_eq!(
             sink.packets.borrow().as_slice(),
-            [b"ping".to_vec()],
+            [b"\x00\x00ping".to_vec()],
             "the pass delivered the datagram to the interface"
         );
     }
