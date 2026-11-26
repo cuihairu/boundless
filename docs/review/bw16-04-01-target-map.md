@@ -17,18 +17,18 @@
 |---|---|---|---|
 | `cstdmf` | `crates/foundation` | 内联 `#[test]`（`crates/foundation/src/*`） | 基础工具/日志/时间 |
 | `math` | `crates/foundation` | 同上 | `Matrix`/`Vector*` 等（BW-01） |
-| `network` | `crates/mercury` | 内联（`crates/mercury/src/*`，384 测） | 流编解码 5/5（BW-01-02）；`platform::{interface,socket}` 面在禁区分块 |
-| `entitydef` | `crates/entitydef` | `crates/entitydef/tests/*`（3 文件）+ 内联（257 测） | BW-04 全勾 |
+| `network` | `crates/mercury` | 内联（`crates/mercury/src/*`，386 测） | 流编解码 5/5（BW-01-02）；`platform::{interface,socket}` 面在禁区分块 |
+| `entitydef` | `crates/entitydef` | `crates/entitydef/tests/*`（3 文件）+ 内联（247 测） | BW-04 全勾 |
 | `entitydef_script` | `crates/entitydef` + `crates/python-host/src/script_types.rs` | 同上 + python-host 内联 | **部分**：defs 解析/存储面；`BigWorld.Entity/Base/Proxy` 脚本类型已落地（`422d275`，BW-16-03-02：`Py_tp_base` 继承 + `tp_new` 拒绝语义）；entity-script 导入面待 |
-| `pyscript` | `crates/python-host` | 内联（154 测，含 62 场景 out-of-process） | BW-03-01 全勾 |
+| `pyscript` | `crates/python-host` | 内联（155 测，含 145 ignored 场景 out-of-process） | BW-03-01 全勾 |
 | `script` | `crates/python-host` | 同上 | `Script::init` 序列（BW-03） |
 | `resmgr` | `crates/resources` | 内联（`crates/resources/src/*`，233 测） | `BWResource`/`DataSection`（BW-01-04） |
 | `asset_pipeline` | `crates/asset-pipeline` | 内联（439 测，含 §1.4 exporter 族） | BW-13-01..03 + 05 exporter 族在树 |
-| `server`（`lib/server`） | `crates/server-runtime` | 内联（1698 测） | 角色生命周期面随 BW-06..10 |
+| `server`（`lib/server`） | `crates/server-runtime` | 内联（1781 测） | 角色生命周期面随 BW-06..10 |
 | `chunk` | `crates/chunk` | 内联 | BW-10-01（标识符/边界/portal/流式绑定） |
-| `testing` | `crates/test-support` | 内联（638 测） | 共享测试框架（BW-18）+ 分层检查器（BW-16-01-01/02-05） |
+| `testing` | `crates/test-support` | 内联（599 测） | 共享测试框架（BW-18）+ 分层检查器（BW-16-01-01/02-05） |
 | `unit_test_lib` | `crates/test-support` | 同上 | 同上 |
-| `db`/`db_storage`/`db_storage_mysql`/`db_storage_xml`/`sqlite` | `crates/db` + `crates/db-postgres` | 内联（db 543 测 + db-postgres 131 测） | 后端在树：SQLite（rusqlite）+ PostgreSQL（BW-09-06/07，PG18 真机）；MySQL/XML 面=BW-15-05-03 store 四模式 TSV |
+| `db`/`db_storage`/`db_storage_mysql`/`db_storage_xml`/`sqlite` | `crates/db` + `crates/db-postgres` | 内联（db 543 测 + db-postgres 56 测） | 后端在树：SQLite（rusqlite）+ PostgreSQL（BW-09-06/07，PG18 真机）；MySQL/XML 面=BW-15-05-03 store 四模式 TSV |
 
 ### 1.2 服务端角色（`server/*` → `apps/server`）
 
@@ -64,21 +64,21 @@ BW-00-03-05）承载：
 
 | 原版目标 | 新版模块 | 测试路径 | 备注 |
 |---|---|---|---|
-| `terrain` | `crates/terrain` | 内联（92 测） | BW-10-02/03（`EditorTerrainBlock2`/`TerrainSettings`） |
-| `physics2` | `crates/physics` | 内联（114 测） | `WorldTriangle` 等（BW-14-02-04） |
+| `terrain` | `crates/terrain` | 内联（83 测） | BW-10-02/03（`EditorTerrainBlock2`/`TerrainSettings`） |
+| `physics2` | `crates/physics` | 内联（104 测） | `WorldTriangle` 等（BW-14-02-04） |
 | `scene`/`chunk_scene_adapter` | `crates/scene` | 内联（40 测） | BW-13-06-04（`7f06848`，11 模块 100%） |
-| `compiled_space` | `crates/compiled-space` | 内联（138 测） | `space_converter` 的 compiled-space 写面 |
-| `space`（lib/chunk space 面） | `crates/chunk/src/space.rs` | 内联（chunk lib 186 测） | BW-10-01（`ChunkSpace`/焦点网格/blur-focus 泵；main `623714d` 的 grid_traversal/obstacle 换代面同树） |
-| `waypoint` | `crates/waypoint` | 内联（136 测） | BW-10-04/05（两层检索，真机复测 `643c2b6`） |
+| `compiled_space` | `crates/compiled-space` | 内联（127 测） | `space_converter` 的 compiled-space 写面 |
+| `space`（lib/chunk space 面） | `crates/chunk/src/space.rs` | 内联（chunk lib 175 测） | BW-10-01（`ChunkSpace`/焦点网格/blur-focus 泵；main `623714d` 的 grid_traversal/obstacle 换代面同树） |
+| `waypoint` | `crates/waypoint` | 内联（103 测） | BW-10-04/05（两层检索，真机复测 `643c2b6`） |
 | `waypoint_generator` | `crates/waypoint-gen` | 内联（88 测） | navgen 生成面（girth workflow/flood/view，`977f555`；main `b99cb0e` 的 navgen_map 面同树在——05-04 双交付待主席择一） |
 | `navgen` | `crates/asset-pipeline/src/navmesh_processor.rs` + `crates/waypoint-gen` | 内联（`79f47c4`） | **部分**：生成/锁块/缓存处理机在树（55 测）；Windows MFC 入口外壳未建（真卡点=无 EL7 binary，BW-13-02-05）；OpenGL 预览后端见 BW-15-06-01 |
-| `bots` | `crates/load` + `apps/bots` | load 内联（169 测）+ `apps/bots` | BW-10-07-05/06（`2fd88e4`/`7560866`）；scenario runner（cross-cell/reconnect/long-stability）归 lane/bw17-load（BW-17-02-06..08） |
+| `bots` | `crates/load` + `apps/bots` | load 内联（175 测）+ `apps/bots` | BW-10-07-05/06（`2fd88e4`/`7560866`）；scenario runner（cross-cell/reconnect/long-stability）归 lane/bw17-load（BW-17-02-06..08） |
 | `message_logger` | `crates/message_logger` | 内联（160 测） | BW-12 |
 | `bw_profile` | `crates/profiler` | 内联（43 测） | BW-12-03（帧/计数器兼容层 + `_bw_profile`） |
 | `clear_auto_load`/`consolidate_dbs`/`remove_db`/`snapshot_helper`/`sync_db`/`transfer_db` | `crates/db/src/tools/*.rs`（七件已声明已编译） | 内联（clear_auto_load 28 测/remove_db 12 测/consolidate 74 测等） | BW-09-05 簇；顶层散文件五份孤儿归主席清理 |
 | `urlrequest` | `crates/python-host/src/urlrequest.rs` | 内联 | BW-09 |
 | `jit_compiler`/`offline_processor`/`resourcechecker` | `crates/asset-pipeline/src/{jit_compiler,offline_processor,resource_checker}.rs` | 内联 | BW-13 |
-| `particle`/`camera`/`post_processing`/`web_render`（面） | `crates/client/src/{particle,camera,post_processing,web_render}.rs` | client 内联（865 测） | BW-11（`c5a70f6` 合入）；`web_render` 等三方 SDK 集成点在 `conditional_integrations.rs` 登记缺席（BW-11 SDK 矩阵） |
+| `particle`/`camera`/`post_processing`/`web_render`（面） | `crates/client/src/{particle,camera,post_processing,web_render}.rs` | client 内联（861 测） | BW-11（`c5a70f6` 合入）；`web_render` 等三方 SDK 集成点在 `conditional_integrations.rs` 登记缺席（BW-11 SDK 矩阵） |
 | 编辑器核（`modeleditor_core`/`worldeditor` 核面） | `asset-pipeline::{model_editor,material_editor}` + `chunk::{chunk_editor,chunk_placer,snaps,undoredo,space_publish}` + `client::{animation_editor,particle_editor,simple_gui}` | 内联 | **部分**：编辑核面在树；GUI 窗口面未建（headless 外壳二进制 `apps/editor` 已建 `02bedbb`，Windows/macOS 入口待 BW-15-03/04） |
 | `common`（tools/common） | `chunk::undoredo` + `asset_pipeline::navmesh_processor` 等按面散布 | 内联 | **部分**：按面落位，无独立 crate |
 | `bwmachined` | `crates/server-runtime/src/machined.rs`（408 行，daemon+discovery 客户端）+ `crates/contracts/src/machined.rs`（3527 行消息契约） | 两模块均 `pub mod` 在活树（`lib.rs:54`/`lib.rs:7`）；server-runtime 内联 3 测（`#[test]` @295/328/356） | BW-05-01-06（`PORT_MACHINED=20018`，真实 SOCK_DGRAM 经 `platform::socket`）；2026-11-25 勘误：旧 §2 记「未建」已过时——模块与测试路径在树；RPM 布局基线见 BW-15-02-05 §2.2 |
