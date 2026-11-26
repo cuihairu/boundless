@@ -96,8 +96,8 @@
 //! - [`visual_exporter`] — the Max visual exporter's portable core: the
 //!   `ExportSettings` IO, the `BloatVertex`/`Triangle`/`Material` model
 //!   and the `VisualMesh::save` pipeline (dedup, sorting, primitive
-//!   groups, the `xyznuv`/`xyznuvi` vertex streams and the `.visual`
-//!   XML) with the Max-plugin host seams documented
+//!   groups, the `xyznuv`/`xyznuvi`/`xyznuvtb` vertex streams and the
+//!   `.visual` XML) with the Max-plugin host seams documented
 //!   (`tools/visualexporter/`);
 //! - [`maya_visual_exporter`] — the Maya visual exporter's portable core:
 //!   the exporter settings round-trip, the scene records the Maya
@@ -134,6 +134,7 @@ pub mod hierarchical_config;
 pub mod hierarchical_config_converter;
 pub mod jit_compiler;
 pub mod material_editor;
+pub mod maya_exporter;
 pub mod maya_visual_exporter;
 pub mod model_editor;
 pub mod navmesh_processor;

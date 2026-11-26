@@ -72,16 +72,16 @@ criterion = "0.8"
 # (BW-07-05-02/03: what the writer produces must parse back losslessly).
 client = { workspace = true }
 
+# The mixed-version rerun (OPT-02-01-04) builds the register/record
+# envelopes with the logger protocol codecs and speaks them to the
+# reference EL7 `message_logger` over UDP and TCP.
+message_logger = { workspace = true }
+
 # OPT-12-01-01: the observation channels' cost baseline drives the Watcher
 # registry, the MessageLogger entry writer and the profiler global from
 # outside their own crates (test-only edges).
 watcher = { workspace = true }
 profiler = { workspace = true }
-# The mixed-version rerun (OPT-02-01-04) builds the register/record
-# envelopes with the logger protocol codecs and speaks them to the
-# reference EL7 `message_logger` over UDP and TCP (workspace edge since
-# the workspace declares the member).
-message_logger = { workspace = true }
 
 [[bench]]
 name = "tick"
@@ -95,4 +95,20 @@ harness = false
 # OPT-06-01-03: the client download assembly completion bench (6ffd9af).
 [[bench]]
 name = "download_assembly"
+harness = false
+
+[[bench]]
+name = "backup_archive"
+harness = false
+
+[[bench]]
+name = "shared_data"
+harness = false
+
+[[bench]]
+name = "dense_aoi"
+harness = false
+
+[[bench]]
+name = "spatial_parallel"
 harness = false

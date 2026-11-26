@@ -1,0 +1,11 @@
+key	value	unit	source
+linux_x86_64_binary_bytes	116126768	bytes	target/release/boundless-server (stat)
+linux_x86_64_archive_bytes	23678496	bytes	ci-out/package/boundless-0.1.0-linux-x86_64.tar.gz
+linux_x86_64_archive_sha256	56708c308fc24e9dcaf35328a26e739d5923228cdb7977e68d960b1f297642cc	hex	sha256sum of the archive above
+linux_x86_64_first_run_min_s	0.017209	s	14 launches across two sessions, min
+linux_x86_64_first_run_median_s	0.025993	s	14 launches, median
+linux_x86_64_first_run_max_s	0.085291	s	14 launches, max (first launch after build)
+linux_x86_64_startup_line	BaseApp is running	text	crates/server-runtime/src/app.rs
+linux_x86_64_archive_smoke	FAIL	status	exit 124: no res/server/bw.xml in the installed prefix
+windows_x86_64_binary_bytes	PENDING	bytes	no cross-built release binary: mercury has no windows socket/event_dispatcher arm (BW-15-03)
+macos_aarch64_binary_bytes	PENDING	bytes	no cross-built release binary: libsqlite3-sys needs a darwin SDK / cross C compiler

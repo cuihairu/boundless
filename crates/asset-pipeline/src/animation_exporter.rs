@@ -1,204 +1,854 @@
-//! BW-13-05-02 the Max animation exporter's portable core
-//! (`tools/animationexporter`).
+//! BW-13-05-02: the Max animation exporter's portable core
+//! (`tools/animationexporter/`).
 //!
-//! The reference is the 3ds Max `animationexporter` plugin: its `DoExport`
-//! walks the scene node tree, samples each included node's
-//! parent-relative transform per frame, decomposes the samples into
-//! scale/translation/rotation (`lib/math/blend_transform.cpp`), and writes
-//! the `.animation` binary the engine loads (`lib/moo/animation.cpp`).
-//! That binary is the whole contract: the reader face already lives in
-//! `client`'s skeletal port, and this module is its writer — the same
-//! file format, the same channel grammar (type 1 plain node channel, type
-//! 4 with compression amounts, type 6 cue track), the same keyframe
-//! sequences.
+//! The reference exporter is a 3ds Max plugin (`mfxexp` walking the scene
+//! through the `max.h` SDK); the `max2009`..`max2013` directories only
+//! select which SDK to compile against. The live write path is
+//! `MFXExport::DoExport` → `MFXNode::exportAnimation` →
+//! `CueTrack::writeFile`: one `.animation` binary holding an f32 total
+//! time, the animation name twice, an i32 channel count, then per
+//! included node an interpolated channel (type 1, or type 4 with the
+//! three compression errors harvested from the existing file) and
+//! optionally a cue channel (type 6).
 //!
-//! What is portable is carried: the node tree with its include flags and
-//! the ancestor-propagation and root-sorting passes (`mungeIncluded`,
-//! the descending child-count re-order of the root's immediate children),
-//! the per-frame sampling loop with its relative-transform, axis-rearrange
-//! and decompose steps (`mfxnode.cpp` `MFXNode::exportAnimation`,
-//! `utility.cpp` `rearrangeMatrix`/`normaliseMatrix`), the compression
-//! amounts an existing file contributes (the header peek `DoExport` does
-//! before overwriting it), the cue track's note-track grammar
-//! (`cuetack.cpp`) and the file-name cropping. What is not, stays out:
-//! the Max SDK scene walk (`INode::GetNodeTM`, modifiers, note-track
-//! enumeration, dialogs) becomes the caller's sampler closure — one
-//! world-space transform per (identifier, frame) — and the plugin's file
-//! and message-box faces become the returned bytes.
+//! Ported faces:
+//! - [`ExportSettings`] with its five serialized keys and the
+//!   `animationexporter.cfg` / `<stem>.animationsettings` /
+//!   maxscript-override read chain (`expsets.cpp` defaults,
+//!   `expsetsio.cpp`, the `BWAnimationSetting` primitive);
+//! - the [`SceneNode`] scene model and `preProcess` classification
+//!   (`mfxexp.cpp:540-610`): the node filter, the forced class
+//!   exclusions and the mesh/envelope split;
+//! - the [`MfxTree`] node arena: `getTransform`/`getRelativeTransform`,
+//!   the reference-nodes re-parent, the descending root-child sort,
+//!   `mungeIncluded`, the duplicate-name validation and
+//!   `exportAnimation` itself;
+//! - [`rearrange_matrix`] (`utility.cpp`) with the translation row
+//!   behaviour pinned by shipped content (see its doc), the
+//!   `BlendTransform::init` decompose (`lib/math/blend_transform.cpp`)
+//!   and the [`CueTrack`] note-track channel.
 //!
-//! The axis rearrange carries the input's translation row through: the
-//! shipped fixtures show it survives — `crab_walkforward.animation`'s
-//! `CrabHub` position keys equal `crab.visual`'s `CrabHub` node
-//! translation row. The layout of the wire is likewise fixture-pinned:
-//! little-endian scalars, length-prefixed strings, `u32`-counted
-//! sequences, keys stored as `(time, components)` pairs and the three
-//! trailing bound tables the reader rebuilds and drops.
+//! Host seams and port deviations, each behaviour-preserving for the
+//! `.animation` bytes:
+//! - `displayDialog`, `MessageBox` and `LogMsg` are the plugin GUI
+//!   faces; the illegal-node-name warning is collected in
+//!   [`MfxExporter::warnings`] and the res-path abort becomes an
+//!   [`ExportError::NotInResPath`] carrying the verbatim message;
+//! - `exportMeshes`/`exportEnvelopes` write the companion visual output
+//!   through `VisualMesh`/`VisualEnvelope` (Max object conversion and
+//!   the NVMeshMender seam — [`crate::visual_exporter`]); the port
+//!   keeps the classification (`mesh_nodes`/`envelope_nodes`) and
+//!   leaves the companion write to the host;
+//! - `GetNodeTM(t)` world transforms arrive precomputed on
+//!   [`SceneNode::world`], one matrix per exported frame;
+//! - `Inverse()` of a singular relative transform produces uninitialised
+//!   memory in the reference; the port substitutes the zero matrix;
+//! - the `StringHashMap` behind `nodeParents_` has an unspecified
+//!   iteration order — the port applies the pairs in first-insertion
+//!   order with last-wins parents;
+//! - reads off an existing `.animation` harvest the compression errors
+//!   into locals the reference leaves uninitialised on a short read;
+//!   the port substitutes zeros.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use foundation::math::Matrix;
-use foundation::math::Quaternion;
-use foundation::math::Vector3;
+use foundation::math::{Matrix, Quaternion, Vector3};
+use resources::datasection::DataSection;
 
-/// One node of the exporter's scene tree (`MFXNode`, `mfxnode.hpp`): the
-/// identifier the channel will carry, the include flag, and the children
-/// in scene order. The Max node itself is the caller's business — a node
-/// the sampler answers for is a scene node, one it does not is a
-/// hierarchy-only node (the reference's `node_ == NULL` case, whose
-/// stored transform is the identity and whose world is its parent's).
-#[derive(Debug, Clone, PartialEq)]
-pub struct ExportNode {
-    identifier: String,
-    include: bool,
-    children: Vec<ExportNode>,
+// ===========================================================================
+// Scene input model
+// ===========================================================================
+
+/// The object classification `preProcess` reads off `EvalWorldState`
+/// (`mfxexp.cpp:559-577`); every non-[`NodeKind::Object`] kind is forced
+/// out of the animation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NodeKind {
+    /// A plain geometric or helper object.
+    #[default]
+    Object,
+    /// `Class_ID(TARGET_CLASS_ID, 0)` look-at targets.
+    Target,
+    /// `Class_ID(0x74f93b07, 0x1eb34300)` particle-view helpers.
+    ParticleView,
+    /// `CAMERA_CLASS_ID`.
+    Camera,
+    /// `LIGHT_CLASS_ID`.
+    Light,
+    /// `SHAPE_CLASS_ID`.
+    Shape,
 }
 
-impl ExportNode {
-    /// The default `MFXNode`: identity transform, not included.
-    pub fn new(identifier: &str) -> Self {
-        Self {
-            identifier: identifier.to_string(),
-            include: false,
-            children: Vec::new(),
-        }
-    }
-
-    pub fn identifier(&self) -> &str {
-        &self.identifier
-    }
-
-    pub fn set_identifier(&mut self, identifier: &str) {
-        self.identifier = identifier.to_string();
-    }
-
-    pub fn include(&self) -> bool {
-        self.include
-    }
-
-    pub fn set_include(&mut self, include: bool) {
-        self.include = include;
-    }
-
-    pub fn add_child(&mut self, child: ExportNode) {
-        self.children.push(child);
-    }
-
-    pub fn n_children(&self) -> usize {
-        self.children.len()
-    }
-
-    pub fn children(&self) -> &[ExportNode] {
-        &self.children
-    }
-
-    pub fn children_mut(&mut self) -> &mut [ExportNode] {
-        &mut self.children
-    }
-
-    /// `MFXNode::treeSize` (`mfxnode.cpp:133-145`): this node plus every
-    /// descendant.
-    pub fn tree_size(&self) -> usize {
-        1 + self
-            .children
-            .iter()
-            .map(ExportNode::tree_size)
-            .sum::<usize>()
-    }
-
-    /// `MFXNode::nIncludedNodes` (`mfxnode.cpp:250-262`): this node if
-    /// included plus every included descendant — the node channels the
-    /// export writes.
-    pub fn n_included_nodes(&self) -> usize {
-        let included = usize::from(self.include);
-        included
-            + self
-                .children
-                .iter()
-                .map(ExportNode::n_included_nodes)
-                .sum::<usize>()
-    }
-
-    /// `mungeIncluded` (`mfxexp.cpp:220-230`), driving `includeAncestors`
-    /// (`mfxnode.cpp:101-110`): every ancestor of an included node is
-    /// included, so every channel's parent-relative transform hangs from
-    /// an included parent. Returns whether the subtree contains an
-    /// included node.
-    pub fn munge_included(&mut self) -> bool {
-        let mut any = self.include;
-        for child in &mut self.children {
-            any |= child.munge_included();
-        }
-        if any {
-            self.include = true;
-        }
-        any
-    }
-
-    /// `MFXNode::find` — depth-first by identifier.
-    pub fn find(&self, identifier: &str) -> Option<&ExportNode> {
-        if self.identifier == identifier {
-            return Some(self);
-        }
-        self.children
-            .iter()
-            .find_map(|child| child.find(identifier))
-    }
+/// One Max scene node (`INode`), as far as the animation export observes
+/// it.
+#[derive(Debug, Clone, Default)]
+pub struct SceneNode {
+    /// `GetName()`.
+    pub name: String,
+    /// The `EvalWorldState(staticFrame)` classification.
+    pub kind: NodeKind,
+    /// `IsHidden()`.
+    pub hidden: bool,
+    /// `Selected()`.
+    pub selected: bool,
+    /// `findPhysiqueModifier(node) || findSkinMod(node)`.
+    pub skinned: bool,
+    /// Note-track keys `(ticks, text)` (`DefNoteTrack::keys`), harvested
+    /// when `exportCueTrack` is set.
+    pub note_keys: Vec<(i32, String)>,
+    /// `GetNodeTM(t)` per exported frame, indexed `frame - first_frame`
+    /// (frames run `first..=last`).
+    pub world: Vec<Matrix>,
+    /// The scene children, in Max order.
+    pub children: Vec<SceneNode>,
 }
 
-/// The exporter settings the portable core reads
-/// (`expsets.hpp`/`expsets.cpp`). The frame range defaults to `0..=100`
-/// (`expsets.cpp:23-24`); `unitScale` is the reference's
-/// `GetMasterScale(UNITS_CENTIMETERS) / 100` — the Max scene unit the
-/// caller converts with, 1.0 when the world is already in metres.
+// ===========================================================================
+// Export settings
+// ===========================================================================
+
+/// `ExportSettings::NodeFilter`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeFilter {
+    /// `ALL`.
+    All,
+    /// `SELECTED`.
+    Selected,
+    /// `VISIBLE`.
+    Visible,
+}
+
+/// `CFGFilename` (`mfxexp.hpp`).
+pub const CFG_FILENAME: &str = "animationexporter.cfg";
+
+/// The animation flavour of `ExportSettings` (`expsets.cpp`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExportSettings {
-    pub first_frame: i32,
-    pub last_frame: i32,
-    /// `allowScale`: false normalises every world transform before the
-    /// relative step, so no scale survives into the keys.
+    /// `allowScale_`.
     pub allow_scale: bool,
-    /// `exportNodeAnimation`: false writes no node channels at all.
+    /// `exportNodeAnimation_`.
     pub export_node_animation: bool,
-    /// `exportCueTrack`: the cue channel is appended when a cue track with
-    /// cues is handed over.
+    /// `exportCueTrack_`.
     pub export_cue_track: bool,
-    /// `useLegacyOrientation`: the rearrange's extra negations.
+    /// `useLegacyOrientation_`.
     pub use_legacy_orientation: bool,
-    pub unit_scale: f32,
+    /// `nodeFilter_`.
+    pub node_filter: NodeFilter,
+    /// `staticFrame_`.
+    pub static_frame: i32,
+    /// `frameFirst_`.
+    pub frame_first: i32,
+    /// `frameLast_`.
+    pub frame_last: i32,
+    /// `referenceNodesFile_`.
+    pub reference_nodes_file: String,
 }
 
 impl Default for ExportSettings {
+    /// The reference constructor (`expsets.cpp:229-238`).
     fn default() -> Self {
         Self {
-            first_frame: 0,
-            last_frame: 100,
+            static_frame: 0,
+            frame_first: 0,
+            frame_last: 100,
+            node_filter: NodeFilter::Visible,
             allow_scale: false,
             export_node_animation: true,
             export_cue_track: false,
             use_legacy_orientation: false,
-            unit_scale: 1.0,
+            reference_nodes_file: String::new(),
         }
     }
 }
 
 impl ExportSettings {
-    /// `ExportSettings::setFrameRange` (`expsets.hpp:44`).
+    /// `ExportSettings::setFrameRange`.
     pub fn set_frame_range(&mut self, first: i32, last: i32) {
-        self.first_frame = first;
-        self.last_frame = last;
+        self.frame_first = first;
+        self.frame_last = last;
+    }
+
+    /// `ExportSettings::readSettings(DataSectionPtr)` (`expsetsio.cpp`):
+    /// five keys, each keeping the current value as its default.
+    pub fn read_settings(&mut self, section: Option<&DataSection>) -> bool {
+        let Some(section) = section else {
+            return false;
+        };
+        self.allow_scale = section.read_bool("allowScale", self.allow_scale);
+        self.export_node_animation =
+            section.read_bool("exportNodeAnimation", self.export_node_animation);
+        self.reference_nodes_file =
+            section.read_string("referenceNodesFile", &self.reference_nodes_file);
+        self.export_cue_track = section.read_bool("exportCueTrack", self.export_cue_track);
+        self.use_legacy_orientation =
+            section.read_bool("useLegacyOrientation", self.use_legacy_orientation);
+        true
+    }
+
+    /// `ExportSettings::writeSettings(DataSectionPtr)`.
+    pub fn write_settings(&self, section: Option<&mut DataSection>) -> bool {
+        let Some(section) = section else {
+            return false;
+        };
+        section.write_bool("allowScale", self.allow_scale);
+        section.write_bool("exportNodeAnimation", self.export_node_animation);
+        section.write_string("referenceNodesFile", &self.reference_nodes_file);
+        section.write_bool("exportCueTrack", self.export_cue_track);
+        section.write_bool("useLegacyOrientation", self.use_legacy_orientation);
+        true
     }
 }
 
-/// The compression amounts a type-4 channel carries
-/// (`MFXExport::DoExport`'s `CompressionInfo`, `mfxexp.hpp`). The
-/// reference's fields are uninitialised until a previous file supplies
-/// them; the port zeroes them, and they are written only when
-/// `specify_amounts` is set.
+// ===========================================================================
+// Cue track
+// ===========================================================================
+
+/// The note-track cue channel (`cuetrack.cpp`). The reference keeps a
+/// singleton alive across plugin invocations (cleared at export time when
+/// the cue track is wanted); the port owns one per exporter.
+#[derive(Debug, Clone, Default)]
+pub struct CueTrack {
+    /// Adjusted ticks → cue texts in add order (the `BW::map<TimeValue,
+    /// BW::list<BW::string>>`).
+    cues: BTreeMap<i32, Vec<String>>,
+}
+
+impl CueTrack {
+    /// `CueTrack::clear`.
+    pub fn clear(&mut self) {
+        self.cues.clear();
+    }
+
+    /// `CueTrack::addCue`: the cue frame must sit inside the exported
+    /// range, the time shifts back by the first frame, and only
+    /// `cue:`/`sound:` notes pass; duplicates at the same time are
+    /// dropped.
+    pub fn add_cue(
+        &mut self,
+        mut time: i32,
+        note: &str,
+        tpf: i32,
+        first_frame: i32,
+        last_frame: i32,
+    ) {
+        // Check if the cue is among the frames being exported (C integer
+        // division, like the reference's `time / GetTicksPerFrame()`).
+        let cue_frame = time / tpf;
+        if cue_frame < first_frame || cue_frame > last_frame {
+            return;
+        }
+
+        // Adjust the time based on the first frame.
+        time -= first_frame * tpf;
+
+        // string for the note track is expected to be of the form
+        // cue:name or sound:name
+        let Some(split) = note.find(':') else {
+            return;
+        };
+
+        let cue = match &note[..split] {
+            "sound" => format!("s{}", &note[split + 1..]),
+            "cue" => format!("c{}", &note[split + 1..]),
+            // only cue: and sound: are supported at the moment
+            _ => return,
+        };
+
+        let list = self.cues.entry(time).or_default();
+        if list.contains(&cue) {
+            return; // already have the cue for that time
+        }
+        list.push(cue);
+    }
+
+    /// `CueTrack::hasCues`.
+    pub fn has_cues(&self) -> bool {
+        self.cues.values().any(|list| !list.is_empty())
+    }
+
+    /// `CueTrack::writeFile`: with no cues nothing at all is written —
+    /// not even the type marker.
+    pub fn write_file(&self, out: &mut Vec<u8>, tpf: i32) {
+        let num: usize = self.cues.values().map(|list| list.len()).sum();
+
+        // if no cues, don't even bother writing the cue track
+        if num == 0 {
+            return;
+        }
+
+        // write channel identifier
+        w_i32(out, 6);
+
+        // write number of cues
+        w_i32(out, num as i32);
+
+        // write cue data
+        for (time, list) in &self.cues {
+            for cue in list {
+                w_f32(out, *time as f32 / tpf as f32);
+                w_str(out, cue);
+
+                // no additional args
+                w_i32(out, 0);
+            }
+        }
+    }
+
+    /// The cue map, sorted by adjusted ticks.
+    pub fn cues(&self) -> &BTreeMap<i32, Vec<String>> {
+        &self.cues
+    }
+}
+
+// ===========================================================================
+// Binary writers (`BinaryFile` output)
+// ===========================================================================
+
+fn w_f32(out: &mut Vec<u8>, v: f32) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+fn w_i32(out: &mut Vec<u8>, v: i32) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+/// `operator<<(BinaryFile&, const BW::string&)`: the int length, then the
+/// bytes.
+fn w_str(out: &mut Vec<u8>, s: &str) {
+    w_i32(out, s.len() as i32);
+    out.extend_from_slice(s.as_bytes());
+}
+
+/// `writeSequence` over `pair<float, Vector3>`: the u32 count, then count
+/// × raw POD (`f32` time + 3 × `f32`).
+fn w_vec3_seq(out: &mut Vec<u8>, keys: &[(f32, Vector3)]) {
+    w_i32(out, keys.len() as i32);
+    for (t, v) in keys {
+        w_f32(out, *t);
+        w_f32(out, v.x);
+        w_f32(out, v.y);
+        w_f32(out, v.z);
+    }
+}
+
+/// `writeSequence` over `pair<float, Quaternion>`: raw POD, 4 × `f32` per
+/// element.
+fn w_quat_seq(out: &mut Vec<u8>, keys: &[(f32, Quaternion)]) {
+    w_i32(out, keys.len() as i32);
+    for (t, q) in keys {
+        w_f32(out, *t);
+        w_f32(out, q.x);
+        w_f32(out, q.y);
+        w_f32(out, q.z);
+        w_f32(out, q.w);
+    }
+}
+
+/// `writeSequence` over `int`.
+fn w_i32_seq(out: &mut Vec<u8>, values: &[i32]) {
+    w_i32(out, values.len() as i32);
+    for v in values {
+        w_i32(out, *v);
+    }
+}
+
+// ===========================================================================
+// utility.cpp + blend_transform.cpp math
+// ===========================================================================
+
+/// `utility.cpp rearrangeMatrix`: the basis swap that maps Max's space
+/// into BigWorld's. The reference builds `mm` with three `SetColumn`
+/// calls (rows 0..2 only) and one row swap, so the upper 3×3 is `m` with
+/// axis 1 and axis 2 exchanged (`S·m·S`). The translation row passes
+/// through untouched — pinned by shipped content: `crab.visual`'s
+/// `CrabHub` row 3 `(0.001331, 0.100967, 0.000757)` equals
+/// `crab_walkforward.animation`'s `CrabHub` t=0 position key, which is
+/// the rearranged row 3 times the unit scale. The legacy orientation
+/// negates rows 0/2 and then columns 0/2 (rows 0..2), so every 3×3
+/// element with exactly one index in `{0, 2}` flips sign; row 3 is never
+/// touched there either.
+fn rearrange_matrix(m: &Matrix, legacy: bool) -> Matrix {
+    let mut out = Matrix::zero();
+
+    // Column swap over rows 0..2: col0 ← col0, col1 ← col2, col2 ← col1.
+    for (dst, src) in [(0usize, 0usize), (1, 2), (2, 1)] {
+        for row in 0..3 {
+            out.m[row][dst] = m.m[row][src];
+        }
+    }
+
+    // Row swap 1 <-> 2 over rows 0..2.
+    for col in 0..3 {
+        let row1 = out.m[1][col];
+        let row2 = out.m[2][col];
+        out.m[1][col] = row2;
+        out.m[2][col] = row1;
+    }
+
+    // The translation row survives the whole rearrange.
+    out.m[3] = m.m[3];
+
+    if legacy {
+        // The sign pattern covers the upper 3x3 only; the translation
+        // column and row are never touched.
+        for (row, row_vals) in out.m[..3].iter_mut().enumerate() {
+            for (col, value) in row_vals[..3].iter_mut().enumerate() {
+                if (row == 0 || row == 2) ^ (col == 0 || col == 2) {
+                    *value = -*value;
+                }
+            }
+        }
+    }
+
+    out
+}
+
+/// `utility.cpp normaliseMatrix`: rows 0..2 renormalised, row 3 passed
+/// through. A zero row stays zero (`Normalize` of a zero vector is the
+/// reference's NaN path — unreachable for sane world transforms).
+fn normalise_matrix(m: &Matrix) -> Matrix {
+    let mut out = Matrix::zero();
+    for row in 0..3 {
+        let mut v = Vector3::new(m.m[row][0], m.m[row][1], m.m[row][2]);
+        let length = v.length();
+        if length > 0.0 {
+            v.scale(1.0 / length);
+        }
+        out.m[row][0] = v.x;
+        out.m[row][1] = v.y;
+        out.m[row][2] = v.z;
+    }
+    out.m[3] = m.m[3];
+    out
+}
+
+/// `utility.cpp trailingLeadingWhitespaces`.
+fn trailing_leading_whitespaces(s: &str) -> bool {
+    !s.is_empty() && (s.starts_with(' ') || s.ends_with(' '))
+}
+
+/// `blend_transform.cpp BlendTransform::init`: the decompose every
+/// channel key goes through. The row lengths are the scale, rows 0..2 are
+/// renormalised in place, a negative cross/dot flips row 2 and the z
+/// scale, the translation row passes through, and the rotation is the
+/// quaternion of the normalised matrix — the host's
+/// `XPQuaternionRotationMatrix` is `D3DXQuaternionRotationMatrix`, which
+/// produces the same values as `Quaternion::from_matrix` (only the
+/// exactly-equal diagonal tie-break can differ).
+fn blend_decompose(m: &Matrix) -> (Quaternion, Vector3, Vector3) {
+    let mut m = *m;
+
+    fn row_vec(m: &Matrix, row: usize) -> Vector3 {
+        Vector3::new(m.m[row][0], m.m[row][1], m.m[row][2])
+    }
+    let mut scale = Vector3::new(
+        row_vec(&m, 0).length(),
+        row_vec(&m, 1).length(),
+        row_vec(&m, 2).length(),
+    );
+
+    for (row, s) in [(0usize, scale.x), (1, scale.y), (2, scale.z)] {
+        for value in &mut m.m[row] {
+            *value *= 1.0 / s;
+        }
+    }
+
+    let cross = row_vec(&m, 0).cross_product(&row_vec(&m, 0), &row_vec(&m, 1));
+    if cross.dot_product(&row_vec(&m, 2)) < 0.0 {
+        for value in &mut m.m[2] {
+            *value *= -1.0;
+        }
+        scale.z *= -1.0;
+    }
+
+    let translation = row_vec(&m, 3);
+    let rotation = Quaternion::from_matrix(&m);
+    (rotation, scale, translation)
+}
+
+/// `BWResource::removeExtension`: everything before the last dot; without
+/// a dot the input passes through.
+fn remove_extension(path: &str) -> &str {
+    match path.rfind('.') {
+        Some(i) => &path[..i],
+        None => path,
+    }
+}
+
+// ===========================================================================
+// Node tree
+// ===========================================================================
+
+/// The flattened scene payload one [`MfxNode`] observes (the world
+/// transforms arrive per exported frame).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct FlatScene {
+    pub name: String,
+    pub world: Vec<Matrix>,
+}
+
+pub(crate) struct MfxNode {
+    /// The stored identifier (used once the max node is detached).
+    identifier: String,
+    /// The `INode` attachment, as a flat-scene index (`setMaxNode(NULL)`
+    /// clears it without touching the identifier).
+    scene: Option<usize>,
+    parent: Option<usize>,
+    children: Vec<usize>,
+    include: bool,
+    /// The stored transform (identity; only non-scene nodes read it).
+    transform: Matrix,
+}
+
+/// The `MFXNode` arena behind one export (`mfxnode.cpp`).
+pub(crate) struct MfxTree {
+    pub nodes: Vec<MfxNode>,
+    pub root: usize,
+    pub flat: Vec<FlatScene>,
+    /// `meshNodes_` — flat-scene indices in pre-order (the Max-host
+    /// companion visual export consumes them).
+    pub mesh_nodes: Vec<usize>,
+    /// `envelopeNodes_` — skinned nodes, which lose their include flag.
+    pub envelope_nodes: Vec<usize>,
+}
+
+impl MfxTree {
+    /// `MFXNode::getIdentifier`: the live scene name while a max node is
+    /// attached, the stored identifier otherwise.
+    pub fn identifier(&self, n: usize) -> &str {
+        match self.nodes[n].scene {
+            Some(flat) => &self.flat[flat].name,
+            None => &self.nodes[n].identifier,
+        }
+    }
+
+    /// `MFXNode::find(identifier)`: DFS pre-order, first match.
+    pub fn find(&self, identifier: &str) -> Option<usize> {
+        if self.identifier(self.root) == identifier {
+            return Some(self.root);
+        }
+        self.find_in(self.root, identifier)
+    }
+
+    fn find_in(&self, n: usize, identifier: &str) -> Option<usize> {
+        for &child in &self.nodes[n].children {
+            if self.identifier(child) == identifier {
+                return Some(child);
+            }
+            if let Some(found) = self.find_in(child, identifier) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// `MFXNode::getTransform(t, normalise)`: the world transform of the
+    /// max node, else the parent chain times the stored transform, else
+    /// the stored transform.
+    pub fn get_transform(&self, n: usize, frame_index: usize, normalise: bool) -> Matrix {
+        let node = &self.nodes[n];
+        if let Some(flat) = node.scene {
+            let world = self.flat[flat]
+                .world
+                .get(frame_index)
+                .copied()
+                .unwrap_or(Matrix::identity());
+            return if normalise {
+                normalise_matrix(&world)
+            } else {
+                world
+            };
+        }
+
+        if let Some(parent) = node.parent {
+            let parent_tm = self.get_transform(parent, frame_index, false);
+            let mut out = Matrix::zero();
+            out.multiply(&parent_tm, &node.transform);
+            return if normalise {
+                normalise_matrix(&out)
+            } else {
+                out
+            };
+        }
+
+        if normalise {
+            normalise_matrix(&node.transform)
+        } else {
+            node.transform
+        }
+    }
+
+    /// `MFXNode::getRelativeTransform(t, normalise, idealParent)`: the
+    /// world transform times the inverse of the ideal parent's; a node
+    /// without a max node answers its stored transform.
+    pub fn get_relative_transform(
+        &self,
+        n: usize,
+        frame_index: usize,
+        normalise: bool,
+        ideal_parent: Option<usize>,
+    ) -> Matrix {
+        if self.nodes[n].scene.is_some() {
+            // Do we want to override the parent?
+            let mut ideal = ideal_parent;
+            if self.nodes[n].parent.is_some() && ideal.is_none() {
+                ideal = self.nodes[n].parent;
+            }
+
+            // If there is a parent get the relative transform, from the
+            // parent, else return this node's transform.
+            if let Some(ideal) = ideal {
+                let mut inv = self.get_transform(ideal, frame_index, normalise);
+                // `Inverse()` of a singular matrix is garbage memory in the
+                // reference; the port substitutes the zero matrix.
+                if !inv.invert() {
+                    inv = Matrix::zero();
+                }
+                let mut out = Matrix::zero();
+                out.multiply(&self.get_transform(n, frame_index, normalise), &inv);
+                return out;
+            }
+            return self.get_transform(n, frame_index, normalise);
+        }
+
+        if normalise {
+            normalise_matrix(&self.nodes[n].transform)
+        } else {
+            self.nodes[n].transform
+        }
+    }
+
+    /// `MFXNode::nIncludedNodes`.
+    pub fn n_included_nodes(&self) -> usize {
+        self.n_included_from(self.root)
+    }
+
+    fn n_included_from(&self, n: usize) -> usize {
+        let mut included = usize::from(self.nodes[n].include);
+        for &child in &self.nodes[n].children {
+            included += self.n_included_from(child);
+        }
+        included
+    }
+
+    /// `MFXNode::includeAncestors`.
+    fn include_ancestors(&mut self, mut n: usize) {
+        while let Some(parent) = self.nodes[n].parent {
+            self.nodes[parent].include = true;
+            n = parent;
+        }
+    }
+
+    /// `mungeIncluded`: every included node re-includes its ancestor chain.
+    pub fn munge_included(&mut self) {
+        let order = self.pre_order(self.root);
+        for n in order {
+            if self.nodes[n].include {
+                self.include_ancestors(n);
+            }
+        }
+    }
+
+    fn pre_order(&self, n: usize) -> Vec<usize> {
+        let mut out = vec![n];
+        for &child in &self.nodes[n].children {
+            out.extend(self.pre_order(child));
+        }
+        out
+    }
+
+    fn detach(&mut self, n: usize) {
+        if let Some(parent) = self.nodes[n].parent {
+            self.nodes[parent].children.retain(|&c| c != n);
+        }
+        self.nodes[n].parent = None;
+    }
+
+    fn attach(&mut self, parent: usize, n: usize) {
+        self.nodes[parent].children.push(n);
+        self.nodes[n].parent = Some(parent);
+    }
+
+    /// One `nodeParents_` entry applied (`mfxexp.cpp:339-366`): when `p`
+    /// is not `c`'s parent, the subtree of `p` that hangs off `c` moves
+    /// back onto `c`'s parent first, then `c` moves under `p`. The port
+    /// keeps the `c->getParent()->addChild(parent)` arm defined when `c`
+    /// is the root (the reference would dereference NULL there).
+    pub fn reparent(&mut self, c: usize, p: usize) {
+        if self.nodes[c].parent == Some(p) {
+            return;
+        }
+
+        // Walk from `p` up to the node whose parent is `c`.
+        let mut split = None;
+        let mut walk = Some(p);
+        while let Some(w) = walk {
+            if self.nodes[w].parent == Some(c) {
+                split = Some(w);
+                break;
+            }
+            walk = self.nodes[w].parent;
+        }
+        if let Some(split) = split {
+            self.detach(split);
+            if let Some(cp) = self.nodes[c].parent {
+                self.attach(cp, split);
+            }
+        }
+
+        let op = self.nodes[c].parent;
+        if op.is_some() {
+            self.detach(c);
+        }
+        self.attach(p, c);
+    }
+
+    /// The DoExport root reorder: detach all children, stable-sort them
+    /// descending by child count (`std::list::sort` is stable), re-attach.
+    pub fn sort_root_children(&mut self) {
+        let mut children = std::mem::take(&mut self.nodes[self.root].children);
+        for &c in &children {
+            self.nodes[c].parent = None;
+        }
+        children.sort_by(|&a, &b| {
+            self.nodes[b]
+                .children
+                .len()
+                .cmp(&self.nodes[a].children.len())
+        });
+        for c in children {
+            self.attach(self.root, c);
+        }
+    }
+
+    /// `checkDuplicateNodeNames` + `validateAnimationIDs`' message: the
+    /// sorted duplicate identifiers of the included nodes.
+    pub fn duplicate_names(&self) -> BTreeSet<String> {
+        let mut seen = BTreeSet::new();
+        let mut duplicates = BTreeSet::new();
+        self.check_duplicate_names(self.root, &mut seen, &mut duplicates);
+        duplicates
+    }
+
+    fn check_duplicate_names(
+        &self,
+        n: usize,
+        seen: &mut BTreeSet<String>,
+        duplicates: &mut BTreeSet<String>,
+    ) {
+        if self.nodes[n].include {
+            let id = self.identifier(n).to_string();
+            if !seen.insert(id.clone()) {
+                duplicates.insert(id);
+            }
+        }
+        for &child in &self.nodes[n].children {
+            self.check_duplicate_names(child, seen, duplicates);
+        }
+    }
+
+    /// `MFXNode::exportAnimation`: the key sequences plus the channel
+    /// header for this node, then the children.
+    #[allow(clippy::too_many_arguments)]
+    pub fn export_animation(
+        &self,
+        n: usize,
+        out: &mut Vec<u8>,
+        ci: &CompressionInfo,
+        settings: &ExportSettings,
+        unit_scale: f32,
+        warnings: &mut Vec<String>,
+        ideal_parent: Option<usize>,
+    ) {
+        let mut next_parent = ideal_parent;
+
+        if self.nodes[n].include {
+            let identifier = self.identifier(n).to_string();
+            if trailing_leading_whitespaces(&identifier) {
+                warnings.push(format!(
+                    "Node \"{}\" has an illegal name. Remove any spaces at the beginning and end of the name.",
+                    identifier
+                ));
+            }
+
+            next_parent = Some(n);
+            let first_frame = settings.frame_first;
+            let normalise = !settings.allow_scale;
+
+            let mut bound_table = Vec::new();
+            let mut scales: Vec<(f32, Vector3)> = Vec::new();
+            let mut positions: Vec<(f32, Vector3)> = Vec::new();
+            let mut rotations: Vec<(f32, Quaternion)> = Vec::new();
+
+            let mut time = 0.0f32;
+            for frame in settings.frame_first..=settings.frame_last {
+                let rel = self.get_relative_transform(
+                    n,
+                    (frame - first_frame) as usize,
+                    normalise,
+                    ideal_parent,
+                );
+                let rearranged = rearrange_matrix(&rel, settings.use_legacy_orientation);
+                // Rows go over as 3-float `Vector3`s, so the fourth column
+                // keeps the identity's values.
+                let mut m = Matrix::identity();
+                for (dst, src) in [(0usize, 0usize), (1, 1), (2, 2), (3, 3)] {
+                    for col in 0..3 {
+                        m.m[dst][col] = rearranged.m[src][col];
+                    }
+                }
+                let (mut rotation, scale, mut translation) = blend_decompose(&m);
+
+                // Normalise the rotation quaternion.
+                rotation.normalise();
+
+                bound_table.push(frame - first_frame + 1);
+                scales.push((time, scale));
+                translation.scale(unit_scale);
+                positions.push((time, translation));
+                rotations.push((time, rotation));
+                time += 1.0;
+            }
+
+            if ci.specify_amounts {
+                w_i32(out, 4);
+                w_str(out, &identifier);
+                w_f32(out, ci.scale_compression_error);
+                w_f32(out, ci.position_compression_error);
+                w_f32(out, ci.rotation_compression_error);
+            } else {
+                w_i32(out, 1);
+                w_str(out, &identifier);
+            }
+
+            w_vec3_seq(out, &scales);
+            w_vec3_seq(out, &positions);
+            w_quat_seq(out, &rotations);
+            w_i32_seq(out, &bound_table);
+            w_i32_seq(out, &bound_table);
+            w_i32_seq(out, &bound_table);
+        }
+
+        for &child in &self.nodes[n].children {
+            self.export_animation(child, out, ci, settings, unit_scale, warnings, next_parent);
+        }
+    }
+}
+
+// ===========================================================================
+// Compression info harvest
+// ===========================================================================
+
+/// `CompressionInfo` (`mfxnode.hpp`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CompressionInfo {
+    /// `specifyAmounts_`.
     pub specify_amounts: bool,
+    /// `scaleCompressionError_`.
     pub scale_compression_error: f32,
+    /// `positionCompressionError_`.
     pub position_compression_error: f32,
+    /// `rotationCompressionError_`.
     pub rotation_compression_error: f32,
 }
 
@@ -213,1579 +863,2133 @@ impl Default for CompressionInfo {
     }
 }
 
-/// `DoExport`'s header peek (`mfxexp.cpp:439-467`): an existing
-/// `.animation`'s first channel, when it is a type-4 node channel,
-/// donates its compression amounts to the export that overwrites the
-/// file. The reference ignores every read error — a missing, truncated or
-/// differently-shaped file leaves the amounts unspecified (the type-1
-/// channel grammar).
-pub fn read_compression_info(data: &[u8]) -> CompressionInfo {
-    let mut r = Reader::new(data);
-    let _total_time = r.f32();
-    let _identifier = r.string();
-    let _internal_identifier = r.string();
+/// A minimal `BinaryFile >>` cursor over the existing file (short reads
+/// hand out zeros — the reference leaves its locals uninitialised there).
+struct Harvest<'a> {
+    data: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Harvest<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        Self { data, pos: 0 }
+    }
+
+    fn f32(&mut self) -> f32 {
+        let bytes = self.take(4);
+        match bytes {
+            Some(b) => f32::from_le_bytes(b.try_into().unwrap()),
+            None => 0.0,
+        }
+    }
+
+    fn i32(&mut self) -> i32 {
+        let bytes = self.take(4);
+        match bytes {
+            Some(b) => i32::from_le_bytes(b.try_into().unwrap()),
+            None => 0,
+        }
+    }
+
+    fn string(&mut self) -> String {
+        let len = self.i32();
+        if len < 0 {
+            return String::new();
+        }
+        match self.take(len as usize) {
+            Some(b) => String::from_utf8_lossy(b).into_owned(),
+            None => String::new(),
+        }
+    }
+
+    fn take(&mut self, len: usize) -> Option<&'a [u8]> {
+        if self.pos + len > self.data.len() {
+            self.pos = self.data.len();
+            return None;
+        }
+        let slice = &self.data[self.pos..self.pos + len];
+        self.pos += len;
+        Some(slice)
+    }
+}
+
+/// The `CompressionInfo` harvest off the existing `.animation`
+/// (`DoExport`'s `_wfopen("rb")` block): the header, and from the first
+/// channel the type — a type 4 channel donates the three errors.
+fn harvest_compression_info(data: &[u8]) -> CompressionInfo {
+    let mut ci = CompressionInfo::default();
+    let mut r = Harvest::new(data);
+
+    // Read in the header
+    let _total = r.f32();
+    let _name = r.string();
+    let _name2 = r.string();
     let num_channels = r.i32();
-    if !r.ok() || num_channels <= 0 {
-        return CompressionInfo::default();
+
+    // Get the compression amounts from the first channel
+    if num_channels > 0 {
+        let channel_type = r.i32();
+        // Provided it's the correct type
+        if channel_type == 4 {
+            let _s = r.string();
+            ci.specify_amounts = true;
+            ci.scale_compression_error = r.f32();
+            ci.position_compression_error = r.f32();
+            ci.rotation_compression_error = r.f32();
+        }
     }
-    let channel_type = r.i32();
-    if !r.ok() || channel_type != 4 {
-        return CompressionInfo::default();
-    }
-    let _identifier = r.string();
-    let mut ci = CompressionInfo {
-        specify_amounts: true,
-        ..CompressionInfo::default()
-    };
-    ci.scale_compression_error = r.f32();
-    ci.position_compression_error = r.f32();
-    ci.rotation_compression_error = r.f32();
-    if !r.ok() {
-        return CompressionInfo::default();
-    }
+
     ci
 }
 
-/// The note-track cue track (`cuetrack.cpp`). A note is `cue:name` or
-/// `sound:name`; the cue strings become `c`/`s` prefixed, keyed by frame
-/// offset from the export's first frame.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct CueTrack {
-    /// Cues by frame offset from the first frame, insertion-ordered per
-    /// frame: `std::map<TimeValue, std::list<BW::string>>` keyed by the
-    /// note key's tick time minus `firstFrame * GetTicksPerFrame()`.
-    cues: BTreeMap<i32, Vec<String>>,
+/// `MFXExport::readReferenceHierarchy`: the child → parent identifier
+/// pairs of a visual node tree, in document order.
+fn read_reference_hierarchy(section: &DataSection, out: &mut Vec<(String, String)>) {
+    let id = section.read_string("identifier", "");
+    for i in 0..section.count_children() {
+        if let Some(node) = section.open_child(i)
+            && node.section_name() == "node"
+        {
+            out.push((node.read_string("identifier", ""), id.clone()));
+            read_reference_hierarchy(node, out);
+        }
+    }
 }
 
-impl CueTrack {
-    /// `CueTrack::addCue` (`cuetrack.cpp:14-51`). `frame` is the note key's
-    /// time in frames — the reference divides the tick time by
-    /// `GetTicksPerFrame()` here and subtracts the first frame's ticks,
-    /// and `writeFile` divides the ticks back out, so the ticks cancel and
-    /// only the frame offset remains. A cue outside the frame range is
-    /// dropped, a note without a `:` or with an unknown prefix is
-    /// dropped, and a repeated cue at the same frame is dropped.
-    pub fn add_cue(&mut self, frame: i32, note: &str, first_frame: i32, last_frame: i32) {
-        if frame < first_frame || frame > last_frame {
-            return;
-        }
-        let time = frame - first_frame;
+// ===========================================================================
+// Host seam
+// ===========================================================================
 
-        let split = match note.find(':') {
-            Some(at) => at,
-            None => return,
-        };
-        let (kind, rest) = note.split_at(split);
-        let rest = &rest[1..];
-        let cue = match kind {
-            "sound" => format!("s{rest}"),
-            "cue" => format!("c{rest}"),
-            _ => return,
-        };
+/// The host faces `DoExport` reaches through the Max SDK, `BWResource` and
+/// the C runtime.
+pub trait AnimationIo {
+    /// `BWResolver::dissolveFilename`: the resource-relative path, or the
+    /// input unchanged when it is not under a res path.
+    fn dissolve_filename(&self, filename: &str) -> String;
 
-        let entry = self.cues.entry(time).or_default();
-        if entry.contains(&cue) {
-            return;
-        }
-        entry.push(cue);
+    /// `BWResource::getPath(i)` until `""` — the valid game paths listed
+    /// by the res-path abort message.
+    fn res_paths(&self) -> Vec<String>;
+
+    /// `BWResource::openSection` (the reference-nodes visual file).
+    fn open_section(&self, filename: &str) -> Option<DataSection>;
+
+    /// `DataResource(filename, RESOURCE_TYPE_XML)` read: the root
+    /// section, or `None` when the file does not exist.
+    fn read_settings_xml(&self, filename: &str) -> Option<DataSection>;
+
+    /// The `DataResource::save` write face.
+    fn write_settings_xml(&mut self, filename: &str, root: &DataSection);
+
+    /// `_wfopen(filename, "rb")`: the existing `.animation` bytes.
+    fn read_animation(&self, filename: &str) -> Option<Vec<u8>>;
+
+    /// `_wfopen(filename, "wb")` plus the write: false when the host
+    /// refuses (the reference then skips the settings rewrite too).
+    fn write_animation(&mut self, filename: &str, bytes: &[u8]) -> bool;
+
+    /// `::DeleteFile(settingsFilename)`.
+    fn delete_file(&mut self, filename: &str);
+
+    /// `getCfgFilename`: the Max plugin config directory plus
+    /// `CFGFilename`; the directory is the host's, so the default is the
+    /// bare file name.
+    fn cfg_filename(&self) -> String {
+        CFG_FILENAME.to_string()
     }
 
-    /// `CueTrack::hasCues` (`cuetrack.cpp:86-100`).
-    pub fn has_cues(&self) -> bool {
-        self.cues.values().any(|entry| !entry.is_empty())
+    /// `GetTicksPerFrame()`: the Max default.
+    fn ticks_per_frame(&self) -> i32 {
+        160
     }
 
-    /// `CueTrack::clear` (`cuetrack.cpp:9-12`).
-    pub fn clear(&mut self) {
-        self.cues.clear();
+    /// `GetMasterScale(UNITS_CENTIMETERS)/100`: with the host's default
+    /// system unit of centimetres the factor is 1, so `0.01`.
+    fn unit_scale(&self) -> f32 {
+        0.01
     }
+}
 
-    /// The cues the channel would carry, by frame offset.
-    pub fn cues(&self) -> impl Iterator<Item = (i32, &[String])> {
-        self.cues
-            .iter()
-            .map(|(time, entry)| (*time, entry.as_slice()))
-    }
+// ===========================================================================
+// Exporter
+// ===========================================================================
 
-    /// `CueTrack::writeFile` (`cuetrack.cpp:54-84`): nothing at all when
-    /// there are no cues — not even the channel type.
-    fn write(&self, w: &mut Writer) {
-        let num: usize = self.cues.values().map(Vec::len).sum();
-        if num == 0 {
-            return;
-        }
-        w.i32(6);
-        w.i32(num as i32);
-        for (time, entry) in &self.cues {
-            for cue in entry {
-                w.f32(*time as f32);
-                w.string(cue);
-                // no additional args
-                w.i32(0);
+/// The export request (`DoExport`'s parameters).
+#[derive(Debug, Clone, Default)]
+pub struct ExportInput {
+    /// The path Max hands the plugin; exactly ten characters are stripped
+    /// before the `.animation` suffix is appended.
+    pub filename: String,
+    /// The scene root node (`ip_->GetRootNode()`).
+    pub scene: SceneNode,
+    /// `options == SCENE_EXPORT_SELECTED`.
+    pub options_selected: bool,
+    /// `ip_->GetAnimRange()` as frames (`Start()/GetTicksPerFrame()`,
+    /// `End()/GetTicksPerFrame()`).
+    pub anim_range: (i32, i32),
+    /// `ip_->GetTime()/GetTicksPerFrame()`.
+    pub current_frame: i32,
+    /// The maxscript `BWAnimationSetting` override section
+    /// (`pSettingsOverride`).
+    pub override_section: Option<DataSection>,
+}
+
+/// The two abort paths of `DoExport`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExportError {
+    /// The valid game path check; the message lists the res paths.
+    NotInResPath(String),
+    /// `validateAnimationIDs` failure; the message lists the sorted
+    /// duplicate identifiers, one `Duplicate node name <id>` per line.
+    InvalidIds(String),
+}
+
+impl std::fmt::Display for ExportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExportError::NotInResPath(message) | ExportError::InvalidIds(message) => {
+                write!(f, "{message}")
             }
         }
     }
 }
 
-/// `DoExport`'s name crop (`mfxexp.cpp:424-436`): everything past the last
-/// path separator, then past the last dot. A separator at index 0 or a dot
-/// at index 0 leaves the name whole (the reference's `> 0` guards).
-pub fn animation_name(path: &str) -> &str {
-    let mut name = path;
-    if let Some(at) = name.rfind(['/', '\\'])
-        && at > 0
-    {
-        name = &name[at + 1..];
-    }
-    if let Some(at) = name.rfind('.')
-        && at > 0
-    {
-        name = &name[..at];
-    }
-    name
+/// The exporter (`MFXExport::DoExport`), generic over the host seam.
+pub struct MfxExporter<I: AnimationIo> {
+    io: I,
+    cue_track: CueTrack,
+    warnings: Vec<String>,
+    /// `meshNodes_` of the last export, as flat-scene indices.
+    mesh_nodes: Vec<usize>,
+    /// `envelopeNodes_` of the last export.
+    envelope_nodes: Vec<usize>,
 }
 
-/// `trailingLeadingWhitespaces` (`utility.cpp:88-94`): the exporter warns
-/// about a node name with a leading or trailing space (the reference pops
-/// a message box and carries on; the port carries the predicate).
-pub fn has_trailing_leading_whitespace(name: &str) -> bool {
-    name.starts_with(' ') || name.ends_with(' ')
-}
-
-/// The export (`MFXExport::DoExport`, `mfxexp.cpp:224-511` — its write
-/// face): the include pass, the root pass and the channel writes, minus
-/// the file, the settings dialogs and the message boxes.
-///
-/// The root takes the fixed `Scene Root` identifier and is detached from
-/// the sampler (the reference's `setMaxNode(NULL)`), so its channel is the
-/// identity pose — the fixture-verified `Scene Root` channel every
-/// shipped `.animation` opens with. `sample` answers each node's
-/// world-space transform at a frame; `None` marks a hierarchy-only node.
-/// The header carries the animation's own name twice (identifier and
-/// internal identifier), the total time as `lastFrame - firstFrame` and
-/// the channel count; an export with no channels at all writes no bytes
-/// (the reference writes no file).
-pub fn export(
-    root: &mut ExportNode,
-    sample: impl Fn(&str, i32) -> Option<Matrix>,
-    settings: &ExportSettings,
-    cue_track: Option<&CueTrack>,
-    compression: CompressionInfo,
-    anim_name: &str,
-) -> Vec<u8> {
-    root.set_identifier("Scene Root");
-    root.munge_included();
-    sort_root_children(root);
-
-    let mut n_channels = 0;
-    if settings.export_node_animation {
-        n_channels += root.n_included_nodes();
-    }
-    if settings.export_cue_track && cue_track.is_some_and(CueTrack::has_cues) {
-        n_channels += 1;
-    }
-    if n_channels == 0 {
-        return Vec::new();
-    }
-
-    let mut w = Writer::default();
-    w.f32((settings.last_frame - settings.first_frame) as f32);
-    w.string(anim_name);
-    w.string(anim_name);
-    w.i32(n_channels as i32);
-
-    if settings.export_node_animation {
-        export_node_animation(&mut w, root, &[], None, settings, compression, &sample);
-    }
-    if settings.export_cue_track
-        && let Some(cue_track) = cue_track
-    {
-        cue_track.write(&mut w);
-    }
-    w.bytes
-}
-
-/// `MFXNode::exportAnimation` (`mfxnode.cpp:170-262`), one recursion step:
-/// the node's own channel when included, then the children in scene
-/// order. `ancestors` is the node path from the root down to this node's
-/// parent (`ancestors[0]` is the root); `ideal` is the nearest included
-/// ancestor — the parent the channel's keys are relative to.
-fn export_node_animation(
-    w: &mut Writer,
-    node: &ExportNode,
-    ancestors: &[&ExportNode],
-    ideal: Option<&ExportNode>,
-    settings: &ExportSettings,
-    compression: CompressionInfo,
-    sample: &impl Fn(&str, i32) -> Option<Matrix>,
-) {
-    if node.include {
-        // `getRelativeTransform` (`mfxnode.cpp:70-120`): the ideal
-        // parent, defaulting to the immediate one; the node's world
-        // against its inverse, or the world alone at the top.
-        let ideal_parent = ideal.or_else(|| ancestors.last().copied());
-        let mut scales: Vec<(f32, Vector3)> = Vec::new();
-        let mut positions: Vec<(f32, Vector3)> = Vec::new();
-        let mut rotations: Vec<(f32, Quaternion)> = Vec::new();
-        let mut bound_table: Vec<i32> = Vec::new();
-
-        let mut time = 0.0f32;
-        for frame in settings.first_frame..=settings.last_frame {
-            // `getRelativeTransform` (`mfxnode.cpp:70-120`): a sampled
-            // node's world against the ideal parent's inverse — or its
-            // own world at the top — while a hierarchy-only node's
-            // relative transform is its stored identity, whatever its
-            // parent's world (`transform_`).
-            let own = own_world(node, ancestors, frame, settings, sample);
-            let relative = match own {
-                Some(world) => match ideal_parent {
-                    Some(parent) => {
-                        let parent_world =
-                            ancestor_world(parent, ancestors, frame, settings, sample);
-                        let mut inverse = parent_world;
-                        invert_affine(&mut inverse);
-                        let mut relative = Matrix::zero();
-                        relative.multiply(&world, &inverse);
-                        relative
-                    }
-                    None => world,
-                },
-                None => Matrix::identity(),
-            };
-
-            // `mfxnode.cpp:231-263`: rearrange, decompose, normalise the
-            // rotation, scale the translation.
-            let rearranged = rearrange_matrix(&relative, settings.use_legacy_orientation);
-            let (mut rotation, scale, translation) = decompose(&rearranged);
-            rotation.normalise();
-            bound_table.push(frame - settings.first_frame + 1);
-            scales.push((time, scale));
-            positions.push((
-                time,
-                Vector3::new(
-                    translation.x * settings.unit_scale,
-                    translation.y * settings.unit_scale,
-                    translation.z * settings.unit_scale,
-                ),
-            ));
-            rotations.push((time, rotation));
-            time += 1.0;
-        }
-
-        // The channel head (`mfxnode.cpp:218-232`), then the key
-        // sequences and the three bound tables (`mfxnode.cpp:233-237`).
-        if compression.specify_amounts {
-            w.i32(4);
-            w.string(&node.identifier);
-            w.f32(compression.scale_compression_error);
-            w.f32(compression.position_compression_error);
-            w.f32(compression.rotation_compression_error);
-        } else {
-            w.i32(1);
-            w.string(&node.identifier);
-        }
-        w.f32_seq_vec3(&scales);
-        w.f32_seq_vec3(&positions);
-        w.f32_seq_quat(&rotations);
-        w.i32_seq(&bound_table);
-        w.i32_seq(&bound_table);
-        w.i32_seq(&bound_table);
-    }
-
-    let next_ideal = if node.include { Some(node) } else { ideal };
-    let mut path: Vec<&ExportNode> = ancestors.to_vec();
-    path.push(node);
-    for child in &node.children {
-        export_node_animation(w, child, &path, next_ideal, settings, compression, sample);
-    }
-}
-
-/// `MFXNode::getTransform`'s `node_` arm (`mfxnode.cpp:41-47`): the
-/// node's own world transform, normalised to strip scale when the export
-/// forbids it. The root answers `None` — the reference detaches it
-/// before exporting (`setMaxNode(NULL)`), and an empty ancestor path is
-/// how the port sees that.
-fn own_world(
-    node: &ExportNode,
-    ancestors: &[&ExportNode],
-    frame: i32,
-    settings: &ExportSettings,
-    sample: &impl Fn(&str, i32) -> Option<Matrix>,
-) -> Option<Matrix> {
-    if ancestors.is_empty() {
-        return None;
-    }
-    sample(node.identifier(), frame).map(|world| {
-        if !settings.allow_scale {
-            normalise_matrix(&world)
-        } else {
-            world
-        }
-    })
-}
-
-/// A hierarchy-only node's world: its parent's, resolved up the chain —
-/// the nearest sampled ancestor's transform (`getTransform`'s parent arm
-/// over the identity `transform_`), and the identity at the top.
-/// `ancestors[0]` is the root: detached, never sampled.
-fn ancestor_chain_world(
-    ancestors: &[&ExportNode],
-    frame: i32,
-    settings: &ExportSettings,
-    sample: &impl Fn(&str, i32) -> Option<Matrix>,
-) -> Matrix {
-    for (index, node_up) in ancestors.iter().enumerate().rev() {
-        if index == 0 {
-            break;
-        }
-        if let Some(world) = own_world(node_up, &ancestors[..index], frame, settings, sample) {
-            return world;
-        }
-    }
-    Matrix::identity()
-}
-
-/// `MFXNode::getTransform` (`mfxnode.cpp:36-66`): the node's own world
-/// transform when it is sampled, otherwise the chain's.
-fn world_of(
-    node: &ExportNode,
-    ancestors: &[&ExportNode],
-    frame: i32,
-    settings: &ExportSettings,
-    sample: &impl Fn(&str, i32) -> Option<Matrix>,
-) -> Matrix {
-    own_world(node, ancestors, frame, settings, sample)
-        .unwrap_or_else(|| ancestor_chain_world(ancestors, frame, settings, sample))
-}
-
-/// An ancestor's world transform: the same resolution over that
-/// ancestor's own path (`ancestors` truncated to its position).
-fn ancestor_world(
-    ancestor: &ExportNode,
-    ancestors: &[&ExportNode],
-    frame: i32,
-    settings: &ExportSettings,
-    sample: &impl Fn(&str, i32) -> Option<Matrix>,
-) -> Matrix {
-    let index = ancestors
-        .iter()
-        .position(|node| std::ptr::eq(*node, ancestor))
-        .expect("the ideal parent is an ancestor");
-    world_of(ancestor, &ancestors[..index], frame, settings, sample)
-}
-
-/// `rearrangeMatrix` (`utility.cpp:42-64`): Max's Z-up to the engine's
-/// Y-up — columns one and two trade places, basis rows one and two trade
-/// places, and the legacy orientation adds the row/column negations in
-/// the reference's order (rows first, then columns, so the shared cells
-/// flip twice and stay). The translation row is carried from the input:
-/// the fixtures show it survives (the `CrabHub` position keys equal the
-/// visual node's translation row).
-fn rearrange_matrix(m: &Matrix, legacy: bool) -> Matrix {
-    let mut mm = Matrix::identity();
-    for r in 0..3 {
-        mm.m[r][0] = m.m[r][0];
-        mm.m[r][1] = m.m[r][2];
-        mm.m[r][2] = m.m[r][1];
-    }
-    for c in 0..3 {
-        let row2 = mm.m[2][c];
-        mm.m[2][c] = mm.m[1][c];
-        mm.m[1][c] = row2;
-    }
-    if legacy {
-        for c in 0..3 {
-            mm.m[2][c] = -mm.m[2][c];
-            mm.m[0][c] = -mm.m[0][c];
-        }
-        for row in mm.m.iter_mut().take(3) {
-            row[2] = -row[2];
-            row[0] = -row[0];
-        }
-    }
-    mm.m[3][0] = m.m[3][0];
-    mm.m[3][1] = m.m[3][1];
-    mm.m[3][2] = m.m[3][2];
-    mm.m[3][3] = 1.0;
-    mm
-}
-
-/// `normaliseMatrix` (`utility.cpp:71-86`): the basis rows scaled to unit
-/// length, the translation row copied.
-fn normalise_matrix(m: &Matrix) -> Matrix {
-    let mut out = *m;
-    for r in 0..3 {
-        let row = Vector3::new(m.m[r][0], m.m[r][1], m.m[r][2]);
-        let length = row.length();
-        if length != 0.0 {
-            out.m[r][0] /= length;
-            out.m[r][1] /= length;
-            out.m[r][2] /= length;
-        }
-    }
-    out
-}
-
-/// The affine inverse the relative transform needs (Max's `Inverse` on a
-/// basis-rows-plus-translation matrix): the 3x3 basis inverted through
-/// its adjugate, the translation row re-expressed in the inverted basis
-/// (`w = v * M` maps to `v_local * R + T`, so the inverse row is
-/// `-T * R⁻¹`). A singular basis has no reference-defined inverse; the
-/// port answers the identity, which keeps a degenerate input producing
-/// degenerate keys instead of undefined memory.
-fn invert_affine(m: &mut Matrix) {
-    let det = m.m[0][0] * (m.m[1][1] * m.m[2][2] - m.m[1][2] * m.m[2][1])
-        - m.m[0][1] * (m.m[1][0] * m.m[2][2] - m.m[1][2] * m.m[2][0])
-        + m.m[0][2] * (m.m[1][0] * m.m[2][1] - m.m[1][1] * m.m[2][0]);
-    if det == 0.0 {
-        *m = Matrix::identity();
-        return;
-    }
-    let inv_det = 1.0 / det;
-    let mut inv = Matrix::zero();
-    for (i, row) in inv.m.iter_mut().enumerate().take(3) {
-        for (j, cell) in row.iter_mut().enumerate().take(3) {
-            // inverse[i][j] = cofactor(j, i) / det
-            let (a, b) = ((j + 1) % 3, (j + 2) % 3);
-            let (c, d) = ((i + 1) % 3, (i + 2) % 3);
-            *cell = (m.m[a][c] * m.m[b][d] - m.m[a][d] * m.m[b][c]) * inv_det;
-        }
-    }
-    let translation = Vector3::new(m.m[3][0], m.m[3][1], m.m[3][2]);
-    inv.m[3][0] =
-        -(translation.x * inv.m[0][0] + translation.y * inv.m[1][0] + translation.z * inv.m[2][0]);
-    inv.m[3][1] =
-        -(translation.x * inv.m[0][1] + translation.y * inv.m[1][1] + translation.z * inv.m[2][1]);
-    inv.m[3][2] =
-        -(translation.x * inv.m[0][2] + translation.y * inv.m[1][2] + translation.z * inv.m[2][2]);
-    inv.m[3][3] = 1.0;
-    *m = inv;
-}
-
-/// `BlendTransform::init` (`blend_transform.cpp:54-86`) with the
-/// exporter's `normaliseRotation` (`mfxnode.cpp:257`): the scale is the
-/// basis row lengths, the rows normalise to the rotation, a left-handed
-/// basis flips the third row (and its scale), the translation is the
-/// fourth row, and the rotation quaternion comes from the matrix.
-fn decompose(m: &Matrix) -> (Quaternion, Vector3, Vector3) {
-    let mut rows = [
-        Vector3::new(m.m[0][0], m.m[0][1], m.m[0][2]),
-        Vector3::new(m.m[1][0], m.m[1][1], m.m[1][2]),
-        Vector3::new(m.m[2][0], m.m[2][1], m.m[2][2]),
-    ];
-    let mut scale = Vector3::new(rows[0].length(), rows[1].length(), rows[2].length());
-    for (row, s) in rows.iter_mut().zip([scale.x, scale.y, scale.z]) {
-        row.scale(1.0 / s);
-    }
-
-    // XPVec3Cross then XPVec3Dot (`vector3.ipp:122-133`).
-    let cross = Vector3::new(
-        rows[0].y * rows[1].z - rows[0].z * rows[1].y,
-        rows[0].z * rows[1].x - rows[0].x * rows[1].z,
-        rows[0].x * rows[1].y - rows[0].y * rows[1].x,
-    );
-    if cross.dot_product(&rows[2]) < 0.0 {
-        rows[2].scale(-1.0);
-        scale.z *= -1.0;
-    }
-
-    let translation = Vector3::new(m.m[3][0], m.m[3][1], m.m[3][2]);
-
-    let mut rotation_matrix = Matrix::zero();
-    for (r, row) in rows.iter().enumerate() {
-        rotation_matrix.m[r][0] = row.x;
-        rotation_matrix.m[r][1] = row.y;
-        rotation_matrix.m[r][2] = row.z;
-    }
-    rotation_matrix.m[3][3] = 1.0;
-    let mut rotation = Quaternion::from_matrix(&rotation_matrix);
-    rotation.normalise();
-    (rotation, scale, translation)
-}
-
-/// The root's immediate children re-ordered by descending direct-child
-/// count (`mfxexp.cpp:383-399`, `numChildDescending`): `std::list::sort`
-/// is stable, so equally-sized children keep their scene order.
-fn sort_root_children(root: &mut ExportNode) {
-    root.children
-        .sort_by_key(|child| std::cmp::Reverse(child.n_children()));
-}
-
-/// The `BinaryFile` wire (`cstdmf/binaryfile.hpp`): little-endian
-/// scalars, `int32`-length-prefixed strings, `writeSequence`'s `u32`
-/// count then the elements — pairs laid out as their members in order,
-/// `(time, components)`.
-#[derive(Default)]
-struct Writer {
-    bytes: Vec<u8>,
-}
-
-impl Writer {
-    fn f32(&mut self, value: f32) {
-        self.bytes.extend_from_slice(&value.to_le_bytes());
-    }
-
-    fn i32(&mut self, value: i32) {
-        self.bytes.extend_from_slice(&value.to_le_bytes());
-    }
-
-    fn string(&mut self, value: &str) {
-        self.i32(value.len() as i32);
-        self.bytes.extend_from_slice(value.as_bytes());
-    }
-
-    fn f32_seq_vec3(&mut self, keys: &[(f32, Vector3)]) {
-        self.bytes
-            .extend_from_slice(&(keys.len() as u32).to_le_bytes());
-        for (time, v) in keys {
-            self.f32(*time);
-            self.f32(v.x);
-            self.f32(v.y);
-            self.f32(v.z);
-        }
-    }
-
-    fn f32_seq_quat(&mut self, keys: &[(f32, Quaternion)]) {
-        self.bytes
-            .extend_from_slice(&(keys.len() as u32).to_le_bytes());
-        for (time, q) in keys {
-            self.f32(*time);
-            self.f32(q.x);
-            self.f32(q.y);
-            self.f32(q.z);
-            self.f32(q.w);
-        }
-    }
-
-    fn i32_seq(&mut self, values: &[i32]) {
-        self.bytes
-            .extend_from_slice(&(values.len() as u32).to_le_bytes());
-        for value in values {
-            self.i32(*value);
-        }
-    }
-}
-
-/// The header peek's read side: little-endian scalars and
-/// length-prefixed strings over the raw bytes, failing soft on
-/// truncation the way `BinaryFile`'s error flag does.
-struct Reader<'a> {
-    data: &'a [u8],
-    pos: usize,
-    failed: bool,
-}
-
-impl<'a> Reader<'a> {
-    fn new(data: &'a [u8]) -> Self {
+impl<I: AnimationIo> MfxExporter<I> {
+    pub fn new(io: I) -> Self {
         Self {
-            data,
-            pos: 0,
-            failed: false,
+            io,
+            cue_track: CueTrack::default(),
+            warnings: Vec::new(),
+            mesh_nodes: Vec::new(),
+            envelope_nodes: Vec::new(),
         }
     }
 
-    fn ok(&self) -> bool {
-        !self.failed
+    /// The `trailingLeadingWhitespaces` warnings of the last export.
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
     }
 
-    fn read(&mut self, len: usize) -> &'a [u8] {
-        if self.failed || self.pos + len > self.data.len() {
-            self.failed = true;
-            return &[];
-        }
-        let slice = &self.data[self.pos..self.pos + len];
-        self.pos += len;
-        slice
+    /// The cue track accumulated by the last export.
+    pub fn cue_track(&self) -> &CueTrack {
+        &self.cue_track
     }
 
-    fn f32(&mut self) -> f32 {
-        let bytes = self.read(4);
-        if bytes.len() < 4 {
-            return 0.0;
-        }
-        let mut a = [0u8; 4];
-        a.copy_from_slice(bytes);
-        f32::from_le_bytes(a)
+    /// The `meshNodes_` classification of the last export.
+    pub fn mesh_nodes(&self) -> &[usize] {
+        &self.mesh_nodes
     }
 
-    fn i32(&mut self) -> i32 {
-        let bytes = self.read(4);
-        if bytes.len() < 4 {
-            return 0;
-        }
-        let mut a = [0u8; 4];
-        a.copy_from_slice(bytes);
-        i32::from_le_bytes(a)
+    /// The `envelopeNodes_` classification of the last export.
+    pub fn envelope_nodes(&self) -> &[usize] {
+        &self.envelope_nodes
     }
 
-    fn string(&mut self) -> String {
-        let len = self.i32();
-        if len < 0 || self.failed {
-            self.failed = true;
-            return String::new();
+    /// `MFXExport::preProcess`: one [`MfxNode`] per scene node, include
+    /// flags per the node filter (the scene root always passes), the
+    /// forced class exclusions, the mesh/envelope split and the cue
+    /// harvest (every node's note keys, pre-order, when the cue track is
+    /// wanted).
+    fn pre_process(&mut self, settings: &ExportSettings, scene: &SceneNode) -> MfxTree {
+        let tpf = self.io.ticks_per_frame();
+        let mut tree = MfxTree {
+            nodes: Vec::new(),
+            root: 0,
+            flat: Vec::new(),
+            mesh_nodes: Vec::new(),
+            envelope_nodes: Vec::new(),
+        };
+        tree.root = self.visit_node(&mut tree, settings, scene, None, tpf);
+        tree
+    }
+
+    fn visit_node(
+        &mut self,
+        tree: &mut MfxTree,
+        settings: &ExportSettings,
+        scene: &SceneNode,
+        parent: Option<usize>,
+        tpf: i32,
+    ) -> usize {
+        let mut include = if settings.node_filter == NodeFilter::All || parent.is_none() {
+            true
+        } else if settings.node_filter == NodeFilter::Selected {
+            scene.selected
+        } else {
+            !scene.hidden
+        };
+
+        // The `EvalWorldState(staticFrame)` class exclusions.
+        if scene.kind != NodeKind::Object {
+            include = false;
         }
-        let bytes = self.read(len as usize);
-        if bytes.len() < len as usize {
-            return String::new();
+
+        let flat_index = tree.flat.len();
+
+        // The `MFXNode` constructor harvests the note keys for every node
+        // when the cue track is wanted.
+        if settings.export_cue_track {
+            for (ticks, note) in &scene.note_keys {
+                self.cue_track.add_cue(
+                    *ticks,
+                    note,
+                    tpf,
+                    settings.frame_first,
+                    settings.frame_last,
+                );
+            }
         }
-        String::from_utf8_lossy(bytes).into_owned()
+
+        if include {
+            // The physique/skin split: skinned nodes export through the
+            // envelope path and lose their animation include flag.
+            if scene.skinned {
+                tree.envelope_nodes.push(flat_index);
+                include = false;
+            } else {
+                tree.mesh_nodes.push(flat_index);
+            }
+        }
+
+        let index = tree.nodes.len();
+        tree.nodes.push(MfxNode {
+            identifier: scene.name.clone(),
+            scene: Some(flat_index),
+            parent,
+            children: Vec::new(),
+            include,
+            transform: Matrix::identity(),
+        });
+        tree.flat.push(FlatScene {
+            name: scene.name.clone(),
+            world: scene.world.clone(),
+        });
+        if let Some(parent) = parent {
+            tree.nodes[parent].children.push(index);
+        }
+
+        for child in &scene.children {
+            self.visit_node(tree, settings, child, Some(index), tpf);
+        }
+        index
+    }
+
+    /// `MFXExport::DoExport`.
+    pub fn do_export(&mut self, input: &ExportInput) -> Result<(), ExportError> {
+        self.warnings.clear();
+
+        // Force the extension: exactly ten characters are stripped before
+        // ".animation" is appended. A shorter name strips nothing (the
+        // reference's `substr` would throw); a cut that would land inside
+        // a UTF-8 sequence strips nothing either.
+        let cut = input.filename.len().saturating_sub(10);
+        let stem = if input.filename.is_char_boundary(cut) {
+            &input.filename[..cut]
+        } else {
+            input.filename.as_str()
+        };
+        let filename = format!("{stem}.animation");
+
+        // Check if the filename is in the right res path.
+        let name2 = self.io.dissolve_filename(&filename);
+        if name2.len() == filename.len() || name2.rfind(['/', '\\']).is_none() {
+            let mut error_string = format!(
+                "The exported file \"{}\" is not in a valid game path.\n",
+                filename
+            );
+            error_string.push_str("Need to export to a *subfolder* of:");
+            for path in self.io.res_paths() {
+                error_string.push('\n');
+                error_string.push_str(&path);
+            }
+            return Err(ExportError::NotInResPath(error_string));
+        }
+
+        let mut settings = ExportSettings::default();
+        settings.set_frame_range(input.anim_range.0, input.anim_range.1);
+
+        let cfg_filename = self.io.cfg_filename();
+        let settings_filename = format!("{}.animationsettings", remove_extension(&filename));
+
+        settings.read_settings(self.io.read_settings_xml(&cfg_filename).as_ref());
+        settings.read_settings(self.io.read_settings_xml(&settings_filename).as_ref());
+        settings.read_settings(input.override_section.as_ref());
+
+        settings.static_frame = input.current_frame;
+
+        // `displayDialog` is the host GUI face; the port runs
+        // prompt-suppressed, which takes the dialog's IDOK path.
+
+        if input.options_selected {
+            settings.node_filter = NodeFilter::Selected;
+        } else {
+            settings.node_filter = NodeFilter::Visible;
+        }
+
+        let mut cfg_root = DataSection::new("root");
+        settings.write_settings(Some(&mut cfg_root));
+        self.io.write_settings_xml(&cfg_filename, &cfg_root);
+
+        // clear any old cue track as plugins is kept loaded and CueTrack
+        // is a singleton
+        if settings.export_cue_track {
+            self.cue_track.clear();
+        }
+
+        let mut tree = self.pre_process(&settings, &input.scene);
+        self.mesh_nodes = tree.mesh_nodes.clone();
+        self.envelope_nodes = tree.envelope_nodes.clone();
+
+        // exportMeshes()/exportEnvelopes() are the Max-host companion
+        // visual write; the port keeps the classification on the tree.
+
+        if !settings.reference_nodes_file.is_empty() {
+            let resolved = self.io.dissolve_filename(&settings.reference_nodes_file);
+            if let Some(visual) = self.io.open_section(&resolved) {
+                // `readReferenceHierarchy` starts at the root "node"
+                // section; a visual without one skips the re-parent (the
+                // reference dereferences NULL there).
+                if let Some(root_node) = visual.open_section("node") {
+                    let mut pairs = Vec::new();
+                    read_reference_hierarchy(root_node, &mut pairs);
+
+                    // The reference's `StringHashMap` iteration order is
+                    // unspecified; the port applies first-insertion order
+                    // with last-wins parents.
+                    let mut order: Vec<String> = Vec::new();
+                    let mut parents: HashMap<String, String> = HashMap::new();
+                    for (child, parent) in pairs {
+                        if !parents.contains_key(&child) {
+                            order.push(child.clone());
+                        }
+                        parents.insert(child, parent);
+                    }
+                    for child in order {
+                        let parent = parents[&child].clone();
+                        if let (Some(p), Some(c)) = (tree.find(&parent), tree.find(&child)) {
+                            tree.reparent(c, p);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Order the immediate children of mfxRoot_ in decending order
+        // based on their respective child count.
+        tree.sort_root_children();
+
+        tree.munge_included();
+
+        // Check if we have any duplicate node id's or morph target ids
+        if settings.export_node_animation {
+            let duplicates = tree.duplicate_names();
+            if !duplicates.is_empty() {
+                let mut error_message = String::new();
+                for duplicate in &duplicates {
+                    error_message.push_str("Duplicate node name ");
+                    error_message.push_str(duplicate);
+                    error_message.push('\n');
+                }
+                return Err(ExportError::InvalidIds(error_message));
+            }
+        }
+
+        let mut anim_name = filename.clone();
+        // `find_last_of("\\/") > 0` skips a leading separator and falls
+        // through (whole string) when none is found.
+        if let Some(i) = anim_name.rfind(['\\', '/'])
+            && i > 0
+        {
+            anim_name = anim_name[i + 1..].to_string();
+        }
+        if let Some(i) = anim_name.rfind('.')
+            && i > 0
+        {
+            anim_name.truncate(i);
+        }
+
+        let mut n_channels: i32 = 0;
+        if settings.export_node_animation {
+            n_channels += tree.n_included_nodes() as i32;
+        }
+        if settings.export_cue_track && self.cue_track.has_cues() {
+            n_channels += 1;
+        }
+
+        if n_channels > 0 {
+            let mut ci = CompressionInfo::default();
+
+            // Try to read in compression amounts
+            if let Some(existing) = self.io.read_animation(&filename) {
+                ci = harvest_compression_info(&existing);
+            }
+
+            let mut out = Vec::new();
+            w_f32(
+                &mut out,
+                (settings.frame_last - settings.frame_first) as f32,
+            );
+            w_str(&mut out, &anim_name);
+            w_str(&mut out, &anim_name);
+            w_i32(&mut out, n_channels);
+
+            if settings.export_node_animation {
+                // The root loses its max node and exports as the identity
+                // "Scene Root" channel.
+                tree.nodes[tree.root].scene = None;
+                tree.nodes[tree.root].identifier = "Scene Root".to_string();
+                tree.export_animation(
+                    tree.root,
+                    &mut out,
+                    &ci,
+                    &settings,
+                    self.io.unit_scale(),
+                    &mut self.warnings,
+                    None,
+                );
+            }
+
+            if settings.export_cue_track {
+                self.cue_track
+                    .write_file(&mut out, self.io.ticks_per_frame());
+            }
+
+            if self.io.write_animation(&filename, &out) {
+                self.io.delete_file(&settings_filename);
+                let mut settings_root = DataSection::new("root");
+                settings.write_settings(Some(&mut settings_root));
+                self.io
+                    .write_settings_xml(&settings_filename, &settings_root);
+            }
+        }
+
+        Ok(())
     }
 }
+
+// ===========================================================================
+// Tests
+// ===========================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The three key sequences an interpolated channel carries.
-    type InterpolatedKeys = (
-        Vec<(f32, Vector3)>,
-        Vec<(f32, Vector3)>,
-        Vec<(f32, Quaternion)>,
-    );
+    // --- the host seam ---
 
-    fn push_f32(bytes: &mut Vec<u8>, value: f32) {
-        bytes.extend_from_slice(&value.to_le_bytes());
+    #[derive(Default)]
+    struct TestIo {
+        res_root: String,
+        res_paths: Vec<String>,
+        sections: HashMap<String, DataSection>,
+        existing_animations: HashMap<String, Vec<u8>>,
+        written_animations: HashMap<String, Vec<u8>>,
+        written_settings: Vec<(String, DataSection)>,
+        deleted: Vec<String>,
+        ticks_per_frame: i32,
+        unit_scale: f32,
+        fail_write: bool,
+        /// Dissolve into a subfolder of the res root regardless of the
+        /// prefix (`chars/<name>`), for names the strip would leave bare.
+        subfolder: bool,
     }
 
-    fn push_i32(bytes: &mut Vec<u8>, value: i32) {
-        bytes.extend_from_slice(&value.to_le_bytes());
-    }
-
-    fn push_string(bytes: &mut Vec<u8>, value: &str) {
-        push_i32(bytes, value.len() as i32);
-        bytes.extend_from_slice(value.as_bytes());
-    }
-
-    /// A rigid world transform: rotation around Y plus a translation,
-    /// composed the way the exporter's matrices are.
-    fn rigid(angle: f32, tx: f32, ty: f32, tz: f32) -> Matrix {
-        let mut rotation = Matrix::identity();
-        rotation.set_rotate_y(angle);
-        rotation.m[3][0] = tx;
-        rotation.m[3][1] = ty;
-        rotation.m[3][2] = tz;
-        rotation
-    }
-
-    #[test]
-    fn animation_name_crops_path_and_extension() {
-        assert_eq!(animation_name("a/b/c/hero_stand.animation"), "hero_stand");
-        assert_eq!(animation_name("hero.animation"), "hero");
-        assert_eq!(animation_name("hero_walk"), "hero_walk");
-        // A separator at index 0 or a dot at index 0: the reference's
-        // `> 0` guards leave the name whole.
-        assert_eq!(animation_name("x.animation"), "x");
-        assert_eq!(animation_name("a\\b\\x.animation"), "x");
-    }
-
-    #[test]
-    fn the_root_channel_is_the_identity_pose() {
-        // The exported root is `Scene Root`, detached from the sampler:
-        // its channel is one identity key per frame — the fixture shape
-        // every shipped `.animation` opens with.
-        let mut root = ExportNode::new("anything");
-        root.set_include(true);
-        let settings = ExportSettings {
-            first_frame: 0,
-            last_frame: 0,
-            ..ExportSettings::default()
-        };
-        let bytes = export(
-            &mut root,
-            |_identifier, _frame| Some(Matrix::identity()),
-            &settings,
-            None,
-            CompressionInfo::default(),
-            "stand",
-        );
-
-        let mut expected = Vec::new();
-        push_f32(&mut expected, 0.0); // totalTime = lastFrame - firstFrame
-        push_string(&mut expected, "stand");
-        push_string(&mut expected, "stand");
-        push_i32(&mut expected, 1); // one channel
-        push_i32(&mut expected, 1); // type 1
-        push_string(&mut expected, "Scene Root");
-        push_i32(&mut expected, 1); // scale keys
-        push_f32(&mut expected, 0.0);
-        push_f32(&mut expected, 1.0);
-        push_f32(&mut expected, 1.0);
-        push_f32(&mut expected, 1.0);
-        push_i32(&mut expected, 1); // position keys
-        push_f32(&mut expected, 0.0);
-        push_f32(&mut expected, 0.0);
-        push_f32(&mut expected, 0.0);
-        push_f32(&mut expected, 0.0);
-        push_i32(&mut expected, 1); // rotation keys
-        push_f32(&mut expected, 0.0);
-        push_f32(&mut expected, 0.0);
-        push_f32(&mut expected, 0.0);
-        push_f32(&mut expected, 0.0);
-        push_f32(&mut expected, 1.0);
-        for _ in 0..3 {
-            push_i32(&mut expected, 1); // bound table
-            push_i32(&mut expected, 1);
-        }
-        assert_eq!(bytes, expected);
-    }
-
-    #[test]
-    fn an_export_with_no_channels_writes_nothing() {
-        let mut root = ExportNode::new("root");
-        let settings = ExportSettings {
-            export_node_animation: false,
-            ..ExportSettings::default()
-        };
-        let bytes = export(
-            &mut root,
-            |_identifier, _frame| None,
-            &settings,
-            None,
-            CompressionInfo::default(),
-            "stand",
-        );
-        assert!(bytes.is_empty());
-    }
-
-    #[test]
-    fn munge_included_marks_the_ancestors_of_every_included_node() {
-        let mut root = ExportNode::new("root");
-        let mut a = ExportNode::new("a");
-        let mut b = ExportNode::new("b");
-        let mut c = ExportNode::new("c");
-        c.set_include(true);
-        b.add_child(c);
-        a.add_child(b);
-        root.add_child(a);
-
-        assert!(root.munge_included());
-        assert!(root.find("a").unwrap().include());
-        assert!(root.find("b").unwrap().include());
-        assert!(root.find("c").unwrap().include());
-        assert_eq!(root.n_included_nodes(), 4);
-    }
-
-    #[test]
-    fn munge_included_leaves_an_excluded_subtree_alone() {
-        let mut root = ExportNode::new("root");
-        root.set_include(true);
-        let mut helper = ExportNode::new("helper");
-        helper.add_child(ExportNode::new("helper_child"));
-        root.add_child(helper);
-
-        assert!(root.munge_included());
-        assert!(!root.find("helper").unwrap().include());
-        assert!(!root.find("helper_child").unwrap().include());
-        assert_eq!(root.n_included_nodes(), 1);
-    }
-
-    #[test]
-    fn the_root_children_are_sorted_by_descending_child_count() {
-        // Two included bones with different child counts: the export
-        // writes the larger family first (the `numChildDescending`
-        // re-order), and the equally-sized pair keeps its scene order.
-        let mut root = ExportNode::new("root");
-        root.set_include(true);
-
-        let mut small = ExportNode::new("small");
-        small.set_include(true);
-        small.add_child({
-            let mut child = ExportNode::new("small_child");
-            child.set_include(true);
-            child
-        });
-
-        let mut equal_a = ExportNode::new("equal_a");
-        equal_a.set_include(true);
-        let mut equal_b = ExportNode::new("equal_b");
-        equal_b.set_include(true);
-
-        let mut large = ExportNode::new("large");
-        large.set_include(true);
-        for name in ["l1", "l2"] {
-            let mut child = ExportNode::new(name);
-            child.set_include(true);
-            large.add_child(child);
-        }
-
-        // Scene order: equal_a, equal_b, large, small.
-        root.add_child(equal_a);
-        root.add_child(equal_b);
-        root.add_child(large);
-        root.add_child(small);
-
-        let settings = ExportSettings {
-            first_frame: 0,
-            last_frame: 0,
-            ..ExportSettings::default()
-        };
-        let bytes = export(
-            &mut root,
-            |_identifier, _frame| Some(Matrix::identity()),
-            &settings,
-            None,
-            CompressionInfo::default(),
-            "x",
-        );
-
-        let mut r = Reader::new(&bytes);
-        let _total = r.f32();
-        let _name = r.string();
-        let _internal = r.string();
-        let count = r.i32();
-        assert_eq!(count, 8); // root + 4 bones + 3 descendants
-        let mut order = Vec::new();
-        for _ in 0..count {
-            let ty = r.i32();
-            assert_eq!(ty, 1);
-            order.push(r.string());
-            // Skip the key sequences (4 floats per scale/position key,
-            // 5 per rotation key) and the three bound tables.
-            skip_vec3_seq(&mut r);
-            skip_vec3_seq(&mut r);
-            skip_quat_seq(&mut r);
-            skip_i32_seq(&mut r);
-            skip_i32_seq(&mut r);
-            skip_i32_seq(&mut r);
-        }
-        // large (2 children) first, then the 1-child family, then the
-        // two 0-child nodes in scene order (stable sort); each family's
-        // channels follow the preorder walk.
-        assert_eq!(
-            order,
-            vec![
-                "Scene Root",
-                "large",
-                "l1",
-                "l2",
-                "small",
-                "small_child",
-                "equal_a",
-                "equal_b"
-            ]
-        );
-    }
-
-    fn skip_vec3_seq(r: &mut Reader) {
-        let count = r.i32();
-        for _ in 0..count {
-            for _ in 0..4 {
-                r.f32();
+    impl TestIo {
+        fn new() -> Self {
+            Self {
+                res_root: "/res/".to_string(),
+                res_paths: vec!["C:/game/res".to_string()],
+                ticks_per_frame: 160,
+                unit_scale: 0.01,
+                ..Default::default()
             }
         }
+
+        fn with_section(mut self, filename: &str, section: DataSection) -> Self {
+            self.sections.insert(filename.to_string(), section);
+            self
+        }
+
+        fn with_existing_animation(mut self, filename: &str, data: &[u8]) -> Self {
+            self.existing_animations
+                .insert(filename.to_string(), data.to_vec());
+            self
+        }
     }
 
-    fn skip_quat_seq(r: &mut Reader) {
-        let count = r.i32();
-        for _ in 0..count {
-            for _ in 0..5 {
-                r.f32();
+    impl AnimationIo for TestIo {
+        fn dissolve_filename(&self, filename: &str) -> String {
+            if self.subfolder {
+                format!("chars/{}", filename.trim_start_matches('/'))
+            } else {
+                filename
+                    .strip_prefix(&self.res_root)
+                    .unwrap_or(filename)
+                    .to_string()
             }
         }
-    }
 
-    fn skip_i32_seq(r: &mut Reader) {
-        let count = r.i32();
-        for _ in 0..count {
-            r.i32();
+        fn res_paths(&self) -> Vec<String> {
+            self.res_paths.clone()
+        }
+
+        fn open_section(&self, filename: &str) -> Option<DataSection> {
+            self.sections.get(filename).cloned()
+        }
+
+        fn read_settings_xml(&self, filename: &str) -> Option<DataSection> {
+            self.sections.get(filename).cloned()
+        }
+
+        fn write_settings_xml(&mut self, filename: &str, root: &DataSection) {
+            self.written_settings
+                .push((filename.to_string(), root.clone()));
+        }
+
+        fn read_animation(&self, filename: &str) -> Option<Vec<u8>> {
+            self.existing_animations.get(filename).cloned()
+        }
+
+        fn write_animation(&mut self, filename: &str, bytes: &[u8]) -> bool {
+            if self.fail_write {
+                return false;
+            }
+            self.written_animations
+                .insert(filename.to_string(), bytes.to_vec());
+            true
+        }
+
+        fn delete_file(&mut self, filename: &str) {
+            self.deleted.push(filename.to_string());
+        }
+
+        fn ticks_per_frame(&self) -> i32 {
+            self.ticks_per_frame
+        }
+
+        fn unit_scale(&self) -> f32 {
+            self.unit_scale
         }
     }
 
-    /// The row-vector chain: a child's world is its local relative
-    /// transform followed by the parent's world.
-    fn chain(rel: &Matrix, parent_world: &Matrix) -> Matrix {
-        let mut out = Matrix::zero();
-        out.multiply(rel, parent_world);
-        out
+    // --- builders ---
+
+    fn identity_frames(n: usize) -> Vec<Matrix> {
+        vec![Matrix::identity(); n]
     }
 
-    /// A translation-only local transform.
-    fn translate(x: f32, y: f32, z: f32) -> Matrix {
+    fn plain_node(name: &str, frames: usize) -> SceneNode {
+        SceneNode {
+            name: name.to_string(),
+            world: identity_frames(frames),
+            ..Default::default()
+        }
+    }
+
+    fn translated_node(name: &str, x: f32, y: f32, z: f32) -> SceneNode {
         let mut m = Matrix::identity();
         m.m[3][0] = x;
         m.m[3][1] = y;
         m.m[3][2] = z;
-        m
+        SceneNode {
+            name: name.to_string(),
+            world: vec![m],
+            ..Default::default()
+        }
     }
 
-    /// The expected rotation of a Y-rotation after the exporter's axis
-    /// permutation, written from the spec (`utility.cpp:42-53`: columns
-    /// one and two trade, then basis rows one and two trade) rather than
-    /// the implementation.
-    fn rearranged_y_rotation(angle: f32) -> Matrix {
-        let mut ry = Matrix::identity();
-        ry.set_rotate_y(angle);
+    /// A settings file section carrying the given key values.
+    fn settings_section(allow_scale: Option<bool>, export_node: Option<bool>) -> DataSection {
+        let mut root = DataSection::new("root");
+        if let Some(v) = allow_scale {
+            root.write_bool("allowScale", v);
+        }
+        if let Some(v) = export_node {
+            root.write_bool("exportNodeAnimation", v);
+        }
+        root
+    }
+
+    // --- a reader over our own output ---
+
+    struct TestReader<'a> {
+        data: &'a [u8],
+        pos: usize,
+    }
+
+    impl<'a> TestReader<'a> {
+        fn new(data: &'a [u8]) -> Self {
+            Self { data, pos: 0 }
+        }
+
+        fn f32(&mut self) -> f32 {
+            let v = f32::from_le_bytes(self.data[self.pos..self.pos + 4].try_into().unwrap());
+            self.pos += 4;
+            v
+        }
+
+        fn i32(&mut self) -> i32 {
+            let v = i32::from_le_bytes(self.data[self.pos..self.pos + 4].try_into().unwrap());
+            self.pos += 4;
+            v
+        }
+
+        fn string(&mut self) -> String {
+            let len = self.i32() as usize;
+            let s = String::from_utf8_lossy(&self.data[self.pos..self.pos + len]).into_owned();
+            self.pos += len;
+            s
+        }
+
+        fn vec3(&mut self) -> Vector3 {
+            Vector3::new(self.f32(), self.f32(), self.f32())
+        }
+
+        fn vec3_seq(&mut self) -> Vec<(f32, Vector3)> {
+            let count = self.i32();
+            (0..count)
+                .map(|_| {
+                    let t = self.f32();
+                    (t, self.vec3())
+                })
+                .collect()
+        }
+
+        fn quat_seq(&mut self) -> Vec<(f32, Quaternion)> {
+            let count = self.i32();
+            (0..count)
+                .map(|_| {
+                    let t = self.f32();
+                    let q = Quaternion::new(self.f32(), self.f32(), self.f32(), self.f32());
+                    (t, q)
+                })
+                .collect()
+        }
+
+        fn i32_seq(&mut self) -> Vec<i32> {
+            let count = self.i32();
+            (0..count).map(|_| self.i32()).collect()
+        }
+
+        /// Skip past the file header (duration, name, name, channel count).
+        fn skip_header(&mut self) -> i32 {
+            let _ = self.f32();
+            let _ = self.string();
+            let _ = self.string();
+            self.i32()
+        }
+    }
+
+    /// Parse a whole `.animation`: the header plus every channel.
+    #[allow(clippy::type_complexity)]
+    fn read_animation(
+        bytes: &[u8],
+    ) -> (
+        f32,
+        String,
+        String,
+        i32,
+        Vec<(
+            i32,
+            String,
+            Vec<(f32, Vector3)>,
+            Vec<(f32, Vector3)>,
+            Vec<(f32, Quaternion)>,
+            Vec<i32>,
+        )>,
+    ) {
+        let mut r = TestReader::new(bytes);
+        let total = r.f32();
+        let name = r.string();
+        let name2 = r.string();
+        let count = r.i32();
+        let mut channels = Vec::new();
+        for _ in 0..count {
+            let channel_type = r.i32();
+            let identifier = r.string();
+            if channel_type == 4 {
+                let _ = r.f32();
+                let _ = r.f32();
+                let _ = r.f32();
+            }
+            let scales = r.vec3_seq();
+            let positions = r.vec3_seq();
+            let rotations = r.quat_seq();
+            let bound = r.i32_seq();
+            let _ = r.i32_seq();
+            let _ = r.i32_seq();
+            channels.push((
+                channel_type,
+                identifier,
+                scales,
+                positions,
+                rotations,
+                bound,
+            ));
+        }
+        (total, name, name2, count, channels)
+    }
+
+    fn export(io: TestIo, input: &ExportInput) -> (MfxExporter<TestIo>, Vec<u8>) {
+        let mut exporter = MfxExporter::new(io);
+        exporter.do_export(input).expect("export succeeds");
+        let bytes = exporter
+            .io
+            .written_animations
+            .values()
+            .next()
+            .cloned()
+            .expect("an animation was written");
+        (exporter, bytes)
+    }
+
+    // --- utility math ---
+
+    #[test]
+    fn rearrange_swaps_axes_and_keeps_the_translation_row() {
+        // A matrix with distinct entries: rows 0..2 built from 1..9, the
+        // translation row distinct again.
         let mut m = Matrix::identity();
-        for r in 0..3 {
-            m.m[r][0] = ry.m[r][0];
-            m.m[r][1] = ry.m[r][2];
-            m.m[r][2] = ry.m[r][1];
-        }
-        for c in 0..3 {
-            let row2 = m.m[2][c];
-            m.m[2][c] = m.m[1][c];
-            m.m[1][c] = row2;
-        }
-        m
-    }
-
-    fn assert_close(actual: f32, expected: f32) {
-        assert!(
-            (actual - expected).abs() < 1e-4,
-            "actual {actual}, expected {expected}"
-        );
-    }
-
-    fn assert_vec3_close(actual: &Vector3, expected: &Vector3) {
-        assert_close(actual.x, expected.x);
-        assert_close(actual.y, expected.y);
-        assert_close(actual.z, expected.z);
-    }
-
-    fn assert_quat_rebuilds_rotation(q: &Quaternion, expected: &Matrix) {
-        let mut rebuilt = Matrix::identity();
-        rebuilt.set_rotate_quat(q);
-        for (row, expected_row) in rebuilt.m.iter().zip(expected.m.iter()).take(3) {
-            for (cell, expected_cell) in row.iter().zip(expected_row).take(3) {
-                assert_close(*cell, *expected_cell);
+        let values = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
+        for (row, row_vals) in values.iter().enumerate() {
+            for (col, v) in row_vals.iter().enumerate() {
+                m.m[row][col] = *v;
             }
         }
-    }
+        m.m[3] = [0.5, 1.5, 2.5, 1.0];
 
-    #[test]
-    fn the_written_header_matches_the_shipped_fixture() {
-        // Anchored against the files the Max exporter really shipped
-        // (`crab_walkforward.animation`): `totalTime`, the animation
-        // name twice, the channel count, then the root's plain type-1
-        // head. A round trip through the engine's reader could agree
-        // with the writer while both disagreed with the fixtures, so
-        // the file is what pins the layout.
-        let shipped = include_bytes!("../../client/res/crab_walkforward.animation");
-        let mut header = Writer::default();
-        header.f32(25.0);
-        header.string("crab_walkforward");
-        header.string("crab_walkforward");
-        header.i32(45);
-        header.i32(1);
-        header.string("Scene Root");
-        assert_eq!(&shipped[..header.bytes.len()], &header.bytes[..]);
-    }
+        let out = rearrange_matrix(&m, false);
 
-    /// The acceptance: 骨骼与时间关键帧一致 — the exported file's skeleton
-    /// (one channel per included node, preorder, the excluded subtree
-    /// absent) and its time keyframes (per-frame times from zero, the
-    /// decomposed scale/translation/rotation) read back through the
-    /// engine's `.animation` reader.
-    #[test]
-    fn the_export_reads_back_with_matching_skeleton_and_time_keyframes() {
-        // root → Bip01 → { Spine, CamHelper → CamHelper2 }; CamHelper's
-        // subtree is excluded and writes no channel.
-        let mut root = ExportNode::new("the_root");
-        root.set_include(true);
-
-        let mut bip01 = ExportNode::new("Bip01");
-        bip01.set_include(true);
-
-        let mut spine = ExportNode::new("Bip01 Spine");
-        spine.set_include(true);
-
-        let mut cam_helper = ExportNode::new("CamHelper");
-        cam_helper.add_child(ExportNode::new("CamHelper2"));
-        bip01.add_child(spine);
-        bip01.add_child(cam_helper);
-        root.add_child(bip01);
-
-        let settings = ExportSettings {
-            first_frame: 2,
-            last_frame: 5,
-            allow_scale: false,
-            export_node_animation: true,
-            export_cue_track: false,
-            use_legacy_orientation: false,
-            unit_scale: 2.0,
-        };
-
-        let angle = |frame: i32| 0.1 * frame as f32;
-        let bip01_world = |frame: i32| rigid(angle(frame), 0.0, 0.25 * frame as f32, 0.0);
-        let spine_world = |frame: i32| chain(&translate(0.0, 1.0, 0.0), &bip01_world(frame));
-        let sample = |identifier: &str, frame: i32| -> Option<Matrix> {
-            match identifier {
-                "Bip01" => Some(bip01_world(frame)),
-                "Bip01 Spine" => Some(spine_world(frame)),
-                _ => None,
+        // Column swap first (col1 <- col2, col2 <- col1), then row swap
+        // 1 <-> 2: out[i][j] = m[swap(i)][swap(j)].
+        let expected = [[1.0, 3.0, 2.0], [7.0, 9.0, 8.0], [4.0, 6.0, 5.0]];
+        for (row, row_vals) in expected.iter().enumerate() {
+            for (col, v) in row_vals.iter().enumerate() {
+                assert_eq!(out.m[row][col], *v);
             }
-        };
-
-        let bytes = export(
-            &mut root,
-            sample,
-            &settings,
-            None,
-            CompressionInfo::default(),
-            "stand",
-        );
-        let animation = client::skeleton::Animation::from_bytes(&bytes)
-            .expect("the exported bytes load as an animation");
-
-        // The header: the total time is lastFrame - firstFrame, the name
-        // twice, and the channels are exactly the included nodes.
-        assert_close(animation.total_time(), 3.0);
-        assert_eq!(animation.identifier(), "stand");
-        assert_eq!(animation.internal_identifier(), "stand");
-        assert_eq!(animation.channel_count(), 3);
-        let identifiers: Vec<&str> = animation
-            .channels()
-            .iter()
-            .map(|c| c.identifier())
-            .collect();
-        assert_eq!(identifiers, vec!["Scene Root", "Bip01", "Bip01 Spine"]);
-
-        let rotation_of = |identifier: &str| -> &client::skeleton::Channel {
-            animation
-                .channels()
-                .iter()
-                .find(|c| c.identifier() == identifier)
-                .unwrap()
-        };
-
-        // The root: the detached identity pose, one key per frame.
-        let root_channel = rotation_of("Scene Root");
-        let client::skeleton::Channel::Interpolated {
-            scale_keys,
-            position_keys,
-            rotation_keys,
-            ..
-        } = root_channel
-        else {
-            panic!("the root channel is an interpolated channel");
-        };
-        assert_eq!(scale_keys.len(), 4);
-        assert_eq!(position_keys.len(), 4);
-        assert_eq!(rotation_keys.len(), 4);
-        for (index, (time, scale)) in scale_keys.iter().enumerate() {
-            assert_close(*time, index as f32);
-            assert_vec3_close(scale, &Vector3::new(1.0, 1.0, 1.0));
         }
-        for (index, (time, position)) in position_keys.iter().enumerate() {
-            assert_close(*time, index as f32);
-            assert_vec3_close(position, &Vector3::new(0.0, 0.0, 0.0));
-        }
-        for (index, (time, rotation)) in rotation_keys.iter().enumerate() {
-            assert_close(*time, index as f32);
-            assert_close(rotation.x, 0.0);
-            assert_close(rotation.y, 0.0);
-            assert_close(rotation.z, 0.0);
-            assert_close(rotation.w, 1.0);
-        }
-
-        // Bip01: its own world against the root's identity — the
-        // translation scales by the unit scale, the rotation is the
-        // rearranged Y rotation.
-        let bip01_channel = rotation_of("Bip01");
-        let client::skeleton::Channel::Interpolated {
-            scale_keys,
-            position_keys,
-            rotation_keys,
-            ..
-        } = bip01_channel
-        else {
-            panic!("Bip01 is an interpolated channel");
-        };
-        for (index, (time, scale)) in scale_keys.iter().enumerate() {
-            assert_close(*time, index as f32);
-            assert_vec3_close(scale, &Vector3::new(1.0, 1.0, 1.0));
-        }
-        for (index, (time, position)) in position_keys.iter().enumerate() {
-            let frame = settings.first_frame + index as i32;
-            assert_close(*time, index as f32);
-            // The unit scale doubles the translation row.
-            assert_vec3_close(position, &Vector3::new(0.0, 0.5 * frame as f32, 0.0));
-        }
-        for (index, (time, rotation)) in rotation_keys.iter().enumerate() {
-            let frame = settings.first_frame + index as i32;
-            assert_close(*time, index as f32);
-            assert_quat_rebuilds_rotation(rotation, &rearranged_y_rotation(angle(frame)));
-        }
-
-        // Spine: its local transform against Bip01's world — the keys are
-        // the constant (0, 1, 0) translation (scaled) and identity
-        // rotation, even though its own world moves.
-        let spine_channel = rotation_of("Bip01 Spine");
-        let client::skeleton::Channel::Interpolated {
-            scale_keys,
-            position_keys,
-            rotation_keys,
-            ..
-        } = spine_channel
-        else {
-            panic!("Spine is an interpolated channel");
-        };
-        assert_eq!(scale_keys.len(), 4);
-        assert_eq!(position_keys.len(), 4);
-        assert_eq!(rotation_keys.len(), 4);
-        for (time, scale) in scale_keys.iter() {
-            assert_vec3_close(scale, &Vector3::new(1.0, 1.0, 1.0));
-            let _ = time;
-        }
-        for (time, position) in position_keys.iter() {
-            assert_vec3_close(position, &Vector3::new(0.0, 2.0, 0.0));
-            let _ = time;
-        }
-        for (time, rotation) in rotation_keys.iter() {
-            assert_close(rotation.x, 0.0);
-            assert_close(rotation.y, 0.0);
-            assert_close(rotation.z, 0.0);
-            assert_close(rotation.w, 1.0);
-            let _ = time;
-        }
+        // The translation row survives the whole rearrange (pinned by the
+        // crab visual/animation pair).
+        assert_eq!(out.m[3], [0.5, 1.5, 2.5, 1.0]);
     }
 
     #[test]
-    fn a_hierarchy_only_node_carries_the_identity_pose() {
-        // `getRelativeTransform` (`mfxnode.cpp:105-120`): a node without
-        // a Max node returns its stored transform — the constructor's
-        // identity, and `setTransform` has no call site — whatever its
-        // parent's world. A sampled node below it still resolves against
-        // that parent's world: `getTransform`'s parent arm multiplies
-        // the identity in, so the chain answers the nearest sampled
-        // ancestor's world.
-        let mut root = ExportNode::new("root");
-        root.set_include(true);
-        let mut bip01 = ExportNode::new("Bip01");
-        bip01.set_include(true);
-        let mut phantom = ExportNode::new("Phantom");
-        phantom.set_include(true);
-        let mut ghost = ExportNode::new("Ghost");
-        ghost.set_include(true);
-        phantom.add_child(ghost);
-        bip01.add_child(phantom);
-        root.add_child(bip01);
-
-        let settings = ExportSettings {
-            first_frame: 0,
-            last_frame: 2,
-            ..ExportSettings::default()
-        };
-        let bip01_world = |frame: i32| rigid(0.0, 0.0, 0.5 * frame as f32, 0.0);
-        let ghost_world = |frame: i32| rigid(0.0, 0.0, frame as f32, 0.0);
-        let bytes = export(
-            &mut root,
-            |identifier, frame| match identifier {
-                "Bip01" => Some(bip01_world(frame)),
-                "Ghost" => Some(ghost_world(frame)),
-                _ => None,
-            },
-            &settings,
-            None,
-            CompressionInfo::default(),
-            "x",
-        );
-        let animation = client::skeleton::Animation::from_bytes(&bytes).unwrap();
-        assert_eq!(animation.channel_count(), 4);
-
-        let keys_of = |identifier: &str| -> InterpolatedKeys {
-            match animation
-                .channels()
-                .iter()
-                .find(|c| c.identifier() == identifier)
-                .unwrap()
-            {
-                client::skeleton::Channel::Interpolated {
-                    scale_keys,
-                    position_keys,
-                    rotation_keys,
-                    ..
-                } => (
-                    scale_keys.clone(),
-                    position_keys.clone(),
-                    rotation_keys.clone(),
-                ),
-                _ => panic!("{identifier} is an interpolated channel"),
+    fn rearrange_legacy_negates_the_xor_pattern_only() {
+        let mut m = Matrix::identity();
+        for (row, row_vals) in m.m[..3].iter_mut().enumerate() {
+            for (col, value) in row_vals[..3].iter_mut().enumerate() {
+                *value = (row * 3 + col) as f32 + 1.0;
             }
-        };
+        }
+        m.m[3] = [7.0, 8.0, 9.0, 1.0];
 
-        // Phantom never samples: the identity pose across the range.
-        let (scale_keys, position_keys, rotation_keys) = keys_of("Phantom");
-        assert_eq!(scale_keys.len(), 3);
-        assert_eq!(position_keys.len(), 3);
-        assert_eq!(rotation_keys.len(), 3);
-        for (index, (time, scale)) in scale_keys.iter().enumerate() {
-            assert_close(*time, index as f32);
-            assert_vec3_close(scale, &Vector3::new(1.0, 1.0, 1.0));
-        }
-        for (index, (time, position)) in position_keys.iter().enumerate() {
-            assert_close(*time, index as f32);
-            assert_vec3_close(position, &Vector3::new(0.0, 0.0, 0.0));
-        }
-        for (index, (time, rotation)) in rotation_keys.iter().enumerate() {
-            assert_close(*time, index as f32);
-            assert_close(rotation.w, 1.0);
-        }
+        let out = rearrange_matrix(&m, true);
 
-        // Ghost samples: its world against the hierarchy-only parent's —
-        // the parent's world is Bip01's — so the keys are the half-step
-        // offsets with the identity rotation.
-        let (scale_keys, position_keys, rotation_keys) = keys_of("Ghost");
-        for (index, (time, scale)) in scale_keys.iter().enumerate() {
-            assert_close(*time, index as f32);
-            assert_vec3_close(scale, &Vector3::new(1.0, 1.0, 1.0));
-        }
-        for (index, (time, position)) in position_keys.iter().enumerate() {
-            assert_close(*time, index as f32);
-            assert_vec3_close(position, &Vector3::new(0.0, 0.5 * index as f32, 0.0));
-        }
-        for (index, (time, rotation)) in rotation_keys.iter().enumerate() {
-            assert_close(*time, index as f32);
-            assert_close(rotation.w, 1.0);
-        }
-    }
-
-    #[test]
-    fn scale_keys_carry_the_row_lengths_and_the_z_flip() {
-        // A mirrored basis: the z row points the wrong way, so the
-        // decomposition flips it — the scale's z goes negative and the
-        // rotation absorbs the mirror as a half turn.
-        let mut root = ExportNode::new("root");
-        root.set_include(true);
-        let mut bone = ExportNode::new("Bone");
-        bone.set_include(true);
-        root.add_child(bone);
-
-        let settings = ExportSettings {
-            first_frame: 0,
-            last_frame: 0,
-            allow_scale: true,
-            ..ExportSettings::default()
-        };
-        let mut world = Matrix::identity();
-        world.m[0][0] = 2.0;
-        world.m[1][1] = 3.0;
-        world.m[2][2] = -4.0;
-        world.m[3][0] = 1.0;
-
-        let bytes = export(
-            &mut root,
-            |identifier, _frame| (identifier == "Bone").then_some(world),
-            &settings,
-            None,
-            CompressionInfo::default(),
-            "x",
-        );
-        let animation = client::skeleton::Animation::from_bytes(&bytes).unwrap();
-        match animation
-            .channels()
-            .iter()
-            .find(|c| c.identifier() == "Bone")
-            .unwrap()
-        {
-            client::skeleton::Channel::Interpolated {
-                scale_keys,
-                position_keys,
-                rotation_keys,
-                ..
-            } => {
-                // The rearrange trades the basis columns before the
-                // decomposition reads the row lengths, so diag(2, 3, -4)
-                // arrives as diag(2, -4, 3) — the flip lands on z.
-                assert_vec3_close(&scale_keys[0].1, &Vector3::new(2.0, 4.0, -3.0));
-                assert_vec3_close(&position_keys[0].1, &Vector3::new(1.0, 0.0, 0.0));
-                // The flip turns the mirrored basis into diag(1, -1, -1):
-                // the half-turn about X, not the identity.
-                let half_turn_x = {
-                    let mut m = Matrix::identity();
-                    m.m[1][1] = -1.0;
-                    m.m[2][2] = -1.0;
-                    m
+        for (row, row_vals) in out.m[..3].iter().enumerate() {
+            for (col, value) in row_vals[..3].iter().enumerate() {
+                let expected = if (row == 0 || row == 2) ^ (col == 0 || col == 2) {
+                    -1.0
+                } else {
+                    1.0
                 };
-                assert_quat_rebuilds_rotation(&rotation_keys[0].1, &half_turn_x);
+                assert_eq!(
+                    *value,
+                    m_swap(&m, row, col) * expected,
+                    "sign mismatch at ({row},{col})"
+                );
             }
-            _ => panic!("Bone is an interpolated channel"),
         }
+        // Row 3 is never negated.
+        assert_eq!(out.m[3], [7.0, 8.0, 9.0, 1.0]);
     }
 
-    #[test]
-    fn normalising_strips_the_scale_from_the_worlds() {
-        let mut root = ExportNode::new("root");
-        root.set_include(true);
-        let mut bone = ExportNode::new("Bone");
-        bone.set_include(true);
-        root.add_child(bone);
-
-        // allowScale false: the world is normalised before the relative
-        // step, so the scale keys are the unit scale.
-        let settings = ExportSettings {
-            first_frame: 0,
-            last_frame: 0,
-            allow_scale: false,
-            ..ExportSettings::default()
+    /// `S·m·S` reference: the axis-1/axis-2 swap the rearrange performs.
+    fn m_swap(m: &Matrix, row: usize, col: usize) -> f32 {
+        let swap = |i: usize| {
+            if i == 1 {
+                2
+            } else if i == 2 {
+                1
+            } else {
+                i
+            }
         };
-        let mut world = Matrix::identity();
-        world.m[0][0] = 2.0;
-        world.m[1][1] = 3.0;
-        world.m[2][2] = 4.0;
-
-        let bytes = export(
-            &mut root,
-            |identifier, _frame| (identifier == "Bone").then_some(world),
-            &settings,
-            None,
-            CompressionInfo::default(),
-            "x",
-        );
-        let animation = client::skeleton::Animation::from_bytes(&bytes).unwrap();
-        match animation
-            .channels()
-            .iter()
-            .find(|c| c.identifier() == "Bone")
-            .unwrap()
-        {
-            client::skeleton::Channel::Interpolated { scale_keys, .. } => {
-                assert_vec3_close(&scale_keys[0].1, &Vector3::new(1.0, 1.0, 1.0));
-            }
-            _ => panic!("Bone is an interpolated channel"),
-        }
+        m.m[swap(row)][swap(col)]
     }
 
     #[test]
-    fn the_legacy_orientation_negates_the_permuted_basis() {
-        let mut root = ExportNode::new("root");
-        root.set_include(true);
-        let mut bone = ExportNode::new("Bone");
-        bone.set_include(true);
-        root.add_child(bone);
+    fn normalise_renormalises_rows_and_passes_the_translation_through() {
+        let mut m = Matrix::identity();
+        m.m[0] = [2.0, 0.0, 0.0, 0.0];
+        m.m[1] = [0.0, 4.0, 0.0, 0.0];
+        m.m[2] = [0.0, 0.0, 8.0, 0.0];
+        m.m[3] = [3.0, 4.0, 5.0, 1.0];
 
+        let out = normalise_matrix(&m);
+
+        assert_eq!(out.m[0], [1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(out.m[1], [0.0, 1.0, 0.0, 0.0]);
+        assert_eq!(out.m[2], [0.0, 0.0, 1.0, 0.0]);
+        assert_eq!(out.m[3], [3.0, 4.0, 5.0, 1.0]);
+    }
+
+    #[test]
+    fn trailing_leading_whitespaces_checks_both_ends() {
+        assert!(trailing_leading_whitespaces(" x"));
+        assert!(trailing_leading_whitespaces("x "));
+        assert!(!trailing_leading_whitespaces("x"));
+        assert!(!trailing_leading_whitespaces(""));
+    }
+
+    #[test]
+    fn blend_decompose_of_identity_is_the_identity_key() {
+        let (rotation, scale, translation) = blend_decompose(&Matrix::identity());
+        assert_eq!(rotation, Quaternion::new(0.0, 0.0, 0.0, 1.0));
+        assert_eq!(scale, Vector3::new(1.0, 1.0, 1.0));
+        assert_eq!(translation, Vector3::new(0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn blend_decompose_of_a_scaled_translation_and_rotation() {
+        // Rotation by 90 degrees about z, scaled 2 in x, translated.
+        let mut m = Matrix::identity();
+        m.m[0] = [0.0, 2.0, 0.0, 0.0];
+        m.m[1] = [-2.0, 0.0, 0.0, 0.0];
+        m.m[2] = [0.0, 0.0, 1.0, 0.0];
+        m.m[3] = [1.0, 2.0, 3.0, 1.0];
+
+        let (rotation, scale, translation) = blend_decompose(&m);
+        assert_eq!(scale, Vector3::new(2.0, 2.0, 1.0));
+        assert_eq!(translation, Vector3::new(1.0, 2.0, 3.0));
+        // The rotation is the plain 90-degree z quaternion.
+        let expected =
+            Quaternion::from_angle_axis(std::f32::consts::FRAC_PI_2, &Vector3::new(0.0, 0.0, 1.0));
+        let (mut rotation, mut expected) = (rotation, expected);
+        rotation.normalise();
+        expected.normalise();
+        let dot = rotation.dot_product(&expected).abs();
+        assert!(dot > 0.999999, "rotation {rotation:?} vs {expected:?}");
+    }
+
+    #[test]
+    fn blend_decompose_of_a_mirrored_matrix_flips_the_z_scale() {
+        // Left-handed: row 2 negated relative to a right-handed rotation.
+        let mut m = Matrix::identity();
+        m.m[0] = [0.0, 1.0, 0.0, 0.0];
+        m.m[1] = [-1.0, 0.0, 0.0, 0.0];
+        m.m[2] = [0.0, 0.0, -1.0, 0.0];
+
+        let (rotation, scale, translation) = blend_decompose(&m);
+        assert_eq!(scale, Vector3::new(1.0, 1.0, -1.0));
+        assert_eq!(translation, Vector3::new(0.0, 0.0, 0.0));
+        // Determinant -1: the rotation part stays a unit quaternion.
+        assert!((rotation.length() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn remove_extension_strips_the_last_dot() {
+        assert_eq!(
+            remove_extension("/res/chars/demo.animation"),
+            "/res/chars/demo"
+        );
+        assert_eq!(remove_extension("noext"), "noext");
+    }
+
+    // --- settings ---
+
+    #[test]
+    fn settings_round_trip_the_five_keys() {
         let settings = ExportSettings {
-            first_frame: 0,
-            last_frame: 0,
             allow_scale: true,
+            export_node_animation: false,
+            export_cue_track: true,
             use_legacy_orientation: true,
-            ..ExportSettings::default()
+            reference_nodes_file: "crab.visual".to_string(),
+            ..Default::default()
         };
-        let world = rigid(0.3, 1.0, 2.0, 3.0);
-        let bytes = export(
-            &mut root,
-            |identifier, _frame| (identifier == "Bone").then_some(world),
-            &settings,
-            None,
-            CompressionInfo::default(),
-            "x",
-        );
-        let animation = client::skeleton::Animation::from_bytes(&bytes).unwrap();
-        match animation
-            .channels()
-            .iter()
-            .find(|c| c.identifier() == "Bone")
-            .unwrap()
-        {
-            client::skeleton::Channel::Interpolated {
-                position_keys,
-                rotation_keys,
-                ..
-            } => {
-                // The translation is carried either way.
-                assert_vec3_close(&position_keys[0].1, &Vector3::new(1.0, 2.0, 3.0));
-                // The legacy basis negations, hand-built from the spec
-                // (rows 2 and 0 negated, then columns 2 and 0).
-                let expected = {
-                    let mut m = rearranged_y_rotation(0.3);
-                    for c in 0..3 {
-                        m.m[2][c] = -m.m[2][c];
-                        m.m[0][c] = -m.m[0][c];
-                    }
-                    for row in m.m.iter_mut().take(3) {
-                        row[2] = -row[2];
-                        row[0] = -row[0];
-                    }
-                    m
-                };
-                assert_quat_rebuilds_rotation(&rotation_keys[0].1, &expected);
+
+        let mut root = DataSection::new("root");
+        assert!(settings.write_settings(Some(&mut root)));
+
+        let mut loaded = ExportSettings::default();
+        assert!(loaded.read_settings(Some(&root)));
+        assert_eq!(loaded, settings);
+    }
+
+    #[test]
+    fn settings_reads_keep_current_defaults_for_missing_keys() {
+        let mut settings = ExportSettings {
+            allow_scale: true,
+            reference_nodes_file: "x.visual".to_string(),
+            ..Default::default()
+        };
+
+        let root = DataSection::new("root");
+        assert!(settings.read_settings(Some(&root)));
+        // Nothing changed.
+        assert_eq!(
+            settings,
+            ExportSettings {
+                allow_scale: true,
+                reference_nodes_file: "x.visual".to_string(),
+                ..Default::default()
             }
-            _ => panic!("Bone is an interpolated channel"),
-        }
-    }
-
-    #[test]
-    fn compression_amounts_round_trip_from_the_written_file() {
-        let mut root = ExportNode::new("root");
-        root.set_include(true);
-        let compression = CompressionInfo {
-            specify_amounts: true,
-            scale_compression_error: 0.01,
-            position_compression_error: 0.02,
-            rotation_compression_error: 0.005,
-        };
-        let settings = ExportSettings {
-            first_frame: 0,
-            last_frame: 0,
-            ..ExportSettings::default()
-        };
-        let bytes = export(
-            &mut root,
-            |_identifier, _frame| Some(Matrix::identity()),
-            &settings,
-            None,
-            compression,
-            "x",
         );
 
-        // The written channel is a type 4 and carries the amounts.
-        let read = read_compression_info(&bytes);
-        assert_eq!(read, compression);
+        // A missing file (None section) reads false and changes nothing.
+        let mut settings = ExportSettings::default();
+        assert!(!settings.read_settings(None));
+        assert_eq!(settings, ExportSettings::default());
+    }
 
-        // And the reader consumes the type-4 head.
-        let animation = client::skeleton::Animation::from_bytes(&bytes).unwrap();
-        assert_eq!(animation.channel_count(), 1);
+    // --- cue track ---
+
+    #[test]
+    fn cue_track_gates_prefixes_and_dedups() {
+        let mut cues = CueTrack::default();
+        cues.add_cue(0, "cue:boom", 160, 0, 10);
+        cues.add_cue(5 * 160, "sound:hit", 160, 0, 10);
+        // Outside the frame range: skipped.
+        cues.add_cue(11 * 160, "cue:late", 160, 0, 10);
+        cues.add_cue(-160, "cue:early", 160, 0, 10);
+        // No colon / unknown prefix: skipped.
+        cues.add_cue(160, "plain", 160, 0, 10);
+        cues.add_cue(160, "boom:cue", 160, 0, 10);
+        // Duplicate at the same time: dropped; a different text is kept.
+        cues.add_cue(0, "cue:boom", 160, 0, 10);
+        cues.add_cue(0, "cue:other", 160, 0, 10);
+
+        let map = cues.cues();
+        assert_eq!(map.len(), 2);
+        assert_eq!(map[&0], ["cboom", "cother"]);
+        assert_eq!(map[&(5 * 160)], ["shit"]);
+        assert!(cues.has_cues());
     }
 
     #[test]
-    fn read_compression_info_defaults_on_foreign_input() {
-        // Truncated, empty and type-1-channel files all leave the
-        // amounts unspecified.
-        assert_eq!(read_compression_info(&[]), CompressionInfo::default());
-        let mut bytes = Vec::new();
-        push_f32(&mut bytes, 1.0);
-        assert_eq!(read_compression_info(&bytes), CompressionInfo::default());
+    fn cue_track_write_file_bytes_and_the_empty_skip() {
+        let mut cues = CueTrack::default();
+        cues.add_cue(2 * 160, "cue:first", 160, 1, 9);
+        cues.add_cue(4 * 160, "sound:two", 160, 1, 9);
 
-        let mut plain = Vec::new();
-        push_f32(&mut plain, 0.0);
-        push_string(&mut plain, "x");
-        push_string(&mut plain, "x");
-        push_i32(&mut plain, 1);
-        push_i32(&mut plain, 1); // type 1
-        push_string(&mut plain, "Scene Root");
-        assert_eq!(read_compression_info(&plain), CompressionInfo::default());
+        let mut out = Vec::new();
+        cues.write_file(&mut out, 160);
 
-        // A type-4 head truncated mid-way through the amounts.
-        let mut cut = Vec::new();
-        push_f32(&mut cut, 0.0);
-        push_string(&mut cut, "x");
-        push_string(&mut cut, "x");
-        push_i32(&mut cut, 1);
-        push_i32(&mut cut, 4);
-        push_string(&mut cut, "Scene Root");
-        push_f32(&mut cut, 0.01);
-        assert_eq!(read_compression_info(&cut), CompressionInfo::default());
+        let mut r = TestReader::new(&out);
+        assert_eq!(r.i32(), 6);
+        assert_eq!(r.i32(), 2);
+        // First: time adjusted by the first frame (2-1 = 1.0).
+        assert_eq!(r.f32(), 1.0);
+        assert_eq!(r.string(), "cfirst");
+        assert_eq!(r.i32(), 0);
+        assert_eq!(r.f32(), 3.0);
+        assert_eq!(r.string(), "stwo");
+        assert_eq!(r.i32(), 0);
+
+        // No cues: not even the type marker.
+        let mut empty = Vec::new();
+        CueTrack::default().write_file(&mut empty, 160);
+        assert!(empty.is_empty());
+    }
+
+    // --- compression harvest ---
+
+    #[test]
+    fn harvest_reads_a_type_four_first_channel() {
+        let mut data = Vec::new();
+        w_f32(&mut data, 10.0);
+        w_str(&mut data, "old");
+        w_str(&mut data, "old");
+        w_i32(&mut data, 2);
+        w_i32(&mut data, 4);
+        w_str(&mut data, "ch0");
+        w_f32(&mut data, 0.5);
+        w_f32(&mut data, 0.25);
+        w_f32(&mut data, 0.125);
+
+        let ci = harvest_compression_info(&data);
+        assert!(ci.specify_amounts);
+        assert_eq!(ci.scale_compression_error, 0.5);
+        assert_eq!(ci.position_compression_error, 0.25);
+        assert_eq!(ci.rotation_compression_error, 0.125);
     }
 
     #[test]
-    fn cues_filter_frames_prefixes_and_duplicates() {
-        let mut track = CueTrack::default();
-        track.add_cue(1, "cue:early", 2, 5); // before the range
-        track.add_cue(6, "cue:late", 2, 5); // after the range
-        track.add_cue(2, "cue:hit", 2, 5);
-        track.add_cue(2, "cue:hit", 2, 5); // duplicate
-        track.add_cue(2, "sound:step", 2, 5);
-        track.add_cue(3, "zap:unknown", 2, 5); // unknown prefix
-        track.add_cue(3, "nocolon", 2, 5); // no separator
-        track.add_cue(4, "cue:again", 2, 5);
+    fn harvest_defaults_for_type_one_and_short_files() {
+        let mut data = Vec::new();
+        w_f32(&mut data, 1.0);
+        w_str(&mut data, "a");
+        w_str(&mut data, "a");
+        w_i32(&mut data, 1);
+        w_i32(&mut data, 1);
+        w_str(&mut data, "ch0");
+        assert_eq!(harvest_compression_info(&data), CompressionInfo::default());
 
-        let cues: Vec<(i32, Vec<String>)> = track
-            .cues()
-            .map(|(time, entry)| (time, entry.to_vec()))
+        // Truncated header: zeros, not garbage.
+        assert_eq!(harvest_compression_info(&[]), CompressionInfo::default());
+        let ci = harvest_compression_info(&[0u8; 6]);
+        assert_eq!(ci, CompressionInfo::default());
+    }
+
+    // --- the export flows ---
+
+    #[test]
+    fn identity_scene_writes_the_golden_bytes() {
+        let input = ExportInput {
+            filename: "/res/chars/demo.animation".to_string(),
+            scene: plain_node("Scene", 3),
+            anim_range: (0, 2),
+            ..Default::default()
+        };
+        let (_, bytes) = export(TestIo::new(), &input);
+
+        let mut expected = Vec::new();
+        w_f32(&mut expected, 2.0);
+        w_str(&mut expected, "demo");
+        w_str(&mut expected, "demo");
+        w_i32(&mut expected, 1);
+        // The root channel: identity keys, times 0..2, bound table 1..3
+        // three times.
+        w_i32(&mut expected, 1);
+        w_str(&mut expected, "Scene Root");
+        w_i32(&mut expected, 3);
+        for t in 0..3 {
+            w_f32(&mut expected, t as f32);
+            w_f32(&mut expected, 1.0);
+            w_f32(&mut expected, 1.0);
+            w_f32(&mut expected, 1.0);
+        }
+        w_i32(&mut expected, 3);
+        for t in 0..3 {
+            w_f32(&mut expected, t as f32);
+            for _ in 0..3 {
+                w_f32(&mut expected, 0.0);
+            }
+        }
+        w_i32(&mut expected, 3);
+        for t in 0..3 {
+            w_f32(&mut expected, t as f32);
+            for v in [0.0, 0.0, 0.0, 1.0] {
+                w_f32(&mut expected, v);
+            }
+        }
+        w_i32(&mut expected, 3);
+        for v in 1..=3 {
+            w_i32(&mut expected, v);
+        }
+        w_i32(&mut expected, 3);
+        for v in 1..=3 {
+            w_i32(&mut expected, v);
+        }
+        w_i32(&mut expected, 3);
+        for v in 1..=3 {
+            w_i32(&mut expected, v);
+        }
+
+        assert_eq!(bytes, expected);
+    }
+
+    #[test]
+    fn root_children_are_sorted_descending_and_channels_follow() {
+        let mut tail = plain_node("Tail", 1);
+        tail.world = vec![Matrix::identity()];
+        let mut spine = plain_node("Spine", 1);
+        spine.children.push(tail);
+        let mut scene = plain_node("Scene", 1);
+        scene.children = vec![plain_node("Left", 1), spine, plain_node("Right", 1)];
+
+        let input = ExportInput {
+            filename: "/res/chars/order.animation".to_string(),
+            scene,
+            anim_range: (0, 0),
+            ..Default::default()
+        };
+        let (_, bytes) = export(TestIo::new(), &input);
+
+        // Scene Root, then Spine (1 child) ahead of the stable Left,
+        // Right, with Tail directly after Spine.
+        let mut r = TestReader::new(&bytes);
+        assert_eq!(r.f32(), 0.0);
+        assert_eq!(r.string(), "order");
+        assert_eq!(r.string(), "order");
+        assert_eq!(r.i32(), 5);
+        let identifiers: Vec<String> = (0..5)
+            .map(|_| {
+                let ty = r.i32();
+                assert_eq!(ty, 1);
+                let name = r.string();
+                // Skip the rest of the channel body.
+                let _ = (r.vec3_seq(), r.vec3_seq(), r.quat_seq());
+                let _ = (r.i32_seq(), r.i32_seq(), r.i32_seq());
+                name
+            })
             .collect();
         assert_eq!(
-            cues,
-            vec![
-                (0, vec!["chit".to_string(), "sstep".to_string()]),
-                (2, vec!["cagain".to_string()]),
-            ]
+            identifiers,
+            ["Scene Root", "Spine", "Tail", "Left", "Right"]
         );
-        assert!(track.has_cues());
-        track.clear();
-        assert!(!track.has_cues());
     }
 
     #[test]
-    fn the_cue_track_reads_back_as_the_last_channel() {
-        let mut root = ExportNode::new("root");
-        root.set_include(true);
+    fn munge_re_includes_the_ancestors_of_included_nodes() {
+        let hand = plain_node("Hand", 1);
+        let mut arm = plain_node("Arm", 1);
+        arm.hidden = true;
+        arm.children.push(hand);
+        let mut scene = plain_node("Scene", 1);
+        scene.children.push(arm);
 
-        let mut track = CueTrack::default();
-        track.add_cue(3, "cue:hit", 2, 4);
-        track.add_cue(4, "sound:step", 2, 4);
-
-        let settings = ExportSettings {
-            first_frame: 2,
-            last_frame: 4,
-            export_cue_track: true,
-            ..ExportSettings::default()
+        let input = ExportInput {
+            filename: "/res/chars/munge.animation".to_string(),
+            scene,
+            anim_range: (0, 0),
+            ..Default::default()
         };
-        let bytes = export(
-            &mut root,
-            |_identifier, _frame| Some(Matrix::identity()),
-            &settings,
-            Some(&track),
-            CompressionInfo::default(),
-            "x",
-        );
-        let animation = client::skeleton::Animation::from_bytes(&bytes).unwrap();
+        let (_, bytes) = export(TestIo::new(), &input);
 
-        // The root channel plus the cue channel, in that order.
-        assert_eq!(animation.channel_count(), 2);
-        match &animation.channels()[1] {
-            client::skeleton::Channel::Cue { cues } => {
-                assert_eq!(cues.len(), 2);
-                // The cue at frame 3 fires one frame into the animation.
-                assert_close(cues[0].0, 1.0);
-                assert_eq!(cues[0].1, "chit");
-                assert!(cues[0].2.is_empty());
-                assert_close(cues[1].0, 2.0);
-                assert_eq!(cues[1].1, "sstep");
-                assert!(cues[1].2.is_empty());
-            }
-            other => panic!("the second channel is the cue channel, got {other:?}"),
+        let mut r = TestReader::new(&bytes);
+        assert_eq!(r.skip_header(), 3);
+        for expected in ["Scene Root", "Arm", "Hand"] {
+            assert_eq!(r.i32(), 1);
+            assert_eq!(r.string(), expected);
+            // Skip the rest of the channel.
+            let _ = r.vec3_seq();
+            let _ = r.vec3_seq();
+            let _ = r.quat_seq();
+            let _ = r.i32_seq();
+            let _ = r.i32_seq();
+            let _ = r.i32_seq();
         }
     }
 
     #[test]
-    fn an_empty_cue_track_writes_no_channel() {
-        let mut root = ExportNode::new("root");
-        root.set_include(true);
-        let track = CueTrack::default();
+    fn forced_kinds_are_excluded_even_when_visible() {
+        let mut scene = plain_node("Scene", 1);
+        let mut excluded = Vec::new();
+        for (name, kind) in [
+            ("Cam", NodeKind::Camera),
+            ("Lamp", NodeKind::Light),
+            ("Shape", NodeKind::Shape),
+            ("Tgt", NodeKind::Target),
+            ("PView", NodeKind::ParticleView),
+        ] {
+            let mut node = plain_node(name, 1);
+            node.kind = kind;
+            excluded.push(node);
+        }
+        scene.children = excluded;
 
-        let settings = ExportSettings {
-            first_frame: 0,
-            last_frame: 0,
-            export_cue_track: true,
-            ..ExportSettings::default()
+        let input = ExportInput {
+            filename: "/res/chars/kinds.animation".to_string(),
+            scene,
+            anim_range: (0, 0),
+            ..Default::default()
         };
-        let bytes = export(
-            &mut root,
-            |_identifier, _frame| Some(Matrix::identity()),
-            &settings,
-            Some(&track),
-            CompressionInfo::default(),
-            "x",
+        let (exporter, bytes) = export(TestIo::new(), &input);
+
+        let mut r = TestReader::new(&bytes);
+        assert_eq!(r.skip_header(), 1);
+        assert_eq!(r.i32(), 1);
+        assert_eq!(r.string(), "Scene Root");
+        // None of the excluded kinds made the mesh list.
+        assert_eq!(exporter.mesh_nodes(), &[0]);
+        assert!(exporter.envelope_nodes().is_empty());
+    }
+
+    #[test]
+    fn selected_filter_keeps_only_selected_nodes() {
+        let mut scene = plain_node("Scene", 1);
+        let mut picked = plain_node("Picked", 1);
+        picked.selected = true;
+        scene.children = vec![picked, plain_node("Skipped", 1)];
+
+        let input = ExportInput {
+            filename: "/res/chars/sel.animation".to_string(),
+            scene,
+            anim_range: (0, 0),
+            options_selected: true,
+            ..Default::default()
+        };
+        let (_, bytes) = export(TestIo::new(), &input);
+
+        let mut r = TestReader::new(&bytes);
+        assert_eq!(r.skip_header(), 2);
+        // Scene Root channel, consumed wholesale.
+        assert_eq!(r.i32(), 1);
+        assert_eq!(r.string(), "Scene Root");
+        let _ = (r.vec3_seq(), r.vec3_seq(), r.quat_seq());
+        let _ = (r.i32_seq(), r.i32_seq(), r.i32_seq());
+        assert_eq!(r.i32(), 1);
+        assert_eq!(r.string(), "Picked");
+    }
+
+    #[test]
+    fn skinned_nodes_go_to_the_envelope_list_and_lose_their_channel() {
+        let mut scene = plain_node("Scene", 1);
+        let mut skin = plain_node("Skin", 1);
+        skin.skinned = true;
+        scene.children = vec![plain_node("Mesh", 1), skin];
+
+        let input = ExportInput {
+            filename: "/res/chars/split.animation".to_string(),
+            scene,
+            anim_range: (0, 0),
+            ..Default::default()
+        };
+        let (exporter, bytes) = export(TestIo::new(), &input);
+
+        // Flat indices: Scene 0, Mesh 1, Skin 2. The root itself is
+        // included and unskinned, so the reference pushes it to
+        // meshNodes_ first (Scene, Mesh), then Skin to envelopeNodes_.
+        assert_eq!(exporter.mesh_nodes(), &[0, 1]);
+        assert_eq!(exporter.envelope_nodes(), &[2]);
+
+        let mut r = TestReader::new(&bytes);
+        assert_eq!(r.skip_header(), 2); // Scene Root + Mesh
+        // Scene Root channel, consumed wholesale.
+        assert_eq!(r.i32(), 1);
+        assert_eq!(r.string(), "Scene Root");
+        let _ = (r.vec3_seq(), r.vec3_seq(), r.quat_seq());
+        let _ = (r.i32_seq(), r.i32_seq(), r.i32_seq());
+        assert_eq!(r.i32(), 1);
+        assert_eq!(r.string(), "Mesh");
+    }
+
+    #[test]
+    fn reference_hierarchy_re_parents_the_channel_transforms() {
+        // Scene: Scene -> Arm (x=4) -> Hand (world x=8, y=4, z=0.5).
+        let hand = translated_node("Hand", 8.0, 4.0, 0.5);
+        let mut arm = translated_node("Arm", 4.0, 0.0, 0.0);
+        arm.children.push(hand);
+        let mut scene = plain_node("Scene", 1);
+        scene.children.push(arm);
+
+        // The reference visual: Hand belongs to Scene.
+        let mut visual = DataSection::new("visual");
+        let root_node = visual.add_child("node");
+        root_node.write_string("identifier", "Scene");
+        let hand_node = root_node.add_child("node");
+        hand_node.write_string("identifier", "Hand");
+
+        // The settings file points at the reference hierarchy.
+        let mut file = DataSection::new("root");
+        file.write_string("referenceNodesFile", "chars/crab.visual");
+
+        let io = TestIo::new()
+            .with_section("chars/crab.visual", visual)
+            .with_section("/res/chars/crab_walk.animationsettings", file);
+        let input = ExportInput {
+            filename: "/res/chars/crab_walk.animation".to_string(),
+            scene,
+            anim_range: (0, 0),
+            ..Default::default()
+        };
+        let (_, bytes) = export(io, &input);
+
+        let (_, name1, name2, _, channels) = read_animation(&bytes);
+        assert_eq!(name1, "crab_walk");
+        assert_eq!(name2, "crab_walk");
+        assert_eq!(channels.len(), 3);
+        assert_eq!(
+            channels.iter().map(|c| c.1.as_str()).collect::<Vec<_>>(),
+            ["Scene Root", "Arm", "Hand"]
         );
-        let animation = client::skeleton::Animation::from_bytes(&bytes).unwrap();
-        assert_eq!(animation.channel_count(), 1);
+
+        // Arm stays under the root: x=4 times the unit scale. Hand is
+        // re-parented to the root, so its world translation reaches the
+        // channel directly instead of the (8-4, 4, 0.5) relative offset.
+        assert_eq!(channels[1].3[0].1, Vector3::new(0.04, 0.0, 0.0));
+        assert_eq!(channels[2].3[0].1, Vector3::new(0.08, 0.04, 0.005));
     }
 
     #[test]
-    fn whitespace_names_are_flagged() {
-        assert!(has_trailing_leading_whitespace(" Bip01"));
-        assert!(has_trailing_leading_whitespace("Bip01 "));
-        assert!(has_trailing_leading_whitespace(" "));
-        assert!(!has_trailing_leading_whitespace("Bip01"));
-        assert!(!has_trailing_leading_whitespace(""));
-        assert!(!has_trailing_leading_whitespace("Bip 01"));
+    fn export_node_animation_off_writes_only_the_cue_channel() {
+        let mut scene = plain_node("Scene", 6);
+        scene.note_keys = vec![
+            (0, "cue:boom".to_string()),
+            (5 * 160, "cue:hit".to_string()),
+        ];
+        let input = ExportInput {
+            filename: "/res/chars/cues.animation".to_string(),
+            scene,
+            anim_range: (0, 5),
+            ..Default::default()
+        };
+        // The animationsettings file turns the node animation off and the
+        // cue track on.
+        let mut file = DataSection::new("root");
+        file.write_bool("exportNodeAnimation", false);
+        file.write_bool("exportCueTrack", true);
+        let io = TestIo::new().with_section("/res/chars/cues.animationsettings", file);
+
+        let (exporter, bytes) = export(io, &input);
+        assert!(exporter.cue_track().has_cues());
+
+        let mut r = TestReader::new(&bytes);
+        assert_eq!(r.f32(), 5.0);
+        assert_eq!(r.string(), "cues");
+        assert_eq!(r.string(), "cues");
+        assert_eq!(r.i32(), 1);
+        assert_eq!(r.i32(), 6);
+        assert_eq!(r.i32(), 2);
+        assert_eq!(r.f32(), 0.0);
+        assert_eq!(r.string(), "cboom");
+        assert_eq!(r.i32(), 0);
+        assert_eq!(r.f32(), 5.0);
+        assert_eq!(r.string(), "chit");
+        assert_eq!(r.i32(), 0);
     }
 
     #[test]
-    fn tree_census_faces_walk_the_owning_tree() {
-        let mut root = ExportNode::new("root");
-        let mut a = ExportNode::new("a");
-        a.add_child(ExportNode::new("a1"));
-        root.add_child(a);
-        root.add_child(ExportNode::new("b"));
+    fn zero_channels_writes_no_file() {
+        let mut file = DataSection::new("root");
+        file.write_bool("exportNodeAnimation", false);
+        let io = TestIo::new().with_section("/res/chars/none.animationsettings", file);
+        let input = ExportInput {
+            filename: "/res/chars/none.animation".to_string(),
+            scene: plain_node("Scene", 1),
+            anim_range: (0, 0),
+            ..Default::default()
+        };
 
-        assert_eq!(root.tree_size(), 4);
-        assert_eq!(root.n_children(), 2);
-        assert_eq!(root.find("a1").unwrap().identifier(), "a1");
-        assert!(root.find("missing").is_none());
+        let mut exporter = MfxExporter::new(io);
+        exporter.do_export(&input).expect("Ok with no channels");
+        assert!(exporter.io.written_animations.is_empty());
+        // And no settings rewrite either (it sits inside the channel
+        // block).
+        assert!(exporter.io.deleted.is_empty());
+    }
 
-        let child = &mut root.children_mut()[0].children_mut()[0];
-        child.set_identifier("renamed");
-        assert_eq!(root.find("renamed").unwrap().identifier(), "renamed");
+    #[test]
+    fn compression_errors_are_harvested_into_type_four_channels() {
+        let mut existing = Vec::new();
+        w_f32(&mut existing, 3.0);
+        w_str(&mut existing, "old");
+        w_str(&mut existing, "old");
+        w_i32(&mut existing, 1);
+        w_i32(&mut existing, 4);
+        w_str(&mut existing, "ch0");
+        w_f32(&mut existing, 0.5);
+        w_f32(&mut existing, 0.25);
+        w_f32(&mut existing, 0.125);
+
+        let input = ExportInput {
+            filename: "/res/chars/demo.animation".to_string(),
+            scene: plain_node("Scene", 1),
+            anim_range: (0, 0),
+            ..Default::default()
+        };
+        let io = TestIo::new().with_existing_animation("/res/chars/demo.animation", &existing);
+        let (_, bytes) = export(io, &input);
+
+        let (_, _, _, _, channels) = read_animation(&bytes);
+        assert_eq!(channels.len(), 1);
+        assert_eq!(channels[0].0, 4);
+        assert_eq!(channels[0].1, "Scene Root");
+
+        // The three harvested errors sit right behind the identifier.
+        let mut r = TestReader::new(&bytes);
+        let _ = r.f32();
+        let _ = r.string();
+        let _ = r.string();
+        let _ = r.i32();
+        assert_eq!(r.i32(), 4);
+        let _ = r.string();
+        assert_eq!(r.f32(), 0.5);
+        assert_eq!(r.f32(), 0.25);
+        assert_eq!(r.f32(), 0.125);
+    }
+
+    #[test]
+    fn settings_are_written_to_cfg_and_the_settings_file_is_replaced() {
+        let input = ExportInput {
+            filename: "/res/chars/demo.animation".to_string(),
+            scene: plain_node("Scene", 1),
+            anim_range: (0, 0),
+            ..Default::default()
+        };
+        let (exporter, _) = export(TestIo::new(), &input);
+
+        // The cfg file is written right after the read chain (with the
+        // merged settings), the animationsettings file is deleted and
+        // rewritten after the animation.
+        assert_eq!(exporter.io.written_settings[0].0, "animationexporter.cfg");
+        assert!(
+            !exporter.io.written_settings[0]
+                .1
+                .read_bool("allowScale", true)
+        );
+        assert_eq!(
+            exporter.io.deleted,
+            ["/res/chars/demo.animationsettings".to_string()]
+        );
+        assert_eq!(
+            exporter.io.written_settings[1].0,
+            "/res/chars/demo.animationsettings"
+        );
+    }
+
+    #[test]
+    fn settings_chain_merges_cfg_settings_file_and_override() {
+        let mut cfg = DataSection::new("root");
+        cfg.write_bool("exportNodeAnimation", false);
+        cfg.write_string("referenceNodesFile", "a.visual");
+        let mut file = DataSection::new("root");
+        file.write_bool("exportNodeAnimation", true);
+        file.write_string("referenceNodesFile", "b.visual");
+        let mut over = DataSection::new("settings");
+        over.write_string("referenceNodesFile", "c.visual");
+        over.write_bool("useLegacyOrientation", true);
+
+        let io = TestIo::new()
+            .with_section("animationexporter.cfg", cfg)
+            .with_section("/res/chars/demo.animationsettings", file);
+        let input = ExportInput {
+            filename: "/res/chars/demo.animation".to_string(),
+            scene: plain_node("Scene", 1),
+            anim_range: (0, 0),
+            override_section: Some(over),
+            ..Default::default()
+        };
+        let (exporter, _) = export(io, &input);
+
+        // The cfg write-back carries the merged result: node animation
+        // re-enabled by the settings file, the reference file and the
+        // legacy flag from the maxscript override.
+        let merged = &exporter.io.written_settings[0].1;
+        assert!(merged.read_bool("exportNodeAnimation", false));
+        assert_eq!(merged.read_string("referenceNodesFile", ""), "c.visual");
+        assert!(merged.read_bool("useLegacyOrientation", false));
+    }
+
+    #[test]
+    fn a_failed_animation_write_skips_the_settings_rewrite() {
+        let io = TestIo {
+            fail_write: true,
+            ..TestIo::new()
+        };
+        let input = ExportInput {
+            filename: "/res/chars/demo.animation".to_string(),
+            scene: plain_node("Scene", 1),
+            anim_range: (0, 0),
+            ..Default::default()
+        };
+        let mut exporter = MfxExporter::new(io);
+        exporter.do_export(&input).expect("still Ok");
+
+        // Only the cfg write happened.
+        assert_eq!(exporter.io.written_settings.len(), 1);
+        assert!(exporter.io.deleted.is_empty());
+    }
+
+    #[test]
+    fn illegal_node_names_collect_the_verbatim_warning() {
+        let mut scene = plain_node("Scene", 1);
+        scene.children.push(plain_node(" Bad", 1));
+        scene.children.push(plain_node("Worse ", 1));
+
+        let input = ExportInput {
+            filename: "/res/chars/names.animation".to_string(),
+            scene,
+            anim_range: (0, 0),
+            ..Default::default()
+        };
+        let (exporter, _) = export(TestIo::new(), &input);
+        assert_eq!(exporter.warnings().len(), 2);
+        assert_eq!(
+            exporter.warnings()[0],
+            "Node \" Bad\" has an illegal name. Remove any spaces at the beginning and end of the name."
+        );
+        assert_eq!(
+            exporter.warnings()[1],
+            "Node \"Worse \" has an illegal name. Remove any spaces at the beginning and end of the name."
+        );
+    }
+
+    #[test]
+    fn duplicate_names_abort_with_sorted_messages() {
+        let mut scene = plain_node("Scene", 1);
+        scene.children = vec![
+            plain_node("Dup", 1),
+            plain_node("Dup", 1),
+            plain_node("Also", 1),
+            plain_node("Also", 1),
+        ];
+
+        let input = ExportInput {
+            filename: "/res/chars/dup.animation".to_string(),
+            scene,
+            anim_range: (0, 0),
+            ..Default::default()
+        };
+        let mut exporter = MfxExporter::new(TestIo::new());
+        let error = exporter.do_export(&input).expect_err("duplicates abort");
+        assert_eq!(
+            error,
+            ExportError::InvalidIds(
+                "Duplicate node name Also\nDuplicate node name Dup\n".to_string()
+            )
+        );
+        assert!(exporter.io.written_animations.is_empty());
+    }
+
+    #[test]
+    fn a_path_outside_the_res_roots_aborts_with_the_verbatim_message() {
+        let io = TestIo {
+            res_root: String::new(), // dissolveFilename is the identity
+            ..TestIo::new()
+        };
+        let input = ExportInput {
+            filename: "C:/scratch/anim.animation".to_string(),
+            scene: plain_node("Scene", 1),
+            anim_range: (0, 0),
+            ..Default::default()
+        };
+        let mut exporter = MfxExporter::new(io);
+        let error = exporter
+            .do_export(&input)
+            .expect_err("outside the res path");
+        assert_eq!(
+            error.to_string(),
+            "The exported file \"C:/scratch/anim.animation\" is not in a valid game path.\n\
+             Need to export to a *subfolder* of:\n\
+             C:/game/res"
+        );
+    }
+
+    #[test]
+    fn a_dissolved_name_without_a_subfolder_aborts_too() {
+        // dissolveFilename shortens the path but the result has no
+        // separator: still an abort.
+        let mut exporter = MfxExporter::new(TestIo::new());
+        let input = ExportInput {
+            filename: "/res/bare.animation".to_string(),
+            scene: plain_node("Scene", 1),
+            anim_range: (0, 0),
+            ..Default::default()
+        };
+        // "bare.animation" has no separator.
+        assert!(matches!(
+            exporter.do_export(&input),
+            Err(ExportError::NotInResPath(_))
+        ));
+    }
+
+    #[test]
+    fn the_animation_name_crops_the_basename_and_the_extension() {
+        // Leading-separator names are not cropped at the separator (the
+        // reference's `> 0` check), so the dot crop acts on the whole
+        // path. The fake host dissolves "/leading.animation" into a
+        // subfolder so the res-path check passes.
+        let input = ExportInput {
+            filename: "/leading.animation".to_string(),
+            scene: plain_node("Scene", 1),
+            anim_range: (0, 0),
+            ..Default::default()
+        };
+        let mut exporter = MfxExporter::new(TestIo {
+            subfolder: true,
+            ..TestIo::new()
+        });
+        exporter.do_export(&input).expect("export succeeds");
+        let bytes = exporter
+            .io
+            .written_animations
+            .values()
+            .next()
+            .cloned()
+            .expect("an animation was written");
+        let mut r = TestReader::new(&bytes);
+        let _ = r.f32();
+        assert_eq!(r.string(), "/leading");
+        assert_eq!(r.string(), "/leading");
+    }
+
+    #[test]
+    fn unit_scale_multiplies_the_position_keys() {
+        let hand = translated_node("Hand", 1.0, 2.0, 3.0);
+        let mut scene = plain_node("Scene", 1);
+        scene.children.push(hand);
+
+        let input = ExportInput {
+            filename: "/res/chars/demo.animation".to_string(),
+            scene,
+            anim_range: (0, 0),
+            ..Default::default()
+        };
+        let io = TestIo {
+            unit_scale: 0.5,
+            ..TestIo::new()
+        };
+        let (_, bytes) = export(io, &input);
+
+        let (_, _, _, _, channels) = read_animation(&bytes);
+        assert_eq!(channels.len(), 2);
+        // Scene Root (all zero) then Hand.
+        assert_eq!(channels[1].1, "Hand");
+        assert_eq!(channels[1].3[0].1, Vector3::new(0.5, 1.0, 1.5));
+    }
+
+    #[test]
+    fn allow_scale_keeps_the_raw_scale_and_default_normalises_it() {
+        // A child bone whose world is scaled 2x in every axis. The root
+        // channel is the stored identity (setMaxNode(NULL)), so the scale
+        // only shows on the bone channel.
+        let scaled_world = {
+            let mut m = Matrix::identity();
+            for (row, row_vals) in m.m.iter_mut().enumerate().take(3) {
+                row_vals[row] = 2.0;
+            }
+            m.m[3][0] = 1.0;
+            m
+        };
+        let mut scene = plain_node("Scene", 1);
+        scene.children.push(SceneNode {
+            name: "Bone".to_string(),
+            world: vec![scaled_world],
+            ..Default::default()
+        });
+
+        let input = ExportInput {
+            filename: "/res/chars/demo.animation".to_string(),
+            scene: scene.clone(),
+            anim_range: (0, 0),
+            ..Default::default()
+        };
+
+        // Default: allowScale false -> the world rows are normalised, the
+        // scale key reads 1.
+        let (_, bytes) = export(TestIo::new(), &input);
+        let (_, _, _, _, channels) = read_animation(&bytes);
+        assert_eq!(channels.len(), 2);
+        assert_eq!(channels[1].1, "Bone");
+        assert_eq!(channels[1].2[0].1, Vector3::new(1.0, 1.0, 1.0));
+
+        // allowScale true: the raw 2x reaches the scale keys.
+        let file = settings_section(Some(true), None);
+        let io = TestIo::new().with_section("/res/chars/demo.animationsettings", file);
+        let (_, bytes) = export(io, &input);
+        let (_, _, _, _, channels) = read_animation(&bytes);
+        assert_eq!(channels[1].2[0].1, Vector3::new(2.0, 2.0, 2.0));
+    }
+
+    #[test]
+    fn legacy_orientation_changes_the_rotation_keys() {
+        // A 90-degree x rotation: rows (1,0,0)-(0,0,1)-(0,-1,0). The XOR
+        // sign pattern lands on the off-diagonal cells here, unlike a z
+        // rotation whose nonzero cells all sit in XOR-unchanged positions.
+        let rotated = {
+            let mut m = Matrix::identity();
+            m.m[1] = [0.0, 0.0, 1.0, 0.0];
+            m.m[2] = [0.0, -1.0, 0.0, 0.0];
+            m
+        };
+        let mut scene = plain_node("Scene", 1);
+        scene.children.push(SceneNode {
+            name: "Bone".to_string(),
+            world: vec![rotated],
+            ..Default::default()
+        });
+
+        let input = ExportInput {
+            filename: "/res/chars/demo.animation".to_string(),
+            scene,
+            anim_range: (0, 0),
+            ..Default::default()
+        };
+
+        // Without the legacy orientation the rearranged rows keep
+        // r1=(0,0,-1), r2=(0,1,0): x = -0.70711.
+        let (_, bytes) = export(TestIo::new(), &input);
+        let (_, _, _, _, channels) = read_animation(&bytes);
+        assert_eq!(channels.len(), 2);
+        assert_eq!(channels[1].1, "Bone");
+        let expected = Quaternion::new(
+            -std::f32::consts::FRAC_1_SQRT_2,
+            0.0,
+            0.0,
+            std::f32::consts::FRAC_1_SQRT_2,
+        );
+        assert!(
+            channels[1].4[0].1.almost_equal(&expected),
+            "{:?}",
+            channels[1].4
+        );
+
+        // With it: x = +0.70711.
+        let mut over = DataSection::new("settings");
+        over.write_bool("useLegacyOrientation", true);
+        let input = ExportInput {
+            override_section: Some(over),
+            ..input.clone()
+        };
+        let (_, bytes) = export(TestIo::new(), &input);
+        let (_, _, _, _, channels) = read_animation(&bytes);
+        assert_eq!(channels[1].1, "Bone");
+        let expected = Quaternion::new(
+            std::f32::consts::FRAC_1_SQRT_2,
+            0.0,
+            0.0,
+            std::f32::consts::FRAC_1_SQRT_2,
+        );
+        assert!(
+            channels[1].4[0].1.almost_equal(&expected),
+            "{:?}",
+            channels[1].4
+        );
+    }
+
+    #[test]
+    fn a_two_bone_walk_round_trips_key_times_and_values() {
+        // Two frames: the child bone rotates 90 degrees about z between
+        // them while sitting at a fixed offset under the hub.
+        let rotation_z = |angle: f32| {
+            let mut m = Matrix::identity();
+            m.m[0][0] = angle.cos();
+            m.m[0][1] = angle.sin();
+            m.m[1][0] = -angle.sin();
+            m.m[1][1] = angle.cos();
+            m
+        };
+        let mut bone_world = Vec::new();
+        for angle in [0.0f32, std::f32::consts::FRAC_PI_2] {
+            let mut m = rotation_z(angle);
+            m.m[3][0] = 2.0;
+            bone_world.push(m);
+        }
+        let bone = SceneNode {
+            name: "Bone".to_string(),
+            world: bone_world,
+            ..Default::default()
+        };
+        let mut hub = translated_node("Hub", 0.0, 1.0, 0.0);
+        hub.world = vec![hub.world[0], hub.world[0]];
+        hub.children.push(bone);
+        let mut scene = plain_node("Scene", 2);
+        scene.children.push(hub);
+
+        let input = ExportInput {
+            filename: "/res/chars/twobone.animation".to_string(),
+            scene,
+            anim_range: (0, 1),
+            ..Default::default()
+        };
+        let (_, bytes) = export(TestIo::new(), &input);
+
+        let mut r = TestReader::new(&bytes);
+        assert_eq!(r.f32(), 1.0);
+        assert_eq!(r.string(), "twobone");
+        assert_eq!(r.string(), "twobone");
+        assert_eq!(r.i32(), 3);
+
+        // Channel 0: Scene Root (identity), consumed wholesale.
+        assert_eq!(r.i32(), 1);
+        assert_eq!(r.string(), "Scene Root");
+        let _ = (r.vec3_seq(), r.vec3_seq(), r.quat_seq());
+        let _ = (r.i32_seq(), r.i32_seq(), r.i32_seq());
+
+        // Channel 1: Hub, relative to the root. Translation (0,1,0) times
+        // the unit scale, identity rotation, times 0 and 1.
+        assert_eq!(r.i32(), 1);
+        assert_eq!(r.string(), "Hub");
+        let scales = r.vec3_seq();
+        let positions = r.vec3_seq();
+        let rotations = r.quat_seq();
+        let bound1 = r.i32_seq();
+        let bound2 = r.i32_seq();
+        let bound3 = r.i32_seq();
+        assert_eq!(scales.len(), 2);
+        assert_eq!(
+            scales.iter().map(|(t, _)| *t).collect::<Vec<_>>(),
+            [0.0, 1.0]
+        );
+        assert_eq!(positions[0].1, Vector3::new(0.0, 0.01, 0.0));
+        assert_eq!(positions[1].1, Vector3::new(0.0, 0.01, 0.0));
+        assert_eq!(rotations[0].1, Quaternion::new(0.0, 0.0, 0.0, 1.0));
+        assert_eq!(bound1, [1, 2]);
+        assert_eq!(bound2, [1, 2]);
+        assert_eq!(bound3, [1, 2]);
+
+        // Channel 2: Bone, relative to Hub: frame 0 identity at (2,-1,0),
+        // frame 1 the 90-degree rotation at the same offset.
+        assert_eq!(r.i32(), 1);
+        assert_eq!(r.string(), "Bone");
+        let _ = r.vec3_seq();
+        let positions = r.vec3_seq();
+        let rotations = r.quat_seq();
+        let bound = r.i32_seq();
+        assert_eq!(positions[0].1, Vector3::new(0.02, -0.01, 0.0));
+        assert_eq!(positions[1].1, Vector3::new(0.02, -0.01, 0.0));
+        assert_eq!(rotations[0].1, Quaternion::new(0.0, 0.0, 0.0, 1.0));
+        // The rearrange maps the Max z-rotation onto a -90-degree
+        // y-rotation in BigWorld space.
+        let expected = Quaternion::new(
+            0.0,
+            -std::f32::consts::FRAC_1_SQRT_2,
+            0.0,
+            std::f32::consts::FRAC_1_SQRT_2,
+        );
+        assert!(rotations[1].1.almost_equal(&expected), "{rotations:?}");
+        assert_eq!(bound, [1, 2]);
+    }
+
+    // --- coverage closes: the direct tree faces and the name quirks ---
+
+    /// A three-node chain: Scene -> Arm -> Hand (indices 0, 1, 2).
+    fn chain_tree() -> MfxTree {
+        let settings = ExportSettings::default();
+        let mut exporter = MfxExporter::new(TestIo::new());
+        let hand = plain_node("Hand", 1);
+        let mut arm = plain_node("Arm", 1);
+        arm.children.push(hand);
+        let mut scene = plain_node("Scene", 1);
+        scene.children.push(arm);
+        exporter.pre_process(&settings, &scene)
+    }
+
+    #[test]
+    fn find_of_an_absent_identifier_answers_none() {
+        let tree = chain_tree();
+        assert_eq!(tree.find("Ghost"), None);
+    }
+
+    #[test]
+    fn reparent_is_a_no_op_when_the_parent_is_already_right() {
+        let mut tree = chain_tree();
+        // Hand's parent is already Arm.
+        tree.reparent(2, 1);
+        assert_eq!(tree.nodes[2].parent, Some(1));
+        assert_eq!(tree.nodes[1].children, vec![2]);
+    }
+
+    #[test]
+    fn reparent_moves_the_subtree_hanging_off_c_back_first() {
+        let mut tree = chain_tree();
+        // Arm under Hand: Hand hangs off Arm, so Hand moves back to Arm's
+        // parent (the root) first, then Arm goes under Hand.
+        tree.reparent(1, 2);
+        assert_eq!(tree.nodes[2].parent, Some(0));
+        assert_eq!(tree.nodes[1].parent, Some(2));
+        assert_eq!(tree.nodes[0].children, vec![2]);
+        assert_eq!(tree.nodes[2].children, vec![1]);
+    }
+
+    #[test]
+    fn reparent_of_the_root_attaches_without_detaching() {
+        let mut tree = chain_tree();
+        // The root has no parent, so nothing detaches on either side (the
+        // reference would dereference NULL; the port stays defined).
+        tree.reparent(tree.root, 1);
+        assert_eq!(tree.nodes[tree.root].parent, Some(1));
+        assert!(tree.nodes[1].children.contains(&tree.root));
+    }
+
+    #[test]
+    fn a_singular_ideal_parent_inverts_to_the_zero_matrix() {
+        let settings = ExportSettings::default();
+        let mut exporter = MfxExporter::new(TestIo::new());
+        let mut bone = plain_node("Bone", 1);
+        bone.world = vec![Matrix::identity()];
+        let mut scene = plain_node("Scene", 1);
+        scene.world = vec![Matrix::zero()];
+        scene.children.push(bone);
+        let tree = exporter.pre_process(&settings, &scene);
+
+        // With no ideal parent passed, the node's own parent is the ideal.
+        let rel = tree.get_relative_transform(1, 0, false, None);
+        assert_eq!(rel, Matrix::zero());
+    }
+
+    #[test]
+    fn a_node_without_a_parent_returns_its_own_world() {
+        let mut tree = chain_tree();
+        tree.nodes[tree.root].scene = Some(0);
+        let rel = tree.get_relative_transform(tree.root, 0, false, None);
+        assert_eq!(rel, Matrix::identity());
+    }
+
+    #[test]
+    fn a_stored_node_with_a_parent_multiplies_up_the_chain() {
+        let mut tree = chain_tree();
+        // Hand keeps its tree parent but loses the max node: the stored
+        // transform composes with the parent's world.
+        tree.nodes[2].scene = None;
+        tree.nodes[2].transform = Matrix::identity();
+        assert_eq!(tree.get_transform(2, 0, false), Matrix::identity());
+        assert_eq!(tree.get_transform(2, 0, true), Matrix::identity());
+    }
+
+    #[test]
+    fn normalise_keeps_zero_rows_zero() {
+        let mut m = Matrix::zero();
+        m.m[0] = [2.0, 0.0, 0.0, 0.0];
+        let out = normalise_matrix(&m);
+        assert_eq!(out.m[0], [1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(out.m[1], [0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(out.m[2], [0.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn write_settings_without_a_section_answers_false() {
+        assert!(!ExportSettings::default().write_settings(None));
+    }
+
+    #[test]
+    fn an_empty_settings_section_keeps_the_defaults() {
+        let mut settings = ExportSettings::default();
+        assert!(settings.read_settings(Some(&settings_section(None, None))));
+        assert_eq!(settings, ExportSettings::default());
+
+        // The single-key section only flips its own key.
+        assert!(settings.read_settings(Some(&settings_section(None, Some(false)))));
+        assert!(!settings.export_node_animation);
+        assert_eq!(settings.allow_scale, ExportSettings::default().allow_scale);
+    }
+
+    #[test]
+    fn harvest_tolerates_negative_and_truncated_strings() {
+        // f32 total, a negative-length identifier, an empty one, one
+        // channel of type 4, then an identifier length that outruns the
+        // buffer (the errors behind it read as zeros).
+        let mut data = Vec::new();
+        w_f32(&mut data, 1.0);
+        w_i32(&mut data, -3);
+        w_i32(&mut data, 0);
+        w_i32(&mut data, 1);
+        w_i32(&mut data, 4);
+        w_i32(&mut data, 5);
+        data.extend_from_slice(b"ab");
+
+        let ci = harvest_compression_info(&data);
+        assert!(ci.specify_amounts);
+        assert_eq!(ci.scale_compression_error, 0.0);
+        assert_eq!(ci.position_compression_error, 0.0);
+        assert_eq!(ci.rotation_compression_error, 0.0);
+    }
+
+    #[test]
+    fn a_cut_inside_a_utf8_sequence_strips_nothing() {
+        // The ten-character cut lands inside the last character, so the
+        // whole name is kept and ".animation" is appended.
+        let input = ExportInput {
+            filename: "/res/chars/x好abcdefgh".to_string(),
+            scene: plain_node("Scene", 1),
+            anim_range: (0, 0),
+            ..Default::default()
+        };
+        let (exporter, bytes) = export(TestIo::new(), &input);
+        let written: Vec<&str> = exporter
+            .io
+            .written_animations
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(written, ["/res/chars/x好abcdefgh.animation"]);
+        let mut r = TestReader::new(&bytes);
+        let _ = r.f32();
+        assert_eq!(r.string(), "x好abcdefgh");
+        assert_eq!(r.string(), "x好abcdefgh");
+    }
+
+    #[test]
+    fn a_leading_dot_basename_keeps_the_dot() {
+        // "chars//.animation": the separator crop lands past the double
+        // slash, so the basename is ".animation" and the dot crop sees
+        // i == 0 — the reference's `> 0` keeps the whole name.
+        let input = ExportInput {
+            filename: "/res/chars//.animation".to_string(),
+            scene: plain_node("Scene", 1),
+            anim_range: (0, 0),
+            ..Default::default()
+        };
+        let (_, bytes) = export(TestIo::new(), &input);
+        let mut r = TestReader::new(&bytes);
+        let _ = r.f32();
+        assert_eq!(r.string(), ".animation");
+        assert_eq!(r.string(), ".animation");
+    }
+
+    #[test]
+    fn duplicate_reference_pairs_take_the_last_parent_and_unknown_names_skip() {
+        let hand = translated_node("Hand", 1.0, 0.0, 0.0);
+        let mut arm = plain_node("Arm", 1);
+        arm.children.push(hand);
+        let mut scene = plain_node("Scene", 1);
+        scene.children.push(arm);
+
+        // Document order: Arm (under Scene) with Hand inside, then Hand
+        // again directly under Scene (the duplicate — the last pair wins),
+        // then a pair naming an absent node (skipped).
+        let mut visual = DataSection::new("visual");
+        let root_node = visual.add_child("node");
+        root_node.write_string("identifier", "Scene");
+        let arm_node = root_node.add_child("node");
+        arm_node.write_string("identifier", "Arm");
+        let nested = arm_node.add_child("node");
+        nested.write_string("identifier", "Hand");
+        let direct = root_node.add_child("node");
+        direct.write_string("identifier", "Hand");
+        let ghost = root_node.add_child("node");
+        ghost.write_string("identifier", "Ghost");
+
+        let mut file = DataSection::new("root");
+        file.write_string("referenceNodesFile", "chars/dup.visual");
+        let io = TestIo::new()
+            .with_section("chars/dup.visual", visual)
+            .with_section("/res/chars/dup.animationsettings", file);
+        let input = ExportInput {
+            filename: "/res/chars/dup.animation".to_string(),
+            scene,
+            anim_range: (0, 0),
+            ..Default::default()
+        };
+        let (_, bytes) = export(io, &input);
+        let (_, _, _, _, channels) = read_animation(&bytes);
+        // Hand re-parented under the root, Arm untouched, Ghost gone.
+        assert_eq!(
+            channels.iter().map(|c| c.1.as_str()).collect::<Vec<_>>(),
+            ["Scene Root", "Arm", "Hand"]
+        );
+        assert_eq!(channels[2].3[0].1, Vector3::new(0.01, 0.0, 0.0));
+    }
+
+    #[test]
+    fn a_reference_visual_without_a_root_node_section_is_ignored() {
+        let hand = translated_node("Hand", 8.0, 4.0, 0.5);
+        let mut arm = translated_node("Arm", 4.0, 0.0, 0.0);
+        arm.children.push(hand);
+        let mut scene = plain_node("Scene", 1);
+        scene.children.push(arm);
+
+        // No "node" child: the re-parent is skipped (the reference
+        // dereferences NULL there).
+        let visual = DataSection::new("visual");
+        let mut file = DataSection::new("root");
+        file.write_string("referenceNodesFile", "chars/empty.visual");
+        let io = TestIo::new()
+            .with_section("chars/empty.visual", visual)
+            .with_section("/res/chars/keep.animationsettings", file);
+        let input = ExportInput {
+            filename: "/res/chars/keep.animation".to_string(),
+            scene,
+            anim_range: (0, 0),
+            ..Default::default()
+        };
+        let (_, bytes) = export(io, &input);
+        let (_, _, _, _, channels) = read_animation(&bytes);
+        // No re-parent: Hand stays relative to Arm.
+        assert_eq!(channels[2].1, "Hand");
+        assert_eq!(channels[2].3[0].1, Vector3::new(0.04, 0.04, 0.005));
     }
 }

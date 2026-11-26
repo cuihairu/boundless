@@ -1,0 +1,10 @@
+key	value	unit	source
+binary_strip_none_bytes	116126768	bytes	cargo build --release, profile.strip="none" (CARGO_TARGET_DIR=/tmp/opt14-ab2/baseline-target)
+archive_strip_none_bytes	23678579	bytes	tar.gz of bin/boundless-server only
+binary_strip_symbols_bytes	792160	bytes	cargo build --release, profile.strip="symbols" (CARGO_TARGET_DIR=/tmp/opt14-ab2/candidate-target)
+archive_strip_symbols_bytes	401146	bytes	tar.gz of bin/boundless-server only
+binary_shrink_factor	146.60	ratio	116126768/792160
+archive_shrink_factor	59.03	ratio	23678579/401146
+first_run_strip_none_s	0.025993	s	median of 14 launches (opt-14-01-01 fixture)
+first_run_strip_symbols_s	0.019643	s	best of 3 launches of the stripped binary
+first_run_delta_note	timing_unchanged	text	the stripped binary reaches "BaseApp is running" in the same 17-26 ms window; stripping symbols does not change codegen

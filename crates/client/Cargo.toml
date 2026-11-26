@@ -25,6 +25,12 @@ waypoint = { workspace = true }
 # pure Rust (miniz_oxide), so the workspace gate needs no system zlib.
 flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
 
+[dev-dependencies]
+# BW-13-05-02 acceptance: the portable Max animation exporter (domain
+# layer) writes the `.animation` bytes this crate's `Animation::from_bytes`
+# reads back.
+asset-pipeline = { workspace = true }
+
 [features]
 # The real window/event-loop binding (winit). Default-off keeps the workspace
 # gate lean: the server path never needs a window, and CI runners may lack the

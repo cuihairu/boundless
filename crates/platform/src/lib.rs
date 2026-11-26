@@ -12,10 +12,9 @@ pub mod interface;
 pub mod socket;
 
 /// Subprocess control and exit-status decoding (BW-15-01-03,
-/// `lib/server/process.hpp`). Unix only: the reference's `Process` is
-/// `fork`/`execvp`/`waitpid`/`kill`; Windows `CreateProcess` is a
-/// separate BW-15-03 item.
-#[cfg(unix)]
+/// `lib/server/process.hpp`). `fork`/`execvp`/`waitpid`/`kill` on unix,
+/// `CreateProcessW`/`WaitForSingleObject`/`TerminateProcess` on
+/// Windows, behind one API.
 pub mod process;
 
 /// Path casing, encoding and system directories (BW-15-01-06). Unix
@@ -31,10 +30,9 @@ pub mod path;
 pub mod poller;
 
 /// The self-pipe wakeup that makes an idle event loop interruptible
-/// (BW-15-01-01). Unix only: `pipe(2)` is the same on Linux and macOS;
-/// the Windows `WSAPoll` backend needs a socketpair and lands with the
-/// Windows poller under BW-15-05.
-#[cfg(unix)]
+/// (BW-15-01-01). `pipe(2)` on Linux/macOS; on Windows the same
+/// contract rides a loopback socketpair, because `WSAPoll` cannot poll
+/// anonymous pipes.
 pub mod wakeup;
 
 /// Advisory file locking and atomic replacement (BW-15-01-04). Unix
@@ -44,9 +42,9 @@ pub mod wakeup;
 pub mod file;
 
 /// Read-only memory mapping and dynamic-library lookup (BW-15-01-05).
-/// Unix only: `mmap(2)`/`dlopen`; the Windows `CreateFileMapping`/
-/// `LoadLibrary` backends land with the Windows work under BW-15-05.
-#[cfg(unix)]
+/// `mmap(2)`/`dlopen` on unix, `CreateFileMapping`/`LoadLibrary` on
+/// Windows; both spellings share one API so resource readers stay
+/// platform-agnostic.
 pub mod mmap;
 
 /// Signal syscalls and the `sigset_t` family, the sole landing point for
