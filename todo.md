@@ -2932,7 +2932,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。
 - [ ] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。
-- [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
+- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（main `b62977b`=cherry-pick 988ff5f/797e770 patch-id 镜像[修 ci/install-layout.sh 过时模块名 libboundless.so→libpython_module.so、安装名 boundless.so→boundless_core.so，与 crates/python-module MODULE_NAME=boundless_core 对齐]；真机 `CI_RUNNERS_TIMEOUT=600 bash ci/install-layout.sh` 全部 PASS rc=0——install-build/stage(28M tar)/clean/smoke-server(starting+is running+shutdown exit 0)/cli/cli-res/res-server/build-parity/module(boundless_core 0.1.0 裸导入)/layout/upgrade(篡改 res 还原+data/db/user.db 保留)/uninstall(删包保 data)；证据 docs/review/opt-14-01-03-install-upgrade-rerun.md + fixtures opt-14-01-03/install-upgrade-rerun.tsv；三端本行验收=脚本/数据保留 Linux 面，Windows/macOS 运行属 BW-15-03/04 矩阵）
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
 
@@ -4514,7 +4514,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。
 - [ ] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。
-- [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
+- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（main `b62977b`=cherry-pick 988ff5f/797e770 patch-id 镜像[修 ci/install-layout.sh 过时模块名 libboundless.so→libpython_module.so、安装名 boundless.so→boundless_core.so，与 crates/python-module MODULE_NAME=boundless_core 对齐]；真机 `CI_RUNNERS_TIMEOUT=600 bash ci/install-layout.sh` 全部 PASS rc=0——install-build/stage(28M tar)/clean/smoke-server(starting+is running+shutdown exit 0)/cli/cli-res/res-server/build-parity/module(boundless_core 0.1.0 裸导入)/layout/upgrade(篡改 res 还原+data/db/user.db 保留)/uninstall(删包保 data)；证据 docs/review/opt-14-01-03-install-upgrade-rerun.md + fixtures opt-14-01-03/install-upgrade-rerun.tsv；三端本行验收=脚本/数据保留 Linux 面，Windows/macOS 运行属 BW-15-03/04 矩阵）
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
 
@@ -6057,7 +6057,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。
 - [ ] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。
-- [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
+- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（main `b62977b`=cherry-pick 988ff5f/797e770 patch-id 镜像[修 ci/install-layout.sh 过时模块名 libboundless.so→libpython_module.so、安装名 boundless.so→boundless_core.so，与 crates/python-module MODULE_NAME=boundless_core 对齐]；真机 `CI_RUNNERS_TIMEOUT=600 bash ci/install-layout.sh` 全部 PASS rc=0——install-build/stage(28M tar)/clean/smoke-server(starting+is running+shutdown exit 0)/cli/cli-res/res-server/build-parity/module(boundless_core 0.1.0 裸导入)/layout/upgrade(篡改 res 还原+data/db/user.db 保留)/uninstall(删包保 data)；证据 docs/review/opt-14-01-03-install-upgrade-rerun.md + fixtures opt-14-01-03/install-upgrade-rerun.tsv；三端本行验收=脚本/数据保留 Linux 面，Windows/macOS 运行属 BW-15-03/04 矩阵）
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
 
@@ -7600,7 +7600,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。
 - [ ] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。
-- [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
+- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（main `b62977b`=cherry-pick 988ff5f/797e770 patch-id 镜像[修 ci/install-layout.sh 过时模块名 libboundless.so→libpython_module.so、安装名 boundless.so→boundless_core.so，与 crates/python-module MODULE_NAME=boundless_core 对齐]；真机 `CI_RUNNERS_TIMEOUT=600 bash ci/install-layout.sh` 全部 PASS rc=0——install-build/stage(28M tar)/clean/smoke-server(starting+is running+shutdown exit 0)/cli/cli-res/res-server/build-parity/module(boundless_core 0.1.0 裸导入)/layout/upgrade(篡改 res 还原+data/db/user.db 保留)/uninstall(删包保 data)；证据 docs/review/opt-14-01-03-install-upgrade-rerun.md + fixtures opt-14-01-03/install-upgrade-rerun.tsv；三端本行验收=脚本/数据保留 Linux 面，Windows/macOS 运行属 BW-15-03/04 矩阵）
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
 
@@ -9182,7 +9182,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。
 - [ ] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。
-- [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
+- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（main `b62977b`=cherry-pick 988ff5f/797e770 patch-id 镜像[修 ci/install-layout.sh 过时模块名 libboundless.so→libpython_module.so、安装名 boundless.so→boundless_core.so，与 crates/python-module MODULE_NAME=boundless_core 对齐]；真机 `CI_RUNNERS_TIMEOUT=600 bash ci/install-layout.sh` 全部 PASS rc=0——install-build/stage(28M tar)/clean/smoke-server(starting+is running+shutdown exit 0)/cli/cli-res/res-server/build-parity/module(boundless_core 0.1.0 裸导入)/layout/upgrade(篡改 res 还原+data/db/user.db 保留)/uninstall(删包保 data)；证据 docs/review/opt-14-01-03-install-upgrade-rerun.md + fixtures opt-14-01-03/install-upgrade-rerun.tsv；三端本行验收=脚本/数据保留 Linux 面，Windows/macOS 运行属 BW-15-03/04 矩阵）
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
 
@@ -10725,7 +10725,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **OPT-14-01-01 记录发布包尺寸及首次运行**。**验收** 三端有基线。
 - [ ] **OPT-14-01-02 优化包布局或首次启动**。**验收** 报告体积和耗时差异。
-- [ ] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。
+- [x] **OPT-14-01-03 复跑干净安装与升级**。**验收** 保留数据且脚本成功导入。（main `b62977b`=cherry-pick 988ff5f/797e770 patch-id 镜像[修 ci/install-layout.sh 过时模块名 libboundless.so→libpython_module.so、安装名 boundless.so→boundless_core.so，与 crates/python-module MODULE_NAME=boundless_core 对齐]；真机 `CI_RUNNERS_TIMEOUT=600 bash ci/install-layout.sh` 全部 PASS rc=0——install-build/stage(28M tar)/clean/smoke-server(starting+is running+shutdown exit 0)/cli/cli-res/res-server/build-parity/module(boundless_core 0.1.0 裸导入)/layout/upgrade(篡改 res 还原+data/db/user.db 保留)/uninstall(删包保 data)；证据 docs/review/opt-14-01-03-install-upgrade-rerun.md + fixtures opt-14-01-03/install-upgrade-rerun.tsv；三端本行验收=脚本/数据保留 Linux 面，Windows/macOS 运行属 BW-15-03/04 矩阵）
 
 ### OPT-15-01 采集各平台 I/O 及定时精度
 
