@@ -1,4 +1,4 @@
 platform	version	bytes	sha256	members	member_count	first_run_ns	status	note
 macos-arm64	-	-	-	-	-	-	pending	BW-15-04: the macOS leg is report_only in package-daily.yml; only clock/interface compile until the windowing and file-system slices land
 windows-x86_64	-	-	-	-	-	-	pending	BW-15-03: server-runtime/src/signals.rs uses libc::SIGSYS/SIGRTMIN and sigwaitinfo; the Windows leg cannot build until the signal layer is ported
-linux-x86_64	0.1.0	26616105	1c51bfde7d04e334c3089c67f1073b975a40b1d9a413e5240ae810ad6dec6dc4	bin/boundless-server	1	1017459151	measured	sha256=1c51bfde7d04e334c3089c67f1073b975a40b1d9a413e5240ae810ad6dec6dc4 members=bin/boundless-server
+linux-x86_64	0.1.0	478760	168567e56478e92d9558d4b4deb3e00cd547f170fbc0cde60a5bcb0bc2d74feb	bin/boundless-server	1	1032757678	measured	sha256=168567e56478e92d9558d4b4deb3e00cd547f170fbc0cde60a5bcb0bc2d74feb members=bin/boundless-server
