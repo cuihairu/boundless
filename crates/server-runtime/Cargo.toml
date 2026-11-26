@@ -75,3 +75,7 @@ harness = false
 [[bench]]
 name = "backup_archive"
 harness = false
+
+[[bench]]
+name = "shared_data"
+harness = false
