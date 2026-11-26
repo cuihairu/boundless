@@ -113,6 +113,34 @@ impl GenChunk for NavGenChunk {
     }
 }
 
+/// The workflow seam (`workflow::NavmeshProbe`) over the stub chunk:
+/// the harness runs untransformed (navgen's fixed map), so both
+/// transforms are identity and the box/ownership faces are the stub's
+/// own — the same answers `GenChunk` gives this module's earlier stages.
+impl crate::workflow::NavmeshProbe for NavGenChunk {
+    fn local_bounds(&self) -> (Vector3, Vector3) {
+        self.bb
+    }
+    fn transform(&self) -> foundation::math::matrix::Matrix {
+        foundation::math::matrix::Matrix::identity()
+    }
+    fn transform_inverse(&self) -> foundation::math::matrix::Matrix {
+        foundation::math::matrix::Matrix::identity()
+    }
+    fn owns(&self, point: Vector3) -> bool {
+        FloodChunk::owns(self, &point)
+    }
+}
+
+/// The workflow seam (`workflow::DropPhysics`) over the flood fixture:
+/// the same slab walk `FloodPhysics::find_drop_point` rides, in the
+/// Option shape the workflow arm expects.
+impl crate::workflow::DropPhysics for FieldPhysics {
+    fn drop_point(&mut self, point: Vector3) -> Option<f32> {
+        self.top_at(point.x, point.z, point.y)
+    }
+}
+
 fn fnv1a64(data: &[u8]) -> u64 {
     let mut hash: u64 = 14695981039346656037;
     for b in data {
