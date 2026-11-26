@@ -590,14 +590,26 @@ impl ChunkSpace {
     }
 
     /// `column(pt, false)` (`chunk_space.cpp:788-802`): the read-only
-    /// column lookup.
-    fn column_at(&self, point: &Vector3) -> Option<&Column> {
+    /// half of [`Self::column`] — the column at the point, or None when
+    /// its cell is out of the focus span or has no column yet.
+    pub fn column_at(&self, point: &Vector3) -> Option<&Column> {
         let x = self.point_to_grid(point.x);
         let z = self.point_to_grid(point.z);
         if !self.focus.in_span(x, z) {
             return None;
         }
         self.focus.get(x, z)
+    }
+
+    /// `chunk.cpp` `findChunk`'s first answer for a cell no inside chunk
+    /// claims: the outside chunk owning the cell the point falls in. The
+    /// tiny +y jog mirrors the reference so a boundary y resolves to the
+    /// cell above it.
+    pub fn find_outside_chunk_from_point(&self, point: &Vector3) -> Option<&Chunk> {
+        let mut pt = *point;
+        pt.y += 0.0001;
+        let outside = self.column_at(&pt)?.outside_chunk()?;
+        self.chunks.get(outside)
     }
 
     /// `ChunkSpace::findChunkFromPoint` (`chunk_space.cpp:731-751`) plus
