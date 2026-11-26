@@ -215,6 +215,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "boundless-client"
+version = "0.1.0"
+dependencies = [
+ "chunk",
+ "client",
+ "foundation",
+ "resources",
+]
+
+[[package]]
+name = "boundless-editor"
+version = "0.1.0"
+dependencies = [
+ "chunk",
+ "client",
+ "foundation",
+ "resources",
+]
+
+[[package]]
 name = "boundless-server"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,21 @@
+[package]
+name = "boundless-editor"
+description = "BW-15-02-03 editor entry point: edit the fixed map and save it"
+edition.workspace = true
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The editor world/matrix/undo/save faces (BW-13) drive the edit session.
+chunk = { workspace = true }
+foundation = { workspace = true }
+# The before/after map views render through the same fixed-map scene the
+# client displays.
+client = { workspace = true }
+resources = { workspace = true }
+
+[[bin]]
+name = "boundless-editor"
+path = "src/main.rs"

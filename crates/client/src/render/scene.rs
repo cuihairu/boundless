@@ -1,5 +1,6 @@
 //! The test scene (BW-11-01-02's "测试场景").
 
+use super::Scene;
 use super::framebuffer::Framebuffer;
 
 /// Number of cells the scene sweeps across the width.
@@ -29,6 +30,12 @@ impl Default for TestScene {
             steps: 0,
             period: CELLS,
         }
+    }
+}
+
+impl Scene for TestScene {
+    fn draw(&self, fb: &mut Framebuffer) {
+        TestScene::draw(self, fb);
     }
 }
 

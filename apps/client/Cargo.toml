@@ -1,0 +1,21 @@
+[package]
+name = "boundless-client"
+description = "BW-15-02-03 client entry point: display the fixed map"
+edition.workspace = true
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The device/scene faces (BW-11-01) and the screenshot channel (BW-11-04-07).
+client = { workspace = true }
+# The fixed map is a chunk space (BW-10-01): the settings/grid mapping and
+# the chunk set come from the chunk crate's load path.
+chunk = { workspace = true }
+foundation = { workspace = true }
+resources = { workspace = true }
+
+[[bin]]
+name = "boundless-client"
+path = "src/main.rs"
