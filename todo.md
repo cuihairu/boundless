@@ -2946,9 +2946,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [ ] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。
-- [ ] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。
-- [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
+- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 d11c3d2(ci/build-baseline.sh)+96009f9(asset-pipeline/tests/dependency_rebuild_baseline.rs) 已 cherry-pick 入本树 c64444b/d4b764e 并复跑绿——build-baseline self-test：install-module/layout/upgrade/uninstall 四 PASS+build-fanout PASS(重编源定位=foundation 19 直接依赖者)+build-cold 196.77s+build-incremental 67.51s/12 crate 重编；dependency_rebuild_baseline 测试绿；fixture tsv 入 docs/review/fixtures/dep-graph/)
+- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 8c37171(asset-pipeline/tests/split_evaluation.rs+fixtures/dep-graph/split-*) 已 cherry-pick 入本树 0ddb5e0 并复跑绿，asset-pipeline 门禁 384 lib+集成含 split_evaluation 2 测全绿)
+- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 870ad04(asset-pipeline/tests/install_path_recheck.rs+fixtures/install-recheck/) 已 cherry-pick 入本树 5e99e3a 并复跑绿——the_load_and_install_paths_stay_compatible PASS+本树连带复跑 install-layout 全 PASS+package-baseline verify 3 平台语法净)
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
@@ -4527,9 +4527,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [ ] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。
-- [ ] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。
-- [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
+- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 d11c3d2(ci/build-baseline.sh)+96009f9(asset-pipeline/tests/dependency_rebuild_baseline.rs) 已 cherry-pick 入本树 c64444b/d4b764e 并复跑绿——build-baseline self-test：install-module/layout/upgrade/uninstall 四 PASS+build-fanout PASS(重编源定位=foundation 19 直接依赖者)+build-cold 196.77s+build-incremental 67.51s/12 crate 重编；dependency_rebuild_baseline 测试绿；fixture tsv 入 docs/review/fixtures/dep-graph/)
+- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 8c37171(asset-pipeline/tests/split_evaluation.rs+fixtures/dep-graph/split-*) 已 cherry-pick 入本树 0ddb5e0 并复跑绿，asset-pipeline 门禁 384 lib+集成含 split_evaluation 2 测全绿)
+- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 870ad04(asset-pipeline/tests/install_path_recheck.rs+fixtures/install-recheck/) 已 cherry-pick 入本树 5e99e3a 并复跑绿——the_load_and_install_paths_stay_compatible PASS+本树连带复跑 install-layout 全 PASS+package-baseline verify 3 平台语法净)
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
@@ -6069,9 +6069,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [ ] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。
-- [ ] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。
-- [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
+- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 d11c3d2(ci/build-baseline.sh)+96009f9(asset-pipeline/tests/dependency_rebuild_baseline.rs) 已 cherry-pick 入本树 c64444b/d4b764e 并复跑绿——build-baseline self-test：install-module/layout/upgrade/uninstall 四 PASS+build-fanout PASS(重编源定位=foundation 19 直接依赖者)+build-cold 196.77s+build-incremental 67.51s/12 crate 重编；dependency_rebuild_baseline 测试绿；fixture tsv 入 docs/review/fixtures/dep-graph/)
+- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 8c37171(asset-pipeline/tests/split_evaluation.rs+fixtures/dep-graph/split-*) 已 cherry-pick 入本树 0ddb5e0 并复跑绿，asset-pipeline 门禁 384 lib+集成含 split_evaluation 2 测全绿)
+- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 870ad04(asset-pipeline/tests/install_path_recheck.rs+fixtures/install-recheck/) 已 cherry-pick 入本树 5e99e3a 并复跑绿——the_load_and_install_paths_stay_compatible PASS+本树连带复跑 install-layout 全 PASS+package-baseline verify 3 平台语法净)
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
@@ -7611,9 +7611,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [ ] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。
-- [ ] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。
-- [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
+- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 d11c3d2(ci/build-baseline.sh)+96009f9(asset-pipeline/tests/dependency_rebuild_baseline.rs) 已 cherry-pick 入本树 c64444b/d4b764e 并复跑绿——build-baseline self-test：install-module/layout/upgrade/uninstall 四 PASS+build-fanout PASS(重编源定位=foundation 19 直接依赖者)+build-cold 196.77s+build-incremental 67.51s/12 crate 重编；dependency_rebuild_baseline 测试绿；fixture tsv 入 docs/review/fixtures/dep-graph/)
+- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 8c37171(asset-pipeline/tests/split_evaluation.rs+fixtures/dep-graph/split-*) 已 cherry-pick 入本树 0ddb5e0 并复跑绿，asset-pipeline 门禁 384 lib+集成含 split_evaluation 2 测全绿)
+- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 870ad04(asset-pipeline/tests/install_path_recheck.rs+fixtures/install-recheck/) 已 cherry-pick 入本树 5e99e3a 并复跑绿——the_load_and_install_paths_stay_compatible PASS+本树连带复跑 install-layout 全 PASS+package-baseline verify 3 平台语法净)
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
@@ -9192,9 +9192,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [ ] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。
-- [ ] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。
-- [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
+- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 d11c3d2(ci/build-baseline.sh)+96009f9(asset-pipeline/tests/dependency_rebuild_baseline.rs) 已 cherry-pick 入本树 c64444b/d4b764e 并复跑绿——build-baseline self-test：install-module/layout/upgrade/uninstall 四 PASS+build-fanout PASS(重编源定位=foundation 19 直接依赖者)+build-cold 196.77s+build-incremental 67.51s/12 crate 重编；dependency_rebuild_baseline 测试绿；fixture tsv 入 docs/review/fixtures/dep-graph/)
+- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 8c37171(asset-pipeline/tests/split_evaluation.rs+fixtures/dep-graph/split-*) 已 cherry-pick 入本树 0ddb5e0 并复跑绿，asset-pipeline 门禁 384 lib+集成含 split_evaluation 2 测全绿)
+- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 870ad04(asset-pipeline/tests/install_path_recheck.rs+fixtures/install-recheck/) 已 cherry-pick 入本树 5e99e3a 并复跑绿——the_load_and_install_paths_stay_compatible PASS+本树连带复跑 install-layout 全 PASS+package-baseline verify 3 平台语法净)
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
@@ -10734,9 +10734,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [ ] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。
-- [ ] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。
-- [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
+- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 d11c3d2(ci/build-baseline.sh)+96009f9(asset-pipeline/tests/dependency_rebuild_baseline.rs) 已 cherry-pick 入本树 c64444b/d4b764e 并复跑绿——build-baseline self-test：install-module/layout/upgrade/uninstall 四 PASS+build-fanout PASS(重编源定位=foundation 19 直接依赖者)+build-cold 196.77s+build-incremental 67.51s/12 crate 重编；dependency_rebuild_baseline 测试绿；fixture tsv 入 docs/review/fixtures/dep-graph/)
+- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 8c37171(asset-pipeline/tests/split_evaluation.rs+fixtures/dep-graph/split-*) 已 cherry-pick 入本树 0ddb5e0 并复跑绿，asset-pipeline 门禁 384 lib+集成含 split_evaluation 2 测全绿)
+- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 870ad04(asset-pipeline/tests/install_path_recheck.rs+fixtures/install-recheck/) 已 cherry-pick 入本树 5e99e3a 并复跑绿——the_load_and_install_paths_stay_compatible PASS+本树连带复跑 install-layout 全 PASS+package-baseline verify 3 平台语法净)
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
