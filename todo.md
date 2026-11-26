@@ -2940,7 +2940,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。deliver 96009f9 **FLAG 双交付未决**：bw15-platform `d11c3d2`（ci/build-baseline.sh 112 行 fanout+冷/增量双模式——fanout=cargo metadata 直接依赖者数 foundation 19/resources 12/physics 6/platform 5/entitydef+mercury 3，增量腿私有 CARGO_TARGET_DIR touch foundation/src/lib.rs 数 Compiling 行；未进 main 平行未决）；主席择一，未决前行保持本勾态。
 - [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171
-- [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
+- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。deliver 870ad04
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
@@ -4504,7 +4504,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。deliver 96009f9 **FLAG 双交付未决**：bw15-platform `d11c3d2`（ci/build-baseline.sh 112 行 fanout+冷/增量双模式——fanout=cargo metadata 直接依赖者数 foundation 19/resources 12/physics 6/platform 5/entitydef+mercury 3，增量腿私有 CARGO_TARGET_DIR touch foundation/src/lib.rs 数 Compiling 行；未进 main 平行未决）；主席择一，未决前行保持本勾态。
 - [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171
-- [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
+- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。deliver 870ad04
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
@@ -6029,7 +6029,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。deliver 96009f9 **FLAG 双交付未决**：bw15-platform `d11c3d2`（ci/build-baseline.sh 112 行 fanout+冷/增量双模式——fanout=cargo metadata 直接依赖者数 foundation 19/resources 12/physics 6/platform 5/entitydef+mercury 3，增量腿私有 CARGO_TARGET_DIR touch foundation/src/lib.rs 数 Compiling 行；未进 main 平行未决）；主席择一，未决前行保持本勾态。
 - [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171
-- [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
+- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。deliver 870ad04
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
@@ -7554,7 +7554,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。deliver 96009f9 **FLAG 双交付未决**：bw15-platform `d11c3d2`（ci/build-baseline.sh 112 行 fanout+冷/增量双模式——fanout=cargo metadata 直接依赖者数 foundation 19/resources 12/physics 6/platform 5/entitydef+mercury 3，增量腿私有 CARGO_TARGET_DIR touch foundation/src/lib.rs 数 Compiling 行；未进 main 平行未决）；主席择一，未决前行保持本勾态。
 - [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171
-- [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
+- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。deliver 870ad04
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
@@ -9118,7 +9118,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。deliver 96009f9 **FLAG 双交付未决**：bw15-platform `d11c3d2`（ci/build-baseline.sh 112 行 fanout+冷/增量双模式——fanout=cargo metadata 直接依赖者数 foundation 19/resources 12/physics 6/platform 5/entitydef+mercury 3，增量腿私有 CARGO_TARGET_DIR touch foundation/src/lib.rs 数 Compiling 行；未进 main 平行未决）；主席择一，未决前行保持本勾态。
 - [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171
-- [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
+- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。deliver 870ad04
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
@@ -10643,7 +10643,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。deliver 96009f9 **FLAG 双交付未决**：bw15-platform `d11c3d2`（ci/build-baseline.sh 112 行 fanout+冷/增量双模式——fanout=cargo metadata 直接依赖者数 foundation 19/resources 12/physics 6/platform 5/entitydef+mercury 3，增量腿私有 CARGO_TARGET_DIR touch foundation/src/lib.rs 数 Compiling 行；未进 main 平行未决）；主席择一，未决前行保持本勾态。
 - [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171
-- [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
+- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。deliver 870ad04
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
