@@ -1780,15 +1780,15 @@
 
 封装事件轮询和唤醒、单调时钟、信号/控制事件、子进程与退出状态、文件锁、内存映射、动态库和系统目录。对照大小写、路径编码、原子替换、IPv4/IPv6 和断网行为。
 
-- [ ] **BW-15-01-01 封装事件轮询和唤醒**。**验收** 三端可停止空闲循环。
+- [ ] **BW-15-01-01 封装事件轮询和唤醒**。**验收** 三端可停止空闲循环。（Linux 腿注记 2026-11-26：bw15-platform `774372f`→main `70af995`，crates/platform/tests/idle_loop_stop.rs 1 测绿——空闲循环按需停（trigger 中断 epoll_wait 预算 interrupt1 680µs/1 迭代、preset 迭代、rearm 112/46µs、预算窗 5 迭代）；wakeup.rs 441ff01 既有注记同上；三端行保持开待 Windows/macOS 腿）
   - 证据（部分，未勾）：`crates/platform/src/wakeup.rs`（441ff01）——自管道 `Wakeup`（`pipe(2)` 双端 `O_NONBLOCK`、`trigger` 任意线程一字节写入容忍 EAGAIN=已挂起、`consume` 排空重整、Drop 关双端），Linux 实测 5 测：空闲 `epoll_wait`（5s 预算）被另一线程 `trigger` 在 1s 内唤醒、预挂起即回、`consume` 后零超时不再上报、未触发 `consume` 为 no-op、100 轮触发/消费循环稳定；「轮询」半块已由 BW-02-01-02 `platform::poller`+Mercury `EventPoller` 承担（Linux epoll）。**macOS 后端已落（59da22c）**：`crates/platform/src/poller.rs` 拆为 Linux `epoll`/macOS `kqueue` 两后端、`lib.rs` 把 `poller` 门控扩到 macOS——kqueue 与 epoll 同为描述符持久注册集，`create`/`ctl`/`wait` 一对应映射（`kqueue()`；`kevent` EV_ADD/EV_DELETE 按 filter、`CTL_DEL` 先删读再删写、二者其一在册即成功、无册 fd 返 `ENOENT` 同参考 WARNING 分档；`EV_EOF`→`EPOLLHUP`/`EV_ERROR`→`EPOLLERR`；超时负值阻塞零轮询；事件位沿用 epoll 数值使调用方跨端同常量）；`platform` darwin `--all-targets` 交叉编译绿、darwin clippy `-D warnings` 绿、Linux 59 测零回归；kqueue 模块 4 测镜像 epoll 待三端 runner 实跑。**剩余**：Windows `WSAPoll` 走 socketpair 而非匿名管道——随 BW-15-05 三端 runner 落地（kqueue 实跑亦随三端 runner）。
 - [x] **BW-15-01-02 封装单调时钟**。**验收** 单调性及 Tick 单位一致。
   - 证据：crates/platform clock.rs 测试（monotonic 不回退、微秒单位、起点近零）。
-- [ ] **BW-15-01-03 封装进程控制及退出码**。**验收** 三端可正常关服并回收子进程。
+- [ ] **BW-15-01-03 封装进程控制及退出码**。**验收** 三端可正常关服并回收子进程。（Linux 腿注记 2026-11-26：bw15-platform `4a40422`→main `595be79`，crates/platform/tests/process_exit_baseline.rs 1 测绿——子进程状态码/spawn 262µs/wait 7.9ms/轮询收割 1.02ms/信号等待 247µs/一次收割 16 存活；三端行保持开待其余平台腿）
   - 证据（部分，未勾）：`crates/platform/src/process.rs`（d25d90a）——`Child`（`fork`+`execvp` PATH 搜索、子进程 exec 失败 `_exit(127)`、`wait` 阻塞重采/`try_wait` WNOHANG 非阻塞/`signal` kill、二采 `ECHILD` 报错）+ `ExitStatus`（`WIFEXITED`/`WEXITSTATUS`/`WIFSIGNALED`/`WTERMSIG` 解码、`success` 即 code 0）；Linux 实测 7 测：exit 42 采回、零退出成功、SIGTERM 终止、存活期 `try_wait` None 再采、exec 失败回 127、空 argv 拒、二采 ECHILD。**剩余**：Windows `CreateProcess` 后端随 BW-15-03 落地；`server-runtime` 关服接线（信号→kill 子进程→wait 回收）待做。
 - [x] **BW-15-01-04 封装文件锁及原子替换**。**验收** 并发更新夹具通过。（commit d0a9ac4）
   - 证据：`crates/platform/src/file.rs`（d0a9ac4）——`FileLock`（`flock` LOCK_EX 互斥、try 版返回 None 表已持有、Drop 即释放；**锁稳定伴生 `.lock` 文件而非被替换的数据文件**——rename 换 inode，锁被替换文件本身无法串行化更新，此平台事实已编码进模块文档）+ `atomic_replace`（同目录临时文件写全→`fsync`→`rename(2)` 原子换入，失败自动 unlink 残留）；**验收并发更新夹具实测过**：2 线程×50 锁-读-改-写-原子替换，计数恰为 100 零丢失（`file::tests::concurrent_update_fixture_loses_nothing`，`cargo test -p platform --lib` 64 测全绿）。**Windows `LockFileEx`/`ReplaceFile` 后端归 BW-15-05 三端 runner 平台移植**（本项验收为并发更新夹具，Linux 已过）。
-- [ ] **BW-15-01-05 封装内存映射与共享库查找**。**验收** 三端加载相同测试资源。
+- [ ] **BW-15-01-05 封装内存映射与共享库查找**。**验收** 三端加载相同测试资源。（Linux 腿注记 2026-11-26：bw15-platform `294a434`→main `298fd89`，crates/platform/tests/mmap_library_baseline.rs 1 测绿——同资源 mmap 34µs/64KiB+anon 4096+共享库打开 22µs/符号查找 3µs malloc 命中；三端行保持开待其余平台腿）
   - 证据（部分，未勾）：`crates/platform/src/mmap.rs`（3359d3b）——`Mmap`（`mmap` PROT_READ|MAP_SHARED 整文件映射、空文件映射空切片、匿名零页映射、`Deref<[u8]>`、Drop `munmap`；mmap 需活 fd、成功后 close 映射仍有效）+ `DynamicLibrary`（`dlopen` RTLD_NOW|LOCAL、`dlsym`、Drop `dlclose`、`dlerror` 消费）；Linux 实测 7 测：文件映射逐字节等于文件、空文件、匿名页全零、缺文件报错、dlopen libc 并 dlsym malloc 非空、缺符号报错、缺库报错。**剩余**：Windows `CreateFileMapping`/`LoadLibrary` 后端随 BW-15-05 落地。
 - [x] **BW-15-01-06 校验路径大小写、编码和系统目录**。**验收** 代表性夹具可寻址。（commit aa6e2ee）
   - 证据：`crates/platform/src/path.rs`（aa6e2ee）——`correct_case_of_path`（参考 `WinFileSystem::correctCaseOfPath`（win_file_system.cpp:782）的 POSIX 对应：`realpath(3)` 在大小写不敏感卷上解析出盘上真实拼写、敏感卷上即恒等、缺失路径原样返回）；`real_path`（canonical 定点、symlink 解析、缺失报 `ENOENT`）；`join`（参考 `getAbsolutePath` 的 base+path（unix_file_system.cpp:466），补缺 `'/'`）；`home_dir`（`$HOME`）/`temp_dir`（`TMPDIR`→`TMP`→`TEMP`→`/tmp`）；编码 `path_bytes`/`path_from_bytes` 字节级往返（POSIX 路径是字节串非必 UTF-8，实测 `0xFF` 字节往返）+ lossy。Linux 实测 7 测：temp 系统目录夹具写读可寻址、HOME 绝对、join 三态（缺分隔/已带/空 base）、realpath 不定点+symlink+缺失三态、correct_case 缺失原样/存在=realpath、非 UTF-8 往返。**Windows `%USERPROFILE%`/`%TEMP%`/`GetFullPathNameW` 后端归 BW-15-03 Windows runner 平台移植**（本项验收为代表性夹具可寻址，Linux 已实测过：`path::tests::temp_dir_holds_an_addressable_fixture`，temp 系统目录夹具写读可寻址）。
@@ -2881,13 +2881,15 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（本席 `a577c5c`：crates/server-runtime/src/balance_baseline.rs run_schedule_scenario 用真 CellAppMgr 跑固定 96 tick 双相位（热相 app0≈0.6 偏斜触发拆并、冷相全低触发 retire），每次 report 后 load_balance+meta_load_balance+tick；ScheduleLedger 记 cells_added/cells_removed/apps_retired/partitions_moved/reports；BalanceTuning 新 seam（load_smoothing_bias/estimated_initial_cell_load/safety_bound/safety_ratio/meta_load_balance_tolerance/lower_bound/limit_to_chunks，Default 全等参考常量，inform_of_load 保留旧行为、新增 inform_of_load_with 显式 bias；Space::partition_positions+BspNode::visit_partitions 供台账数线）；固定 seed 27_182_828 基线 partitions_moved=0 vs 候选 limit_to_chunks=false 移动 2 条（final loads/cells 两侧一致，差异在调度路径非分布）；5 新测（含双跑全等）；覆盖 balance_baseline.rs 171/171=100%；cargo test -p server-runtime 1693 lib+集成全绿；fmt/clippy 干净（仅既有 blowfish 未用依赖告警）；证据页 docs/review/opt-05-01-02-schedule-comparison.md）
   - 双交付 FLAG（2026-11-26，本席登记）：main 另收平行腿 `cd056fc`（cellappmgr_tuning.rs 三固定场景对比）与本席 `a577c5c`（balance_baseline.rs run_schedule_scenario）同面异实现，待主席择一。
 - [x] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。（本席 `fd21b51`：crates/server-runtime/src/lifecycle_scenario.rs run_lifecycle_scenario(seed=41) 组合真 MigrationRecovery（offload→target_lost→两通 Failed 缓冲→restore 转发→reconcile 五谓词全真）、controlled_shut_down_server+ShutdownState Request/Inform/Perform+CellAppMgr cell ack、TaskManager stop_all 排空 backup/flush-replay、ReplayDataCollector/Writer 真前缀签名 4 tick 落盘、read_replay_prefix 混部门（当前接受/异版拒绝，无混部 fleet runner 故以此面为界）；6 新测全绿且双跑 ledger 逐字段全等；覆盖 187/187=100%；cargo test -p server-runtime 1699 lib+集成全绿；fmt/clippy 干净（仅既有 blowfish 未用依赖告警）；证据页 docs/review/opt-05-01-03-lifecycle-rerun.md）
-  - 本席 lane-only 交付（`fd21b51`）待主席并入；main 侧行保持开。
+  - main 已收（台账席 1a21d7a）：本席 `fd21b51`→main `51bf749`（逐字节同）+复跑证 `515351b`，本席勾保持；main 行文误标 lane/bw15-platform，实为 lane/bw14-script-host 本席交付。
+
 
 ### OPT-06-01 登录与资源下载基线
 
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
 - [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。cc648b5（login_baseline.rs 96 到达种子洪泛 64 会话/32 拒(7 封禁/24 限流/1 静默)拒率 0.3333 延迟 p50=1 p95=p99=2 峰值 2 队列峰值 1/17 下载 64 流 10288 字节收发相等 9 测 99.30% 行）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行腿 `5ec0620`→main `4c29980`（crates/load/src/login_baseline.rs 三族数字）+证据 `fcfa88f`，与本席 `cc648b5`（crates/server-runtime/src/login_baseline.rs 种子洪泛）异路径异实现，待主席择一。
 - [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。3ced450（login_tuning.rs LoginTuning 缝：调优形 16/1.0s+拒绝不占缓存记录，尾延迟峰 2→1 tick、p95 2→1、假在途忽略 7→0、误拒 24→0、接受 64→88/96；会话接续双形均到达 tick 内完成；6 测，tuning 100%/baseline 99.33%）
 - [x] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。3e4839c（download_tuning.rs 64 资源确定性语料过真实 Server/DataDownloads 双预算：时长 186→45 tick(4.1×)换每 tick 线束峰 68→252 字节，字节逐流核等 10182/10182；客户端未完成积压两形均记录不定向断言(272 vs 252)因语料形状定；内存=持有字节非分配计数(桥上分配计数恒 0)；5 测 100% 行）
 - [x] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。da80f8e（login_rerun.rs 三面各录决策：重复登录 8 决策含参考文案两条+WaitForDestroy 超时+logoff 重跑+拒答；重连旧钥 AttachClient(attempts=2)+InvalidTicket/ProxyDestroyed/ChannelCollision+Continue/LoginFailed(1)/AlreadyLoggedOff+同凭据 ResentSuccess；旧客户端=replay 前缀协议版本门(唯一运行时可观察旧客户端面)；同种子逐位复现+跨种子 decisions() 归一化形状相同而密钥不同；5 测 100% 行）
@@ -3003,11 +3005,12 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（他席在途登记 2026-11-26：lane/opt-26-db 席 lane-only 交付 4c75e00 固定事件回放+查询基线+f512511 勾行，未进 main，本树未含其面——该席按 lane 名即本簇主人，02/03/04 归其活跃节，行保持开本席不接）。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `4c75e00`（lane/opt-26-db），main=`6973092`，本席 cherry-pick `e34dacd`。面：event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账；TSV event-query.tsv 39 行+证据页；复跑 6 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
 - [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `40b58e0`（lane/opt-26-db），main=`027c6c0`，本席 cherry-pick `013f573`。面：import_batch_candidates.rs=导入批大小评估（64 行 commit 裁定+内存平坦）；TSV import-batch.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `40b58e0`（未进 main）：导入批大小评估（64 行 commit 裁定+内存平坦）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `40b58e0`（main 已收 `027c6c0`）：导入批大小评估（64 行 commit 裁定+内存平坦）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
 - [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `bf335b5`（lane/opt-26-db），main=`5df3486`，本席 cherry-pick `c578a23`。面：query_aggregation_candidates.rs=查询聚合评估（name 索引 ~4700×）；TSV query-aggr.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `bf335b5`（未进 main）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `bf335b5`（main 已收 `5df3486`）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
 - [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `b34554a`（lane/opt-26-db），main=`1590095`，本席 cherry-pick `7a1867c`。面：sample_report_rerun.rs 3 测=从存储语料复算样本报表对照 TSV 基线逐项等+每项优化后复算仍等；证据页；复跑 3 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `b34554a`（未进 main）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `b34554a`（main 已收 `1590095`）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+
 
 
 ## 5. 实施顺序与里程碑
@@ -3403,15 +3406,15 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 封装事件轮询和唤醒、单调时钟、信号/控制事件、子进程与退出状态、文件锁、内存映射、动态库和系统目录。对照大小写、路径编码、原子替换、IPv4/IPv6 和断网行为。
 
-- [ ] **BW-15-01-01 封装事件轮询和唤醒**。**验收** 三端可停止空闲循环。
+- [ ] **BW-15-01-01 封装事件轮询和唤醒**。**验收** 三端可停止空闲循环。（Linux 腿注记 2026-11-26：bw15-platform `774372f`→main `70af995`，crates/platform/tests/idle_loop_stop.rs 1 测绿——空闲循环按需停（trigger 中断 epoll_wait 预算 interrupt1 680µs/1 迭代、preset 迭代、rearm 112/46µs、预算窗 5 迭代）；wakeup.rs 441ff01 既有注记同上；三端行保持开待 Windows/macOS 腿）
   - 证据（部分，未勾）：`crates/platform/src/wakeup.rs`（441ff01）——自管道 `Wakeup`（`pipe(2)` 双端 `O_NONBLOCK`、`trigger` 任意线程一字节写入容忍 EAGAIN=已挂起、`consume` 排空重整、Drop 关双端），Linux 实测 5 测：空闲 `epoll_wait`（5s 预算）被另一线程 `trigger` 在 1s 内唤醒、预挂起即回、`consume` 后零超时不再上报、未触发 `consume` 为 no-op、100 轮触发/消费循环稳定；「轮询」半块已由 BW-02-01-02 `platform::poller`+Mercury `EventPoller` 承担（Linux epoll）。**macOS 后端已落（59da22c）**：`crates/platform/src/poller.rs` 拆为 Linux `epoll`/macOS `kqueue` 两后端、`lib.rs` 把 `poller` 门控扩到 macOS——kqueue 与 epoll 同为描述符持久注册集，`create`/`ctl`/`wait` 一对应映射（`kqueue()`；`kevent` EV_ADD/EV_DELETE 按 filter、`CTL_DEL` 先删读再删写、二者其一在册即成功、无册 fd 返 `ENOENT` 同参考 WARNING 分档；`EV_EOF`→`EPOLLHUP`/`EV_ERROR`→`EPOLLERR`；超时负值阻塞零轮询；事件位沿用 epoll 数值使调用方跨端同常量）；`platform` darwin `--all-targets` 交叉编译绿、darwin clippy `-D warnings` 绿、Linux 59 测零回归；kqueue 模块 4 测镜像 epoll 待三端 runner 实跑。**剩余**：Windows `WSAPoll` 走 socketpair 而非匿名管道——随 BW-15-05 三端 runner 落地（kqueue 实跑亦随三端 runner）。
 - [x] **BW-15-01-02 封装单调时钟**。**验收** 单调性及 Tick 单位一致。
   - 证据：crates/platform clock.rs 测试（monotonic 不回退、微秒单位、起点近零）。
-- [ ] **BW-15-01-03 封装进程控制及退出码**。**验收** 三端可正常关服并回收子进程。
+- [ ] **BW-15-01-03 封装进程控制及退出码**。**验收** 三端可正常关服并回收子进程。（Linux 腿注记 2026-11-26：bw15-platform `4a40422`→main `595be79`，crates/platform/tests/process_exit_baseline.rs 1 测绿——子进程状态码/spawn 262µs/wait 7.9ms/轮询收割 1.02ms/信号等待 247µs/一次收割 16 存活；三端行保持开待其余平台腿）
   - 证据（部分，未勾）：`crates/platform/src/process.rs`（d25d90a）——`Child`（`fork`+`execvp` PATH 搜索、子进程 exec 失败 `_exit(127)`、`wait` 阻塞重采/`try_wait` WNOHANG 非阻塞/`signal` kill、二采 `ECHILD` 报错）+ `ExitStatus`（`WIFEXITED`/`WEXITSTATUS`/`WIFSIGNALED`/`WTERMSIG` 解码、`success` 即 code 0）；Linux 实测 7 测：exit 42 采回、零退出成功、SIGTERM 终止、存活期 `try_wait` None 再采、exec 失败回 127、空 argv 拒、二采 ECHILD。**剩余**：Windows `CreateProcess` 后端随 BW-15-03 落地；`server-runtime` 关服接线（信号→kill 子进程→wait 回收）待做。
 - [x] **BW-15-01-04 封装文件锁及原子替换**。**验收** 并发更新夹具通过。（commit d0a9ac4）
   - 证据：`crates/platform/src/file.rs`（d0a9ac4）——`FileLock`（`flock` LOCK_EX 互斥、try 版返回 None 表已持有、Drop 即释放；**锁稳定伴生 `.lock` 文件而非被替换的数据文件**——rename 换 inode，锁被替换文件本身无法串行化更新，此平台事实已编码进模块文档）+ `atomic_replace`（同目录临时文件写全→`fsync`→`rename(2)` 原子换入，失败自动 unlink 残留）；**验收并发更新夹具实测过**：2 线程×50 锁-读-改-写-原子替换，计数恰为 100 零丢失（`file::tests::concurrent_update_fixture_loses_nothing`，`cargo test -p platform --lib` 64 测全绿）。**Windows `LockFileEx`/`ReplaceFile` 后端归 BW-15-05 三端 runner 平台移植**（本项验收为并发更新夹具，Linux 已过）。
-- [ ] **BW-15-01-05 封装内存映射与共享库查找**。**验收** 三端加载相同测试资源。
+- [ ] **BW-15-01-05 封装内存映射与共享库查找**。**验收** 三端加载相同测试资源。（Linux 腿注记 2026-11-26：bw15-platform `294a434`→main `298fd89`，crates/platform/tests/mmap_library_baseline.rs 1 测绿——同资源 mmap 34µs/64KiB+anon 4096+共享库打开 22µs/符号查找 3µs malloc 命中；三端行保持开待其余平台腿）
   - 证据（部分，未勾）：`crates/platform/src/mmap.rs`（3359d3b）——`Mmap`（`mmap` PROT_READ|MAP_SHARED 整文件映射、空文件映射空切片、匿名零页映射、`Deref<[u8]>`、Drop `munmap`；mmap 需活 fd、成功后 close 映射仍有效）+ `DynamicLibrary`（`dlopen` RTLD_NOW|LOCAL、`dlsym`、Drop `dlclose`、`dlerror` 消费）；Linux 实测 7 测：文件映射逐字节等于文件、空文件、匿名页全零、缺文件报错、dlopen libc 并 dlsym malloc 非空、缺符号报错、缺库报错。**剩余**：Windows `CreateFileMapping`/`LoadLibrary` 后端随 BW-15-05 落地。
 - [x] **BW-15-01-06 校验路径大小写、编码和系统目录**。**验收** 代表性夹具可寻址。（commit aa6e2ee）
   - 证据：`crates/platform/src/path.rs`（aa6e2ee）——`correct_case_of_path`（参考 `WinFileSystem::correctCaseOfPath`（win_file_system.cpp:782）的 POSIX 对应：`realpath(3)` 在大小写不敏感卷上解析出盘上真实拼写、敏感卷上即恒等、缺失路径原样返回）；`real_path`（canonical 定点、symlink 解析、缺失报 `ENOENT`）；`join`（参考 `getAbsolutePath` 的 base+path（unix_file_system.cpp:466），补缺 `'/'`）；`home_dir`（`$HOME`）/`temp_dir`（`TMPDIR`→`TMP`→`TEMP`→`/tmp`）；编码 `path_bytes`/`path_from_bytes` 字节级往返（POSIX 路径是字节串非必 UTF-8，实测 `0xFF` 字节往返）+ lossy。Linux 实测 7 测：temp 系统目录夹具写读可寻址、HOME 绝对、join 三态（缺分隔/已带/空 base）、realpath 不定点+symlink+缺失三态、correct_case 缺失原样/存在=realpath、非 UTF-8 往返。**Windows `%USERPROFILE%`/`%TEMP%`/`GetFullPathNameW` 后端归 BW-15-03 Windows runner 平台移植**（本项验收为代表性夹具可寻址，Linux 已实测过：`path::tests::temp_dir_holds_an_addressable_fixture`，temp 系统目录夹具写读可寻址）。
@@ -4504,13 +4507,15 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（本席 `a577c5c`：crates/server-runtime/src/balance_baseline.rs run_schedule_scenario 用真 CellAppMgr 跑固定 96 tick 双相位（热相 app0≈0.6 偏斜触发拆并、冷相全低触发 retire），每次 report 后 load_balance+meta_load_balance+tick；ScheduleLedger 记 cells_added/cells_removed/apps_retired/partitions_moved/reports；BalanceTuning 新 seam（load_smoothing_bias/estimated_initial_cell_load/safety_bound/safety_ratio/meta_load_balance_tolerance/lower_bound/limit_to_chunks，Default 全等参考常量，inform_of_load 保留旧行为、新增 inform_of_load_with 显式 bias；Space::partition_positions+BspNode::visit_partitions 供台账数线）；固定 seed 27_182_828 基线 partitions_moved=0 vs 候选 limit_to_chunks=false 移动 2 条（final loads/cells 两侧一致，差异在调度路径非分布）；5 新测（含双跑全等）；覆盖 balance_baseline.rs 171/171=100%；cargo test -p server-runtime 1693 lib+集成全绿；fmt/clippy 干净（仅既有 blowfish 未用依赖告警）；证据页 docs/review/opt-05-01-02-schedule-comparison.md）
   - 双交付 FLAG（2026-11-26，本席登记）：main 另收平行腿 `cd056fc`（cellappmgr_tuning.rs 三固定场景对比）与本席 `a577c5c`（balance_baseline.rs run_schedule_scenario）同面异实现，待主席择一。
 - [x] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。（本席 `fd21b51`：crates/server-runtime/src/lifecycle_scenario.rs run_lifecycle_scenario(seed=41) 组合真 MigrationRecovery（offload→target_lost→两通 Failed 缓冲→restore 转发→reconcile 五谓词全真）、controlled_shut_down_server+ShutdownState Request/Inform/Perform+CellAppMgr cell ack、TaskManager stop_all 排空 backup/flush-replay、ReplayDataCollector/Writer 真前缀签名 4 tick 落盘、read_replay_prefix 混部门（当前接受/异版拒绝，无混部 fleet runner 故以此面为界）；6 新测全绿且双跑 ledger 逐字段全等；覆盖 187/187=100%；cargo test -p server-runtime 1699 lib+集成全绿；fmt/clippy 干净（仅既有 blowfish 未用依赖告警）；证据页 docs/review/opt-05-01-03-lifecycle-rerun.md）
-  - 本席 lane-only 交付（`fd21b51`）待主席并入；main 侧行保持开。
+  - main 已收（台账席 1a21d7a）：本席 `fd21b51`→main `51bf749`（逐字节同）+复跑证 `515351b`，本席勾保持；main 行文误标 lane/bw15-platform，实为 lane/bw14-script-host 本席交付。
+
 
 ### OPT-06-01 登录与资源下载基线
 
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
 - [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。cc648b5（login_baseline.rs 96 到达种子洪泛 64 会话/32 拒(7 封禁/24 限流/1 静默)拒率 0.3333 延迟 p50=1 p95=p99=2 峰值 2 队列峰值 1/17 下载 64 流 10288 字节收发相等 9 测 99.30% 行）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行腿 `5ec0620`→main `4c29980`（crates/load/src/login_baseline.rs 三族数字）+证据 `fcfa88f`，与本席 `cc648b5`（crates/server-runtime/src/login_baseline.rs 种子洪泛）异路径异实现，待主席择一。
 - [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。3ced450（login_tuning.rs LoginTuning 缝：调优形 16/1.0s+拒绝不占缓存记录，尾延迟峰 2→1 tick、p95 2→1、假在途忽略 7→0、误拒 24→0、接受 64→88/96；会话接续双形均到达 tick 内完成；6 测，tuning 100%/baseline 99.33%）
 - [x] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。3e4839c（download_tuning.rs 64 资源确定性语料过真实 Server/DataDownloads 双预算：时长 186→45 tick(4.1×)换每 tick 线束峰 68→252 字节，字节逐流核等 10182/10182；客户端未完成积压两形均记录不定向断言(272 vs 252)因语料形状定；内存=持有字节非分配计数(桥上分配计数恒 0)；5 测 100% 行）
 - [x] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。da80f8e（login_rerun.rs 三面各录决策：重复登录 8 决策含参考文案两条+WaitForDestroy 超时+logoff 重跑+拒答；重连旧钥 AttachClient(attempts=2)+InvalidTicket/ProxyDestroyed/ChannelCollision+Continue/LoginFailed(1)/AlreadyLoggedOff+同凭据 ResentSuccess；旧客户端=replay 前缀协议版本门(唯一运行时可观察旧客户端面)；同种子逐位复现+跨种子 decisions() 归一化形状相同而密钥不同；5 测 100% 行）
@@ -4626,11 +4631,12 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（他席在途登记 2026-11-26：lane/opt-26-db 席 lane-only 交付 4c75e00 固定事件回放+查询基线+f512511 勾行，未进 main，本树未含其面——该席按 lane 名即本簇主人，02/03/04 归其活跃节，行保持开本席不接）。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `4c75e00`（lane/opt-26-db），main=`6973092`，本席 cherry-pick `e34dacd`。面：event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账；TSV event-query.tsv 39 行+证据页；复跑 6 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
 - [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `40b58e0`（lane/opt-26-db），main=`027c6c0`，本席 cherry-pick `013f573`。面：import_batch_candidates.rs=导入批大小评估（64 行 commit 裁定+内存平坦）；TSV import-batch.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `40b58e0`（未进 main）：导入批大小评估（64 行 commit 裁定+内存平坦）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `40b58e0`（main 已收 `027c6c0`）：导入批大小评估（64 行 commit 裁定+内存平坦）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
 - [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `bf335b5`（lane/opt-26-db），main=`5df3486`，本席 cherry-pick `c578a23`。面：query_aggregation_candidates.rs=查询聚合评估（name 索引 ~4700×）；TSV query-aggr.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `bf335b5`（未进 main）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `bf335b5`（main 已收 `5df3486`）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
 - [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `b34554a`（lane/opt-26-db），main=`1590095`，本席 cherry-pick `7a1867c`。面：sample_report_rerun.rs 3 测=从存储语料复算样本报表对照 TSV 基线逐项等+每项优化后复算仍等；证据页；复跑 3 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `b34554a`（未进 main）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `b34554a`（main 已收 `1590095`）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+
 
 
 ## 5. 实施顺序与里程碑
@@ -4987,15 +4993,15 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 封装事件轮询和唤醒、单调时钟、信号/控制事件、子进程与退出状态、文件锁、内存映射、动态库和系统目录。对照大小写、路径编码、原子替换、IPv4/IPv6 和断网行为。
 
-- [ ] **BW-15-01-01 封装事件轮询和唤醒**。**验收** 三端可停止空闲循环。
+- [ ] **BW-15-01-01 封装事件轮询和唤醒**。**验收** 三端可停止空闲循环。（Linux 腿注记 2026-11-26：bw15-platform `774372f`→main `70af995`，crates/platform/tests/idle_loop_stop.rs 1 测绿——空闲循环按需停（trigger 中断 epoll_wait 预算 interrupt1 680µs/1 迭代、preset 迭代、rearm 112/46µs、预算窗 5 迭代）；wakeup.rs 441ff01 既有注记同上；三端行保持开待 Windows/macOS 腿）
   - 证据（部分，未勾）：`crates/platform/src/wakeup.rs`（441ff01）——自管道 `Wakeup`（`pipe(2)` 双端 `O_NONBLOCK`、`trigger` 任意线程一字节写入容忍 EAGAIN=已挂起、`consume` 排空重整、Drop 关双端），Linux 实测 5 测：空闲 `epoll_wait`（5s 预算）被另一线程 `trigger` 在 1s 内唤醒、预挂起即回、`consume` 后零超时不再上报、未触发 `consume` 为 no-op、100 轮触发/消费循环稳定；「轮询」半块已由 BW-02-01-02 `platform::poller`+Mercury `EventPoller` 承担（Linux epoll）。**macOS 后端已落（59da22c）**：`crates/platform/src/poller.rs` 拆为 Linux `epoll`/macOS `kqueue` 两后端、`lib.rs` 把 `poller` 门控扩到 macOS——kqueue 与 epoll 同为描述符持久注册集，`create`/`ctl`/`wait` 一对应映射（`kqueue()`；`kevent` EV_ADD/EV_DELETE 按 filter、`CTL_DEL` 先删读再删写、二者其一在册即成功、无册 fd 返 `ENOENT` 同参考 WARNING 分档；`EV_EOF`→`EPOLLHUP`/`EV_ERROR`→`EPOLLERR`；超时负值阻塞零轮询；事件位沿用 epoll 数值使调用方跨端同常量）；`platform` darwin `--all-targets` 交叉编译绿、darwin clippy `-D warnings` 绿、Linux 59 测零回归；kqueue 模块 4 测镜像 epoll 待三端 runner 实跑。**剩余**：Windows `WSAPoll` 走 socketpair 而非匿名管道——随 BW-15-05 三端 runner 落地（kqueue 实跑亦随三端 runner）。
 - [x] **BW-15-01-02 封装单调时钟**。**验收** 单调性及 Tick 单位一致。
   - 证据：crates/platform clock.rs 测试（monotonic 不回退、微秒单位、起点近零）。
-- [ ] **BW-15-01-03 封装进程控制及退出码**。**验收** 三端可正常关服并回收子进程。
+- [ ] **BW-15-01-03 封装进程控制及退出码**。**验收** 三端可正常关服并回收子进程。（Linux 腿注记 2026-11-26：bw15-platform `4a40422`→main `595be79`，crates/platform/tests/process_exit_baseline.rs 1 测绿——子进程状态码/spawn 262µs/wait 7.9ms/轮询收割 1.02ms/信号等待 247µs/一次收割 16 存活；三端行保持开待其余平台腿）
   - 证据（部分，未勾）：`crates/platform/src/process.rs`（d25d90a）——`Child`（`fork`+`execvp` PATH 搜索、子进程 exec 失败 `_exit(127)`、`wait` 阻塞重采/`try_wait` WNOHANG 非阻塞/`signal` kill、二采 `ECHILD` 报错）+ `ExitStatus`（`WIFEXITED`/`WEXITSTATUS`/`WIFSIGNALED`/`WTERMSIG` 解码、`success` 即 code 0）；Linux 实测 7 测：exit 42 采回、零退出成功、SIGTERM 终止、存活期 `try_wait` None 再采、exec 失败回 127、空 argv 拒、二采 ECHILD。**剩余**：Windows `CreateProcess` 后端随 BW-15-03 落地；`server-runtime` 关服接线（信号→kill 子进程→wait 回收）待做。
 - [x] **BW-15-01-04 封装文件锁及原子替换**。**验收** 并发更新夹具通过。（commit d0a9ac4）
   - 证据：`crates/platform/src/file.rs`（d0a9ac4）——`FileLock`（`flock` LOCK_EX 互斥、try 版返回 None 表已持有、Drop 即释放；**锁稳定伴生 `.lock` 文件而非被替换的数据文件**——rename 换 inode，锁被替换文件本身无法串行化更新，此平台事实已编码进模块文档）+ `atomic_replace`（同目录临时文件写全→`fsync`→`rename(2)` 原子换入，失败自动 unlink 残留）；**验收并发更新夹具实测过**：2 线程×50 锁-读-改-写-原子替换，计数恰为 100 零丢失（`file::tests::concurrent_update_fixture_loses_nothing`，`cargo test -p platform --lib` 64 测全绿）。**Windows `LockFileEx`/`ReplaceFile` 后端归 BW-15-05 三端 runner 平台移植**（本项验收为并发更新夹具，Linux 已过）。
-- [ ] **BW-15-01-05 封装内存映射与共享库查找**。**验收** 三端加载相同测试资源。
+- [ ] **BW-15-01-05 封装内存映射与共享库查找**。**验收** 三端加载相同测试资源。（Linux 腿注记 2026-11-26：bw15-platform `294a434`→main `298fd89`，crates/platform/tests/mmap_library_baseline.rs 1 测绿——同资源 mmap 34µs/64KiB+anon 4096+共享库打开 22µs/符号查找 3µs malloc 命中；三端行保持开待其余平台腿）
   - 证据（部分，未勾）：`crates/platform/src/mmap.rs`（3359d3b）——`Mmap`（`mmap` PROT_READ|MAP_SHARED 整文件映射、空文件映射空切片、匿名零页映射、`Deref<[u8]>`、Drop `munmap`；mmap 需活 fd、成功后 close 映射仍有效）+ `DynamicLibrary`（`dlopen` RTLD_NOW|LOCAL、`dlsym`、Drop `dlclose`、`dlerror` 消费）；Linux 实测 7 测：文件映射逐字节等于文件、空文件、匿名页全零、缺文件报错、dlopen libc 并 dlsym malloc 非空、缺符号报错、缺库报错。**剩余**：Windows `CreateFileMapping`/`LoadLibrary` 后端随 BW-15-05 落地。
 - [x] **BW-15-01-06 校验路径大小写、编码和系统目录**。**验收** 代表性夹具可寻址。（commit aa6e2ee）
   - 证据：`crates/platform/src/path.rs`（aa6e2ee）——`correct_case_of_path`（参考 `WinFileSystem::correctCaseOfPath`（win_file_system.cpp:782）的 POSIX 对应：`realpath(3)` 在大小写不敏感卷上解析出盘上真实拼写、敏感卷上即恒等、缺失路径原样返回）；`real_path`（canonical 定点、symlink 解析、缺失报 `ENOENT`）；`join`（参考 `getAbsolutePath` 的 base+path（unix_file_system.cpp:466），补缺 `'/'`）；`home_dir`（`$HOME`）/`temp_dir`（`TMPDIR`→`TMP`→`TEMP`→`/tmp`）；编码 `path_bytes`/`path_from_bytes` 字节级往返（POSIX 路径是字节串非必 UTF-8，实测 `0xFF` 字节往返）+ lossy。Linux 实测 7 测：temp 系统目录夹具写读可寻址、HOME 绝对、join 三态（缺分隔/已带/空 base）、realpath 不定点+symlink+缺失三态、correct_case 缺失原样/存在=realpath、非 UTF-8 往返。**Windows `%USERPROFILE%`/`%TEMP%`/`GetFullPathNameW` 后端归 BW-15-03 Windows runner 平台移植**（本项验收为代表性夹具可寻址，Linux 已实测过：`path::tests::temp_dir_holds_an_addressable_fixture`，temp 系统目录夹具写读可寻址）。
@@ -6088,13 +6094,15 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（本席 `a577c5c`：crates/server-runtime/src/balance_baseline.rs run_schedule_scenario 用真 CellAppMgr 跑固定 96 tick 双相位（热相 app0≈0.6 偏斜触发拆并、冷相全低触发 retire），每次 report 后 load_balance+meta_load_balance+tick；ScheduleLedger 记 cells_added/cells_removed/apps_retired/partitions_moved/reports；BalanceTuning 新 seam（load_smoothing_bias/estimated_initial_cell_load/safety_bound/safety_ratio/meta_load_balance_tolerance/lower_bound/limit_to_chunks，Default 全等参考常量，inform_of_load 保留旧行为、新增 inform_of_load_with 显式 bias；Space::partition_positions+BspNode::visit_partitions 供台账数线）；固定 seed 27_182_828 基线 partitions_moved=0 vs 候选 limit_to_chunks=false 移动 2 条（final loads/cells 两侧一致，差异在调度路径非分布）；5 新测（含双跑全等）；覆盖 balance_baseline.rs 171/171=100%；cargo test -p server-runtime 1693 lib+集成全绿；fmt/clippy 干净（仅既有 blowfish 未用依赖告警）；证据页 docs/review/opt-05-01-02-schedule-comparison.md）
   - 双交付 FLAG（2026-11-26，本席登记）：main 另收平行腿 `cd056fc`（cellappmgr_tuning.rs 三固定场景对比）与本席 `a577c5c`（balance_baseline.rs run_schedule_scenario）同面异实现，待主席择一。
 - [x] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。（本席 `fd21b51`：crates/server-runtime/src/lifecycle_scenario.rs run_lifecycle_scenario(seed=41) 组合真 MigrationRecovery（offload→target_lost→两通 Failed 缓冲→restore 转发→reconcile 五谓词全真）、controlled_shut_down_server+ShutdownState Request/Inform/Perform+CellAppMgr cell ack、TaskManager stop_all 排空 backup/flush-replay、ReplayDataCollector/Writer 真前缀签名 4 tick 落盘、read_replay_prefix 混部门（当前接受/异版拒绝，无混部 fleet runner 故以此面为界）；6 新测全绿且双跑 ledger 逐字段全等；覆盖 187/187=100%；cargo test -p server-runtime 1699 lib+集成全绿；fmt/clippy 干净（仅既有 blowfish 未用依赖告警）；证据页 docs/review/opt-05-01-03-lifecycle-rerun.md）
-  - 本席 lane-only 交付（`fd21b51`）待主席并入；main 侧行保持开。
+  - main 已收（台账席 1a21d7a）：本席 `fd21b51`→main `51bf749`（逐字节同）+复跑证 `515351b`，本席勾保持；main 行文误标 lane/bw15-platform，实为 lane/bw14-script-host 本席交付。
+
 
 ### OPT-06-01 登录与资源下载基线
 
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
 - [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。cc648b5（login_baseline.rs 96 到达种子洪泛 64 会话/32 拒(7 封禁/24 限流/1 静默)拒率 0.3333 延迟 p50=1 p95=p99=2 峰值 2 队列峰值 1/17 下载 64 流 10288 字节收发相等 9 测 99.30% 行）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行腿 `5ec0620`→main `4c29980`（crates/load/src/login_baseline.rs 三族数字）+证据 `fcfa88f`，与本席 `cc648b5`（crates/server-runtime/src/login_baseline.rs 种子洪泛）异路径异实现，待主席择一。
 - [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。3ced450（login_tuning.rs LoginTuning 缝：调优形 16/1.0s+拒绝不占缓存记录，尾延迟峰 2→1 tick、p95 2→1、假在途忽略 7→0、误拒 24→0、接受 64→88/96；会话接续双形均到达 tick 内完成；6 测，tuning 100%/baseline 99.33%）
 - [x] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。3e4839c（download_tuning.rs 64 资源确定性语料过真实 Server/DataDownloads 双预算：时长 186→45 tick(4.1×)换每 tick 线束峰 68→252 字节，字节逐流核等 10182/10182；客户端未完成积压两形均记录不定向断言(272 vs 252)因语料形状定；内存=持有字节非分配计数(桥上分配计数恒 0)；5 测 100% 行）
 - [x] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。da80f8e（login_rerun.rs 三面各录决策：重复登录 8 决策含参考文案两条+WaitForDestroy 超时+logoff 重跑+拒答；重连旧钥 AttachClient(attempts=2)+InvalidTicket/ProxyDestroyed/ChannelCollision+Continue/LoginFailed(1)/AlreadyLoggedOff+同凭据 ResentSuccess；旧客户端=replay 前缀协议版本门(唯一运行时可观察旧客户端面)；同种子逐位复现+跨种子 decisions() 归一化形状相同而密钥不同；5 测 100% 行）
@@ -6210,11 +6218,12 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（他席在途登记 2026-11-26：lane/opt-26-db 席 lane-only 交付 4c75e00 固定事件回放+查询基线+f512511 勾行，未进 main，本树未含其面——该席按 lane 名即本簇主人，02/03/04 归其活跃节，行保持开本席不接）。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `4c75e00`（lane/opt-26-db），main=`6973092`，本席 cherry-pick `e34dacd`。面：event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账；TSV event-query.tsv 39 行+证据页；复跑 6 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
 - [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `40b58e0`（lane/opt-26-db），main=`027c6c0`，本席 cherry-pick `013f573`。面：import_batch_candidates.rs=导入批大小评估（64 行 commit 裁定+内存平坦）；TSV import-batch.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `40b58e0`（未进 main）：导入批大小评估（64 行 commit 裁定+内存平坦）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `40b58e0`（main 已收 `027c6c0`）：导入批大小评估（64 行 commit 裁定+内存平坦）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
 - [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `bf335b5`（lane/opt-26-db），main=`5df3486`，本席 cherry-pick `c578a23`。面：query_aggregation_candidates.rs=查询聚合评估（name 索引 ~4700×）；TSV query-aggr.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `bf335b5`（未进 main）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `bf335b5`（main 已收 `5df3486`）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
 - [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `b34554a`（lane/opt-26-db），main=`1590095`，本席 cherry-pick `7a1867c`。面：sample_report_rerun.rs 3 测=从存储语料复算样本报表对照 TSV 基线逐项等+每项优化后复算仍等；证据页；复跑 3 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `b34554a`（未进 main）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `b34554a`（main 已收 `1590095`）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+
 
 
 ## 5. 实施顺序与里程碑
@@ -6571,15 +6580,15 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 封装事件轮询和唤醒、单调时钟、信号/控制事件、子进程与退出状态、文件锁、内存映射、动态库和系统目录。对照大小写、路径编码、原子替换、IPv4/IPv6 和断网行为。
 
-- [ ] **BW-15-01-01 封装事件轮询和唤醒**。**验收** 三端可停止空闲循环。
+- [ ] **BW-15-01-01 封装事件轮询和唤醒**。**验收** 三端可停止空闲循环。（Linux 腿注记 2026-11-26：bw15-platform `774372f`→main `70af995`，crates/platform/tests/idle_loop_stop.rs 1 测绿——空闲循环按需停（trigger 中断 epoll_wait 预算 interrupt1 680µs/1 迭代、preset 迭代、rearm 112/46µs、预算窗 5 迭代）；wakeup.rs 441ff01 既有注记同上；三端行保持开待 Windows/macOS 腿）
   - 证据（部分，未勾）：`crates/platform/src/wakeup.rs`（441ff01）——自管道 `Wakeup`（`pipe(2)` 双端 `O_NONBLOCK`、`trigger` 任意线程一字节写入容忍 EAGAIN=已挂起、`consume` 排空重整、Drop 关双端），Linux 实测 5 测：空闲 `epoll_wait`（5s 预算）被另一线程 `trigger` 在 1s 内唤醒、预挂起即回、`consume` 后零超时不再上报、未触发 `consume` 为 no-op、100 轮触发/消费循环稳定；「轮询」半块已由 BW-02-01-02 `platform::poller`+Mercury `EventPoller` 承担（Linux epoll）。**macOS 后端已落（59da22c）**：`crates/platform/src/poller.rs` 拆为 Linux `epoll`/macOS `kqueue` 两后端、`lib.rs` 把 `poller` 门控扩到 macOS——kqueue 与 epoll 同为描述符持久注册集，`create`/`ctl`/`wait` 一对应映射（`kqueue()`；`kevent` EV_ADD/EV_DELETE 按 filter、`CTL_DEL` 先删读再删写、二者其一在册即成功、无册 fd 返 `ENOENT` 同参考 WARNING 分档；`EV_EOF`→`EPOLLHUP`/`EV_ERROR`→`EPOLLERR`；超时负值阻塞零轮询；事件位沿用 epoll 数值使调用方跨端同常量）；`platform` darwin `--all-targets` 交叉编译绿、darwin clippy `-D warnings` 绿、Linux 59 测零回归；kqueue 模块 4 测镜像 epoll 待三端 runner 实跑。**剩余**：Windows `WSAPoll` 走 socketpair 而非匿名管道——随 BW-15-05 三端 runner 落地（kqueue 实跑亦随三端 runner）。
 - [x] **BW-15-01-02 封装单调时钟**。**验收** 单调性及 Tick 单位一致。
   - 证据：crates/platform clock.rs 测试（monotonic 不回退、微秒单位、起点近零）。
-- [ ] **BW-15-01-03 封装进程控制及退出码**。**验收** 三端可正常关服并回收子进程。
+- [ ] **BW-15-01-03 封装进程控制及退出码**。**验收** 三端可正常关服并回收子进程。（Linux 腿注记 2026-11-26：bw15-platform `4a40422`→main `595be79`，crates/platform/tests/process_exit_baseline.rs 1 测绿——子进程状态码/spawn 262µs/wait 7.9ms/轮询收割 1.02ms/信号等待 247µs/一次收割 16 存活；三端行保持开待其余平台腿）
   - 证据（部分，未勾）：`crates/platform/src/process.rs`（d25d90a）——`Child`（`fork`+`execvp` PATH 搜索、子进程 exec 失败 `_exit(127)`、`wait` 阻塞重采/`try_wait` WNOHANG 非阻塞/`signal` kill、二采 `ECHILD` 报错）+ `ExitStatus`（`WIFEXITED`/`WEXITSTATUS`/`WIFSIGNALED`/`WTERMSIG` 解码、`success` 即 code 0）；Linux 实测 7 测：exit 42 采回、零退出成功、SIGTERM 终止、存活期 `try_wait` None 再采、exec 失败回 127、空 argv 拒、二采 ECHILD。**剩余**：Windows `CreateProcess` 后端随 BW-15-03 落地；`server-runtime` 关服接线（信号→kill 子进程→wait 回收）待做。
 - [x] **BW-15-01-04 封装文件锁及原子替换**。**验收** 并发更新夹具通过。（commit d0a9ac4）
   - 证据：`crates/platform/src/file.rs`（d0a9ac4）——`FileLock`（`flock` LOCK_EX 互斥、try 版返回 None 表已持有、Drop 即释放；**锁稳定伴生 `.lock` 文件而非被替换的数据文件**——rename 换 inode，锁被替换文件本身无法串行化更新，此平台事实已编码进模块文档）+ `atomic_replace`（同目录临时文件写全→`fsync`→`rename(2)` 原子换入，失败自动 unlink 残留）；**验收并发更新夹具实测过**：2 线程×50 锁-读-改-写-原子替换，计数恰为 100 零丢失（`file::tests::concurrent_update_fixture_loses_nothing`，`cargo test -p platform --lib` 64 测全绿）。**Windows `LockFileEx`/`ReplaceFile` 后端归 BW-15-05 三端 runner 平台移植**（本项验收为并发更新夹具，Linux 已过）。
-- [ ] **BW-15-01-05 封装内存映射与共享库查找**。**验收** 三端加载相同测试资源。
+- [ ] **BW-15-01-05 封装内存映射与共享库查找**。**验收** 三端加载相同测试资源。（Linux 腿注记 2026-11-26：bw15-platform `294a434`→main `298fd89`，crates/platform/tests/mmap_library_baseline.rs 1 测绿——同资源 mmap 34µs/64KiB+anon 4096+共享库打开 22µs/符号查找 3µs malloc 命中；三端行保持开待其余平台腿）
   - 证据（部分，未勾）：`crates/platform/src/mmap.rs`（3359d3b）——`Mmap`（`mmap` PROT_READ|MAP_SHARED 整文件映射、空文件映射空切片、匿名零页映射、`Deref<[u8]>`、Drop `munmap`；mmap 需活 fd、成功后 close 映射仍有效）+ `DynamicLibrary`（`dlopen` RTLD_NOW|LOCAL、`dlsym`、Drop `dlclose`、`dlerror` 消费）；Linux 实测 7 测：文件映射逐字节等于文件、空文件、匿名页全零、缺文件报错、dlopen libc 并 dlsym malloc 非空、缺符号报错、缺库报错。**剩余**：Windows `CreateFileMapping`/`LoadLibrary` 后端随 BW-15-05 落地。
 - [x] **BW-15-01-06 校验路径大小写、编码和系统目录**。**验收** 代表性夹具可寻址。（commit aa6e2ee）
   - 证据：`crates/platform/src/path.rs`（aa6e2ee）——`correct_case_of_path`（参考 `WinFileSystem::correctCaseOfPath`（win_file_system.cpp:782）的 POSIX 对应：`realpath(3)` 在大小写不敏感卷上解析出盘上真实拼写、敏感卷上即恒等、缺失路径原样返回）；`real_path`（canonical 定点、symlink 解析、缺失报 `ENOENT`）；`join`（参考 `getAbsolutePath` 的 base+path（unix_file_system.cpp:466），补缺 `'/'`）；`home_dir`（`$HOME`）/`temp_dir`（`TMPDIR`→`TMP`→`TEMP`→`/tmp`）；编码 `path_bytes`/`path_from_bytes` 字节级往返（POSIX 路径是字节串非必 UTF-8，实测 `0xFF` 字节往返）+ lossy。Linux 实测 7 测：temp 系统目录夹具写读可寻址、HOME 绝对、join 三态（缺分隔/已带/空 base）、realpath 不定点+symlink+缺失三态、correct_case 缺失原样/存在=realpath、非 UTF-8 往返。**Windows `%USERPROFILE%`/`%TEMP%`/`GetFullPathNameW` 后端归 BW-15-03 Windows runner 平台移植**（本项验收为代表性夹具可寻址，Linux 已实测过：`path::tests::temp_dir_holds_an_addressable_fixture`，temp 系统目录夹具写读可寻址）。
@@ -7672,13 +7681,15 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（本席 `a577c5c`：crates/server-runtime/src/balance_baseline.rs run_schedule_scenario 用真 CellAppMgr 跑固定 96 tick 双相位（热相 app0≈0.6 偏斜触发拆并、冷相全低触发 retire），每次 report 后 load_balance+meta_load_balance+tick；ScheduleLedger 记 cells_added/cells_removed/apps_retired/partitions_moved/reports；BalanceTuning 新 seam（load_smoothing_bias/estimated_initial_cell_load/safety_bound/safety_ratio/meta_load_balance_tolerance/lower_bound/limit_to_chunks，Default 全等参考常量，inform_of_load 保留旧行为、新增 inform_of_load_with 显式 bias；Space::partition_positions+BspNode::visit_partitions 供台账数线）；固定 seed 27_182_828 基线 partitions_moved=0 vs 候选 limit_to_chunks=false 移动 2 条（final loads/cells 两侧一致，差异在调度路径非分布）；5 新测（含双跑全等）；覆盖 balance_baseline.rs 171/171=100%；cargo test -p server-runtime 1693 lib+集成全绿；fmt/clippy 干净（仅既有 blowfish 未用依赖告警）；证据页 docs/review/opt-05-01-02-schedule-comparison.md）
   - 双交付 FLAG（2026-11-26，本席登记）：main 另收平行腿 `cd056fc`（cellappmgr_tuning.rs 三固定场景对比）与本席 `a577c5c`（balance_baseline.rs run_schedule_scenario）同面异实现，待主席择一。
 - [x] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。（本席 `fd21b51`：crates/server-runtime/src/lifecycle_scenario.rs run_lifecycle_scenario(seed=41) 组合真 MigrationRecovery（offload→target_lost→两通 Failed 缓冲→restore 转发→reconcile 五谓词全真）、controlled_shut_down_server+ShutdownState Request/Inform/Perform+CellAppMgr cell ack、TaskManager stop_all 排空 backup/flush-replay、ReplayDataCollector/Writer 真前缀签名 4 tick 落盘、read_replay_prefix 混部门（当前接受/异版拒绝，无混部 fleet runner 故以此面为界）；6 新测全绿且双跑 ledger 逐字段全等；覆盖 187/187=100%；cargo test -p server-runtime 1699 lib+集成全绿；fmt/clippy 干净（仅既有 blowfish 未用依赖告警）；证据页 docs/review/opt-05-01-03-lifecycle-rerun.md）
-  - 本席 lane-only 交付（`fd21b51`）待主席并入；main 侧行保持开。
+  - main 已收（台账席 1a21d7a）：本席 `fd21b51`→main `51bf749`（逐字节同）+复跑证 `515351b`，本席勾保持；main 行文误标 lane/bw15-platform，实为 lane/bw14-script-host 本席交付。
+
 
 ### OPT-06-01 登录与资源下载基线
 
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
 - [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。cc648b5（login_baseline.rs 96 到达种子洪泛 64 会话/32 拒(7 封禁/24 限流/1 静默)拒率 0.3333 延迟 p50=1 p95=p99=2 峰值 2 队列峰值 1/17 下载 64 流 10288 字节收发相等 9 测 99.30% 行）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行腿 `5ec0620`→main `4c29980`（crates/load/src/login_baseline.rs 三族数字）+证据 `fcfa88f`，与本席 `cc648b5`（crates/server-runtime/src/login_baseline.rs 种子洪泛）异路径异实现，待主席择一。
 - [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。3ced450（login_tuning.rs LoginTuning 缝：调优形 16/1.0s+拒绝不占缓存记录，尾延迟峰 2→1 tick、p95 2→1、假在途忽略 7→0、误拒 24→0、接受 64→88/96；会话接续双形均到达 tick 内完成；6 测，tuning 100%/baseline 99.33%）
 - [x] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。3e4839c（download_tuning.rs 64 资源确定性语料过真实 Server/DataDownloads 双预算：时长 186→45 tick(4.1×)换每 tick 线束峰 68→252 字节，字节逐流核等 10182/10182；客户端未完成积压两形均记录不定向断言(272 vs 252)因语料形状定；内存=持有字节非分配计数(桥上分配计数恒 0)；5 测 100% 行）
 - [x] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。da80f8e（login_rerun.rs 三面各录决策：重复登录 8 决策含参考文案两条+WaitForDestroy 超时+logoff 重跑+拒答；重连旧钥 AttachClient(attempts=2)+InvalidTicket/ProxyDestroyed/ChannelCollision+Continue/LoginFailed(1)/AlreadyLoggedOff+同凭据 ResentSuccess；旧客户端=replay 前缀协议版本门(唯一运行时可观察旧客户端面)；同种子逐位复现+跨种子 decisions() 归一化形状相同而密钥不同；5 测 100% 行）
@@ -7794,11 +7805,12 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（他席在途登记 2026-11-26：lane/opt-26-db 席 lane-only 交付 4c75e00 固定事件回放+查询基线+f512511 勾行，未进 main，本树未含其面——该席按 lane 名即本簇主人，02/03/04 归其活跃节，行保持开本席不接）。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `4c75e00`（lane/opt-26-db），main=`6973092`，本席 cherry-pick `e34dacd`。面：event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账；TSV event-query.tsv 39 行+证据页；复跑 6 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
 - [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `40b58e0`（lane/opt-26-db），main=`027c6c0`，本席 cherry-pick `013f573`。面：import_batch_candidates.rs=导入批大小评估（64 行 commit 裁定+内存平坦）；TSV import-batch.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `40b58e0`（未进 main）：导入批大小评估（64 行 commit 裁定+内存平坦）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `40b58e0`（main 已收 `027c6c0`）：导入批大小评估（64 行 commit 裁定+内存平坦）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
 - [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `bf335b5`（lane/opt-26-db），main=`5df3486`，本席 cherry-pick `c578a23`。面：query_aggregation_candidates.rs=查询聚合评估（name 索引 ~4700×）；TSV query-aggr.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `bf335b5`（未进 main）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `bf335b5`（main 已收 `5df3486`）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
 - [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `b34554a`（lane/opt-26-db），main=`1590095`，本席 cherry-pick `7a1867c`。面：sample_report_rerun.rs 3 测=从存储语料复算样本报表对照 TSV 基线逐项等+每项优化后复算仍等；证据页；复跑 3 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `b34554a`（未进 main）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `b34554a`（main 已收 `1590095`）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+
 
 
 ## 5. 实施顺序与里程碑
@@ -8194,15 +8206,15 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 封装事件轮询和唤醒、单调时钟、信号/控制事件、子进程与退出状态、文件锁、内存映射、动态库和系统目录。对照大小写、路径编码、原子替换、IPv4/IPv6 和断网行为。
 
-- [ ] **BW-15-01-01 封装事件轮询和唤醒**。**验收** 三端可停止空闲循环。
+- [ ] **BW-15-01-01 封装事件轮询和唤醒**。**验收** 三端可停止空闲循环。（Linux 腿注记 2026-11-26：bw15-platform `774372f`→main `70af995`，crates/platform/tests/idle_loop_stop.rs 1 测绿——空闲循环按需停（trigger 中断 epoll_wait 预算 interrupt1 680µs/1 迭代、preset 迭代、rearm 112/46µs、预算窗 5 迭代）；wakeup.rs 441ff01 既有注记同上；三端行保持开待 Windows/macOS 腿）
   - 证据（部分，未勾）：`crates/platform/src/wakeup.rs`（441ff01）——自管道 `Wakeup`（`pipe(2)` 双端 `O_NONBLOCK`、`trigger` 任意线程一字节写入容忍 EAGAIN=已挂起、`consume` 排空重整、Drop 关双端），Linux 实测 5 测：空闲 `epoll_wait`（5s 预算）被另一线程 `trigger` 在 1s 内唤醒、预挂起即回、`consume` 后零超时不再上报、未触发 `consume` 为 no-op、100 轮触发/消费循环稳定；「轮询」半块已由 BW-02-01-02 `platform::poller`+Mercury `EventPoller` 承担（Linux epoll）。**macOS 后端已落（59da22c）**：`crates/platform/src/poller.rs` 拆为 Linux `epoll`/macOS `kqueue` 两后端、`lib.rs` 把 `poller` 门控扩到 macOS——kqueue 与 epoll 同为描述符持久注册集，`create`/`ctl`/`wait` 一对应映射（`kqueue()`；`kevent` EV_ADD/EV_DELETE 按 filter、`CTL_DEL` 先删读再删写、二者其一在册即成功、无册 fd 返 `ENOENT` 同参考 WARNING 分档；`EV_EOF`→`EPOLLHUP`/`EV_ERROR`→`EPOLLERR`；超时负值阻塞零轮询；事件位沿用 epoll 数值使调用方跨端同常量）；`platform` darwin `--all-targets` 交叉编译绿、darwin clippy `-D warnings` 绿、Linux 59 测零回归；kqueue 模块 4 测镜像 epoll 待三端 runner 实跑。**剩余**：Windows `WSAPoll` 走 socketpair 而非匿名管道——随 BW-15-05 三端 runner 落地（kqueue 实跑亦随三端 runner）。
 - [x] **BW-15-01-02 封装单调时钟**。**验收** 单调性及 Tick 单位一致。
   - 证据：crates/platform clock.rs 测试（monotonic 不回退、微秒单位、起点近零）。
-- [ ] **BW-15-01-03 封装进程控制及退出码**。**验收** 三端可正常关服并回收子进程。
+- [ ] **BW-15-01-03 封装进程控制及退出码**。**验收** 三端可正常关服并回收子进程。（Linux 腿注记 2026-11-26：bw15-platform `4a40422`→main `595be79`，crates/platform/tests/process_exit_baseline.rs 1 测绿——子进程状态码/spawn 262µs/wait 7.9ms/轮询收割 1.02ms/信号等待 247µs/一次收割 16 存活；三端行保持开待其余平台腿）
   - 证据（部分，未勾）：`crates/platform/src/process.rs`（d25d90a）——`Child`（`fork`+`execvp` PATH 搜索、子进程 exec 失败 `_exit(127)`、`wait` 阻塞重采/`try_wait` WNOHANG 非阻塞/`signal` kill、二采 `ECHILD` 报错）+ `ExitStatus`（`WIFEXITED`/`WEXITSTATUS`/`WIFSIGNALED`/`WTERMSIG` 解码、`success` 即 code 0）；Linux 实测 7 测：exit 42 采回、零退出成功、SIGTERM 终止、存活期 `try_wait` None 再采、exec 失败回 127、空 argv 拒、二采 ECHILD。**剩余**：Windows `CreateProcess` 后端随 BW-15-03 落地；`server-runtime` 关服接线（信号→kill 子进程→wait 回收）待做。
 - [x] **BW-15-01-04 封装文件锁及原子替换**。**验收** 并发更新夹具通过。（commit d0a9ac4）
   - 证据：`crates/platform/src/file.rs`（d0a9ac4）——`FileLock`（`flock` LOCK_EX 互斥、try 版返回 None 表已持有、Drop 即释放；**锁稳定伴生 `.lock` 文件而非被替换的数据文件**——rename 换 inode，锁被替换文件本身无法串行化更新，此平台事实已编码进模块文档）+ `atomic_replace`（同目录临时文件写全→`fsync`→`rename(2)` 原子换入，失败自动 unlink 残留）；**验收并发更新夹具实测过**：2 线程×50 锁-读-改-写-原子替换，计数恰为 100 零丢失（`file::tests::concurrent_update_fixture_loses_nothing`，`cargo test -p platform --lib` 64 测全绿）。**Windows `LockFileEx`/`ReplaceFile` 后端归 BW-15-05 三端 runner 平台移植**（本项验收为并发更新夹具，Linux 已过）。
-- [ ] **BW-15-01-05 封装内存映射与共享库查找**。**验收** 三端加载相同测试资源。
+- [ ] **BW-15-01-05 封装内存映射与共享库查找**。**验收** 三端加载相同测试资源。（Linux 腿注记 2026-11-26：bw15-platform `294a434`→main `298fd89`，crates/platform/tests/mmap_library_baseline.rs 1 测绿——同资源 mmap 34µs/64KiB+anon 4096+共享库打开 22µs/符号查找 3µs malloc 命中；三端行保持开待其余平台腿）
   - 证据（部分，未勾）：`crates/platform/src/mmap.rs`（3359d3b）——`Mmap`（`mmap` PROT_READ|MAP_SHARED 整文件映射、空文件映射空切片、匿名零页映射、`Deref<[u8]>`、Drop `munmap`；mmap 需活 fd、成功后 close 映射仍有效）+ `DynamicLibrary`（`dlopen` RTLD_NOW|LOCAL、`dlsym`、Drop `dlclose`、`dlerror` 消费）；Linux 实测 7 测：文件映射逐字节等于文件、空文件、匿名页全零、缺文件报错、dlopen libc 并 dlsym malloc 非空、缺符号报错、缺库报错。**剩余**：Windows `CreateFileMapping`/`LoadLibrary` 后端随 BW-15-05 落地。
 - [x] **BW-15-01-06 校验路径大小写、编码和系统目录**。**验收** 代表性夹具可寻址。（commit aa6e2ee）
   - 证据：`crates/platform/src/path.rs`（aa6e2ee）——`correct_case_of_path`（参考 `WinFileSystem::correctCaseOfPath`（win_file_system.cpp:782）的 POSIX 对应：`realpath(3)` 在大小写不敏感卷上解析出盘上真实拼写、敏感卷上即恒等、缺失路径原样返回）；`real_path`（canonical 定点、symlink 解析、缺失报 `ENOENT`）；`join`（参考 `getAbsolutePath` 的 base+path（unix_file_system.cpp:466），补缺 `'/'`）；`home_dir`（`$HOME`）/`temp_dir`（`TMPDIR`→`TMP`→`TEMP`→`/tmp`）；编码 `path_bytes`/`path_from_bytes` 字节级往返（POSIX 路径是字节串非必 UTF-8，实测 `0xFF` 字节往返）+ lossy。Linux 实测 7 测：temp 系统目录夹具写读可寻址、HOME 绝对、join 三态（缺分隔/已带/空 base）、realpath 不定点+symlink+缺失三态、correct_case 缺失原样/存在=realpath、非 UTF-8 往返。**Windows `%USERPROFILE%`/`%TEMP%`/`GetFullPathNameW` 后端归 BW-15-03 Windows runner 平台移植**（本项验收为代表性夹具可寻址，Linux 已实测过：`path::tests::temp_dir_holds_an_addressable_fixture`，temp 系统目录夹具写读可寻址）。
@@ -9295,13 +9307,15 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（本席 `a577c5c`：crates/server-runtime/src/balance_baseline.rs run_schedule_scenario 用真 CellAppMgr 跑固定 96 tick 双相位（热相 app0≈0.6 偏斜触发拆并、冷相全低触发 retire），每次 report 后 load_balance+meta_load_balance+tick；ScheduleLedger 记 cells_added/cells_removed/apps_retired/partitions_moved/reports；BalanceTuning 新 seam（load_smoothing_bias/estimated_initial_cell_load/safety_bound/safety_ratio/meta_load_balance_tolerance/lower_bound/limit_to_chunks，Default 全等参考常量，inform_of_load 保留旧行为、新增 inform_of_load_with 显式 bias；Space::partition_positions+BspNode::visit_partitions 供台账数线）；固定 seed 27_182_828 基线 partitions_moved=0 vs 候选 limit_to_chunks=false 移动 2 条（final loads/cells 两侧一致，差异在调度路径非分布）；5 新测（含双跑全等）；覆盖 balance_baseline.rs 171/171=100%；cargo test -p server-runtime 1693 lib+集成全绿；fmt/clippy 干净（仅既有 blowfish 未用依赖告警）；证据页 docs/review/opt-05-01-02-schedule-comparison.md）
   - 双交付 FLAG（2026-11-26，本席登记）：main 另收平行腿 `cd056fc`（cellappmgr_tuning.rs 三固定场景对比）与本席 `a577c5c`（balance_baseline.rs run_schedule_scenario）同面异实现，待主席择一。
 - [x] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。（本席 `fd21b51`：crates/server-runtime/src/lifecycle_scenario.rs run_lifecycle_scenario(seed=41) 组合真 MigrationRecovery（offload→target_lost→两通 Failed 缓冲→restore 转发→reconcile 五谓词全真）、controlled_shut_down_server+ShutdownState Request/Inform/Perform+CellAppMgr cell ack、TaskManager stop_all 排空 backup/flush-replay、ReplayDataCollector/Writer 真前缀签名 4 tick 落盘、read_replay_prefix 混部门（当前接受/异版拒绝，无混部 fleet runner 故以此面为界）；6 新测全绿且双跑 ledger 逐字段全等；覆盖 187/187=100%；cargo test -p server-runtime 1699 lib+集成全绿；fmt/clippy 干净（仅既有 blowfish 未用依赖告警）；证据页 docs/review/opt-05-01-03-lifecycle-rerun.md）
-  - 本席 lane-only 交付（`fd21b51`）待主席并入；main 侧行保持开。
+  - main 已收（台账席 1a21d7a）：本席 `fd21b51`→main `51bf749`（逐字节同）+复跑证 `515351b`，本席勾保持；main 行文误标 lane/bw15-platform，实为 lane/bw14-script-host 本席交付。
+
 
 ### OPT-06-01 登录与资源下载基线
 
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
 - [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。cc648b5（login_baseline.rs 96 到达种子洪泛 64 会话/32 拒(7 封禁/24 限流/1 静默)拒率 0.3333 延迟 p50=1 p95=p99=2 峰值 2 队列峰值 1/17 下载 64 流 10288 字节收发相等 9 测 99.30% 行）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行腿 `5ec0620`→main `4c29980`（crates/load/src/login_baseline.rs 三族数字）+证据 `fcfa88f`，与本席 `cc648b5`（crates/server-runtime/src/login_baseline.rs 种子洪泛）异路径异实现，待主席择一。
 - [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。3ced450（login_tuning.rs LoginTuning 缝：调优形 16/1.0s+拒绝不占缓存记录，尾延迟峰 2→1 tick、p95 2→1、假在途忽略 7→0、误拒 24→0、接受 64→88/96；会话接续双形均到达 tick 内完成；6 测，tuning 100%/baseline 99.33%）
 - [x] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。3e4839c（download_tuning.rs 64 资源确定性语料过真实 Server/DataDownloads 双预算：时长 186→45 tick(4.1×)换每 tick 线束峰 68→252 字节，字节逐流核等 10182/10182；客户端未完成积压两形均记录不定向断言(272 vs 252)因语料形状定；内存=持有字节非分配计数(桥上分配计数恒 0)；5 测 100% 行）
 - [x] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。da80f8e（login_rerun.rs 三面各录决策：重复登录 8 决策含参考文案两条+WaitForDestroy 超时+logoff 重跑+拒答；重连旧钥 AttachClient(attempts=2)+InvalidTicket/ProxyDestroyed/ChannelCollision+Continue/LoginFailed(1)/AlreadyLoggedOff+同凭据 ResentSuccess；旧客户端=replay 前缀协议版本门(唯一运行时可观察旧客户端面)；同种子逐位复现+跨种子 decisions() 归一化形状相同而密钥不同；5 测 100% 行）
@@ -9417,11 +9431,12 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（他席在途登记 2026-11-26：lane/opt-26-db 席 lane-only 交付 4c75e00 固定事件回放+查询基线+f512511 勾行，未进 main，本树未含其面——该席按 lane 名即本簇主人，02/03/04 归其活跃节，行保持开本席不接）。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `4c75e00`（lane/opt-26-db），main=`6973092`，本席 cherry-pick `e34dacd`。面：event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账；TSV event-query.tsv 39 行+证据页；复跑 6 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
 - [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `40b58e0`（lane/opt-26-db），main=`027c6c0`，本席 cherry-pick `013f573`。面：import_batch_candidates.rs=导入批大小评估（64 行 commit 裁定+内存平坦）；TSV import-batch.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `40b58e0`（未进 main）：导入批大小评估（64 行 commit 裁定+内存平坦）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `40b58e0`（main 已收 `027c6c0`）：导入批大小评估（64 行 commit 裁定+内存平坦）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
 - [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `bf335b5`（lane/opt-26-db），main=`5df3486`，本席 cherry-pick `c578a23`。面：query_aggregation_candidates.rs=查询聚合评估（name 索引 ~4700×）；TSV query-aggr.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `bf335b5`（未进 main）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `bf335b5`（main 已收 `5df3486`）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
 - [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `b34554a`（lane/opt-26-db），main=`1590095`，本席 cherry-pick `7a1867c`。面：sample_report_rerun.rs 3 测=从存储语料复算样本报表对照 TSV 基线逐项等+每项优化后复算仍等；证据页；复跑 3 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `b34554a`（未进 main）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `b34554a`（main 已收 `1590095`）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+
 
 
 ## 5. 实施顺序与里程碑
@@ -9778,15 +9793,15 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 封装事件轮询和唤醒、单调时钟、信号/控制事件、子进程与退出状态、文件锁、内存映射、动态库和系统目录。对照大小写、路径编码、原子替换、IPv4/IPv6 和断网行为。
 
-- [ ] **BW-15-01-01 封装事件轮询和唤醒**。**验收** 三端可停止空闲循环。
+- [ ] **BW-15-01-01 封装事件轮询和唤醒**。**验收** 三端可停止空闲循环。（Linux 腿注记 2026-11-26：bw15-platform `774372f`→main `70af995`，crates/platform/tests/idle_loop_stop.rs 1 测绿——空闲循环按需停（trigger 中断 epoll_wait 预算 interrupt1 680µs/1 迭代、preset 迭代、rearm 112/46µs、预算窗 5 迭代）；wakeup.rs 441ff01 既有注记同上；三端行保持开待 Windows/macOS 腿）
   - 证据（部分，未勾）：`crates/platform/src/wakeup.rs`（441ff01）——自管道 `Wakeup`（`pipe(2)` 双端 `O_NONBLOCK`、`trigger` 任意线程一字节写入容忍 EAGAIN=已挂起、`consume` 排空重整、Drop 关双端），Linux 实测 5 测：空闲 `epoll_wait`（5s 预算）被另一线程 `trigger` 在 1s 内唤醒、预挂起即回、`consume` 后零超时不再上报、未触发 `consume` 为 no-op、100 轮触发/消费循环稳定；「轮询」半块已由 BW-02-01-02 `platform::poller`+Mercury `EventPoller` 承担（Linux epoll）。**macOS 后端已落（59da22c）**：`crates/platform/src/poller.rs` 拆为 Linux `epoll`/macOS `kqueue` 两后端、`lib.rs` 把 `poller` 门控扩到 macOS——kqueue 与 epoll 同为描述符持久注册集，`create`/`ctl`/`wait` 一对应映射（`kqueue()`；`kevent` EV_ADD/EV_DELETE 按 filter、`CTL_DEL` 先删读再删写、二者其一在册即成功、无册 fd 返 `ENOENT` 同参考 WARNING 分档；`EV_EOF`→`EPOLLHUP`/`EV_ERROR`→`EPOLLERR`；超时负值阻塞零轮询；事件位沿用 epoll 数值使调用方跨端同常量）；`platform` darwin `--all-targets` 交叉编译绿、darwin clippy `-D warnings` 绿、Linux 59 测零回归；kqueue 模块 4 测镜像 epoll 待三端 runner 实跑。**剩余**：Windows `WSAPoll` 走 socketpair 而非匿名管道——随 BW-15-05 三端 runner 落地（kqueue 实跑亦随三端 runner）。
 - [x] **BW-15-01-02 封装单调时钟**。**验收** 单调性及 Tick 单位一致。
   - 证据：crates/platform clock.rs 测试（monotonic 不回退、微秒单位、起点近零）。
-- [ ] **BW-15-01-03 封装进程控制及退出码**。**验收** 三端可正常关服并回收子进程。
+- [ ] **BW-15-01-03 封装进程控制及退出码**。**验收** 三端可正常关服并回收子进程。（Linux 腿注记 2026-11-26：bw15-platform `4a40422`→main `595be79`，crates/platform/tests/process_exit_baseline.rs 1 测绿——子进程状态码/spawn 262µs/wait 7.9ms/轮询收割 1.02ms/信号等待 247µs/一次收割 16 存活；三端行保持开待其余平台腿）
   - 证据（部分，未勾）：`crates/platform/src/process.rs`（d25d90a）——`Child`（`fork`+`execvp` PATH 搜索、子进程 exec 失败 `_exit(127)`、`wait` 阻塞重采/`try_wait` WNOHANG 非阻塞/`signal` kill、二采 `ECHILD` 报错）+ `ExitStatus`（`WIFEXITED`/`WEXITSTATUS`/`WIFSIGNALED`/`WTERMSIG` 解码、`success` 即 code 0）；Linux 实测 7 测：exit 42 采回、零退出成功、SIGTERM 终止、存活期 `try_wait` None 再采、exec 失败回 127、空 argv 拒、二采 ECHILD。**剩余**：Windows `CreateProcess` 后端随 BW-15-03 落地；`server-runtime` 关服接线（信号→kill 子进程→wait 回收）待做。
 - [x] **BW-15-01-04 封装文件锁及原子替换**。**验收** 并发更新夹具通过。（commit d0a9ac4）
   - 证据：`crates/platform/src/file.rs`（d0a9ac4）——`FileLock`（`flock` LOCK_EX 互斥、try 版返回 None 表已持有、Drop 即释放；**锁稳定伴生 `.lock` 文件而非被替换的数据文件**——rename 换 inode，锁被替换文件本身无法串行化更新，此平台事实已编码进模块文档）+ `atomic_replace`（同目录临时文件写全→`fsync`→`rename(2)` 原子换入，失败自动 unlink 残留）；**验收并发更新夹具实测过**：2 线程×50 锁-读-改-写-原子替换，计数恰为 100 零丢失（`file::tests::concurrent_update_fixture_loses_nothing`，`cargo test -p platform --lib` 64 测全绿）。**Windows `LockFileEx`/`ReplaceFile` 后端归 BW-15-05 三端 runner 平台移植**（本项验收为并发更新夹具，Linux 已过）。
-- [ ] **BW-15-01-05 封装内存映射与共享库查找**。**验收** 三端加载相同测试资源。
+- [ ] **BW-15-01-05 封装内存映射与共享库查找**。**验收** 三端加载相同测试资源。（Linux 腿注记 2026-11-26：bw15-platform `294a434`→main `298fd89`，crates/platform/tests/mmap_library_baseline.rs 1 测绿——同资源 mmap 34µs/64KiB+anon 4096+共享库打开 22µs/符号查找 3µs malloc 命中；三端行保持开待其余平台腿）
   - 证据（部分，未勾）：`crates/platform/src/mmap.rs`（3359d3b）——`Mmap`（`mmap` PROT_READ|MAP_SHARED 整文件映射、空文件映射空切片、匿名零页映射、`Deref<[u8]>`、Drop `munmap`；mmap 需活 fd、成功后 close 映射仍有效）+ `DynamicLibrary`（`dlopen` RTLD_NOW|LOCAL、`dlsym`、Drop `dlclose`、`dlerror` 消费）；Linux 实测 7 测：文件映射逐字节等于文件、空文件、匿名页全零、缺文件报错、dlopen libc 并 dlsym malloc 非空、缺符号报错、缺库报错。**剩余**：Windows `CreateFileMapping`/`LoadLibrary` 后端随 BW-15-05 落地。
 - [x] **BW-15-01-06 校验路径大小写、编码和系统目录**。**验收** 代表性夹具可寻址。（commit aa6e2ee）
   - 证据：`crates/platform/src/path.rs`（aa6e2ee）——`correct_case_of_path`（参考 `WinFileSystem::correctCaseOfPath`（win_file_system.cpp:782）的 POSIX 对应：`realpath(3)` 在大小写不敏感卷上解析出盘上真实拼写、敏感卷上即恒等、缺失路径原样返回）；`real_path`（canonical 定点、symlink 解析、缺失报 `ENOENT`）；`join`（参考 `getAbsolutePath` 的 base+path（unix_file_system.cpp:466），补缺 `'/'`）；`home_dir`（`$HOME`）/`temp_dir`（`TMPDIR`→`TMP`→`TEMP`→`/tmp`）；编码 `path_bytes`/`path_from_bytes` 字节级往返（POSIX 路径是字节串非必 UTF-8，实测 `0xFF` 字节往返）+ lossy。Linux 实测 7 测：temp 系统目录夹具写读可寻址、HOME 绝对、join 三态（缺分隔/已带/空 base）、realpath 不定点+symlink+缺失三态、correct_case 缺失原样/存在=realpath、非 UTF-8 往返。**Windows `%USERPROFILE%`/`%TEMP%`/`GetFullPathNameW` 后端归 BW-15-03 Windows runner 平台移植**（本项验收为代表性夹具可寻址，Linux 已实测过：`path::tests::temp_dir_holds_an_addressable_fixture`，temp 系统目录夹具写读可寻址）。
@@ -10879,13 +10894,15 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（本席 `a577c5c`：crates/server-runtime/src/balance_baseline.rs run_schedule_scenario 用真 CellAppMgr 跑固定 96 tick 双相位（热相 app0≈0.6 偏斜触发拆并、冷相全低触发 retire），每次 report 后 load_balance+meta_load_balance+tick；ScheduleLedger 记 cells_added/cells_removed/apps_retired/partitions_moved/reports；BalanceTuning 新 seam（load_smoothing_bias/estimated_initial_cell_load/safety_bound/safety_ratio/meta_load_balance_tolerance/lower_bound/limit_to_chunks，Default 全等参考常量，inform_of_load 保留旧行为、新增 inform_of_load_with 显式 bias；Space::partition_positions+BspNode::visit_partitions 供台账数线）；固定 seed 27_182_828 基线 partitions_moved=0 vs 候选 limit_to_chunks=false 移动 2 条（final loads/cells 两侧一致，差异在调度路径非分布）；5 新测（含双跑全等）；覆盖 balance_baseline.rs 171/171=100%；cargo test -p server-runtime 1693 lib+集成全绿；fmt/clippy 干净（仅既有 blowfish 未用依赖告警）；证据页 docs/review/opt-05-01-02-schedule-comparison.md）
   - 双交付 FLAG（2026-11-26，本席登记）：main 另收平行腿 `cd056fc`（cellappmgr_tuning.rs 三固定场景对比）与本席 `a577c5c`（balance_baseline.rs run_schedule_scenario）同面异实现，待主席择一。
 - [x] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。（本席 `fd21b51`：crates/server-runtime/src/lifecycle_scenario.rs run_lifecycle_scenario(seed=41) 组合真 MigrationRecovery（offload→target_lost→两通 Failed 缓冲→restore 转发→reconcile 五谓词全真）、controlled_shut_down_server+ShutdownState Request/Inform/Perform+CellAppMgr cell ack、TaskManager stop_all 排空 backup/flush-replay、ReplayDataCollector/Writer 真前缀签名 4 tick 落盘、read_replay_prefix 混部门（当前接受/异版拒绝，无混部 fleet runner 故以此面为界）；6 新测全绿且双跑 ledger 逐字段全等；覆盖 187/187=100%；cargo test -p server-runtime 1699 lib+集成全绿；fmt/clippy 干净（仅既有 blowfish 未用依赖告警）；证据页 docs/review/opt-05-01-03-lifecycle-rerun.md）
-  - 本席 lane-only 交付（`fd21b51`）待主席并入；main 侧行保持开。
+  - main 已收（台账席 1a21d7a）：本席 `fd21b51`→main `51bf749`（逐字节同）+复跑证 `515351b`，本席勾保持；main 行文误标 lane/bw15-platform，实为 lane/bw14-script-host 本席交付。
+
 
 ### OPT-06-01 登录与资源下载基线
 
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
 - [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。cc648b5（login_baseline.rs 96 到达种子洪泛 64 会话/32 拒(7 封禁/24 限流/1 静默)拒率 0.3333 延迟 p50=1 p95=p99=2 峰值 2 队列峰值 1/17 下载 64 流 10288 字节收发相等 9 测 99.30% 行）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收 bw15 平行腿 `5ec0620`→main `4c29980`（crates/load/src/login_baseline.rs 三族数字）+证据 `fcfa88f`，与本席 `cc648b5`（crates/server-runtime/src/login_baseline.rs 种子洪泛）异路径异实现，待主席择一。
 - [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。3ced450（login_tuning.rs LoginTuning 缝：调优形 16/1.0s+拒绝不占缓存记录，尾延迟峰 2→1 tick、p95 2→1、假在途忽略 7→0、误拒 24→0、接受 64→88/96；会话接续双形均到达 tick 内完成；6 测，tuning 100%/baseline 99.33%）
 - [x] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。3e4839c（download_tuning.rs 64 资源确定性语料过真实 Server/DataDownloads 双预算：时长 186→45 tick(4.1×)换每 tick 线束峰 68→252 字节，字节逐流核等 10182/10182；客户端未完成积压两形均记录不定向断言(272 vs 252)因语料形状定；内存=持有字节非分配计数(桥上分配计数恒 0)；5 测 100% 行）
 - [x] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。da80f8e（login_rerun.rs 三面各录决策：重复登录 8 决策含参考文案两条+WaitForDestroy 超时+logoff 重跑+拒答；重连旧钥 AttachClient(attempts=2)+InvalidTicket/ProxyDestroyed/ChannelCollision+Continue/LoginFailed(1)/AlreadyLoggedOff+同凭据 ResentSuccess；旧客户端=replay 前缀协议版本门(唯一运行时可观察旧客户端面)；同种子逐位复现+跨种子 decisions() 归一化形状相同而密钥不同；5 测 100% 行）
@@ -11001,11 +11018,12 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（他席在途登记 2026-11-26：lane/opt-26-db 席 lane-only 交付 4c75e00 固定事件回放+查询基线+f512511 勾行，未进 main，本树未含其面——该席按 lane 名即本簇主人，02/03/04 归其活跃节，行保持开本席不接）。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `4c75e00`（lane/opt-26-db），main=`6973092`，本席 cherry-pick `e34dacd`。面：event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账；TSV event-query.tsv 39 行+证据页；复跑 6 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
 - [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `40b58e0`（lane/opt-26-db），main=`027c6c0`，本席 cherry-pick `013f573`。面：import_batch_candidates.rs=导入批大小评估（64 行 commit 裁定+内存平坦）；TSV import-batch.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `40b58e0`（未进 main）：导入批大小评估（64 行 commit 裁定+内存平坦）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `40b58e0`（main 已收 `027c6c0`）：导入批大小评估（64 行 commit 裁定+内存平坦）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
 - [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `bf335b5`（lane/opt-26-db），main=`5df3486`，本席 cherry-pick `c578a23`。面：query_aggregation_candidates.rs=查询聚合评估（name 索引 ~4700×）；TSV query-aggr.tsv+证据页；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `bf335b5`（未进 main）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `bf335b5`（main 已收 `5df3486`）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
 - [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `b34554a`（lane/opt-26-db），main=`1590095`，本席 cherry-pick `7a1867c`。面：sample_report_rerun.rs 3 测=从存储语料复算样本报表对照 TSV 基线逐项等+每项优化后复算仍等；证据页；复跑 3 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
-  - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `b34554a`（未进 main）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+  - 登记（2026-11-26，本席）：lane/opt-26-db 席交付 `b34554a`（main 已收 `1590095`）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+
 
 
 ## 5. 实施顺序与里程碑
