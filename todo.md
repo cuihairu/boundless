@@ -2814,8 +2814,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - Tick：`docs/perf-baseline-2026-11-24.md` 既有 11 行 criterion 时序表（`e9c0a52`，已在 main），四热面（time_queue/stream/math/updatables）× tick 尾延迟口径，100 样本 3s 预热可复现。
   - 分配数：`6b6cc9c` 落 `crates/foundation/tests/alloc_counts.rs` + `crates/server-runtime/tests/alloc_counts.rs`——计数全局分配器 + thread-local 追踪旗标（旗标与计数全在调用线程，并发测试线程互不污染；全局计数器版首跑即暴露互踩：纯浮点夹具数出幻影分配），夹具与时序表逐形对应（`iter_batched` 出时间窗的 setup 同样出计数窗），每测断言双跑恒等故数字按工具链逐位可复现；11 行基线：add_1000_timers 1010 次/112,440 B（每计时器 ~1 次、firing pass 0 次）、process_1000_due 0/0、add_cancel_process_100 108/12,504、encode 29/26,563、decode 20/11,481、math 四面全 0/0、updatables call pass 0/0、register_deregister_100 114/12,424；`cargo test -p foundation` 228+9 绿、`-p server-runtime` 1303+2 绿、两 crate `--tests` clippy 净。
   - 加载峰值：bots 二进制（debug，main `70a4672`）在 `LOAD_CLIENTS=4` 信封下 `/usr/bin/time -v` 实测三场景 peak RSS——steady-move 3,164 KiB（bots_online 4）、login-hurricane 3,180 KiB（online_peak 4、4/4 admitted）、dense-aoi 3,148 KiB（bots 4、max_visible 3）；`ci/load.sh` 3/3 PASS 落 TSV；离线面按仿真时间跑完故此峰是生成器自身足迹，实拓扑逐期 RSS/CPU 采样（`ResourceTracker`，BW-17-03-04）在 `crates/load` 已测但尚未接进 driver 报告（归 bw17 席）。
-- [ ] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。；**跨席交付登记（lane/bw19-docs 未并 main，行保持开待主席并入，本席不重做）**：bw19-docs 席 `6174b44`+勾 `f742b62`——`time_queue.rs` process 循环借用窗合并（每 fired timer 5-6 个 borrow_mut 窗→2 个，回调仍以队列未借状态运行=重入语义不变）+`tick.rs` Updatables.handles 指针恒等 hasher（BuildHasherDefault<PtrHasher> 替 RandomState，参照 removalHandle_ 纯字段读）；同 commit 双二进制噪声地板 -3.4% 下唯一双窗脱带夹具=updatables/call_1000_over_3_levels（-12.8%/-21.3%），timer 腿不作提速主张只保借用窗减半，提速主张限 dispatch 探测腿；`cargo test -p foundation -p server-runtime` 1562 过/0 挂（docs/perf-baseline-2026-11-24.md OPT-01-01-02 节）。
-- [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。（bw19-docs 席 ebbde2b，lane/bw19-docs 未并 main——合并须带入；本席 2026-11-26 真机复测：`resources --test data_section_cache_alloc` 3 绿（热路径零分配断言）+`foundation --lib stream` 49 绿+resources 全 crate 225 绿+foundation 238 绿，失效夹具随全 crate 套件复跑）；**双交付登记待主席**：main 侧文本另载 `e478d90` 等交付。
+- [x] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。（bw19-docs 席 `6174b44`，lane/bw19-docs，main=`8e17603`：两候选落码——`time_queue.rs` process 循环预回调簿记+post 回调收尾两借窗（每点火 5-6 窗→2，回调仍无借重入语义不变）+`tick.rs` `Updatables.handles` 指针键恒等 hasher（参考 removalHandle_ 平字段读，去移植侧种子探针）；同 commit 双二进制 10 轮交错 A/B 噪声地板 -3.4%，仅 `updatables/call_1000_over_3_levels` 两窗越带（-12.8%/-21.3%）=主张限逐 tick 派发探针，timer 处理不主张提速只保借窗减半；记录 docs/perf-baseline-2026-11-24.md OPT-01-01-02 节；本席 main 复测 foundation time_queue 35 绿+server-runtime tick 93 绿）
+- [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。`ebbde2b` 双面交付（main=`e478d90`）：
   - 资源缓存热路径零分配：`crates/resources/src/data_section_cache.rs` 链指针原是 `Option<String>` 路径拷贝（每次重链 2-6 次 String 分配）→ 槽位 arena（`Vec<CacheNode>` 整数双向链 + 侵入式自由链；`add` 一次性付两份 String——map key + 槽内 name 拷贝——稳态 relink 机器全零分配；section 在 entry 释放时 drop，与参照删节点同语义）。TDD 红先证旧实现逐操作计数（find 中段 6 次/36 B、尾段 5/30、purgeLRU 3/18、remove 中/尾 3/18、remove 头 2/12、head 命中/miss/原地重加 0），新实现 `crates/resources/tests/data_section_cache_alloc.rs` 全零断言 3 测绿，模块 llvm-cov 100.00%（380/380 行）；「复跑失效夹具」随 `cargo test -p resources` 222 全绿一并完成（multi_file_system 目录列举缓存失效 + data_section_cache 七测同套）。
   - BinaryStream 64 字节预留：`crates/foundation/src/stream.rs` 手写 `Default` = `Vec::with_capacity(64)`（参照 `MemoryOStream( int size = 64 )`，`lib/cstdmf/memory_stream.hpp`——参照默认构造即预留，`new()`/`from_u32_le` 同享；`from_slice` 读流包已有内存不预留）。红先证旧实现 61 字节小写 2 次分配，新实现 1 次/64 B；encode_mixed_payload 29→26 次（26,563→26,507 B）；`cargo test -p foundation` 228+10 绿（405 处 `BinaryStream::new()` 调用点无回归），clippy 净。
   - 加载峰值 A/B（bots 生成器，`LOAD_CLIENTS=4`/`LOAD_DURATION=2`，main `33e030a` ± 本 commit 双临时 worktree，3 轮取中位）：steady-move 3,216→3,456、login-hurricane 3,284→3,152、dense-aoi 3,248→3,168 KiB——差异全在 ±150-200 KiB 轮间摆幅内，生成器峰值 RSS 噪声内不变（分配数工作对离线面足迹本就无感）；A/B 表落 `docs/perf-baseline-2026-11-24.md` OPT-01-01-03 节。
@@ -2824,10 +2824,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 评估缓冲复用、批量收发与减少复制。比较 RPC RTT、网络吞吐、丢包恢复和内存占用，混跑旧线协议。
 
-- [x] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。（本席 2ba686b，lane/bw15-platform：crates/mercury/tests/network_baseline.rs 7 测=UDP/TCP 真回环 RTT p50/p90/p99+4MiB 吞吐+钉死钟丢包恢复两臂（16/16 恰一次重发+越序 ack 穿越）；记录 TSV docs/review/fixtures/network-baseline/net-baseline.tsv；mercury 377 lib+7 集成全绿，回环墙钟数字机器相关只记录不设带）；**双交付登记待主席**：main 侧文本另载 `841315b` 等交付。
-- [x] **OPT-02-01-02 评估缓冲复用**。**验收** 报告分配与峰值内存。（本席 dc549c4/739a3bc，lane/bw15-platform：crates/mercury/tests/buffer_alloc.rs 5 测=指针配对台账分配器+测量窗，Packet 1 alloc/1472B、收包循环每报 1 新箱、未确认窗每槽 1576B 且 ack 后活集归零、TCP 发送缓冲稳态写+重排队零分配=背衬复用证实；TSV docs/review/fixtures/network-baseline/buffer-alloc.tsv，证据页 docs/review/opt-02-01-02-buffer-reuse.md；mercury 377 lib+7+5 全绿，分配计数族逐跑恒等）；**双交付登记待主席**：main 侧文本另载 `3b5f15a、`8b1793a` 等交付。
-- [x] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。（本席 bc1ee86/071bdc6/3e7c776，lane/bw15-platform：platform::socket 落 sendmmsg/recvmmsg 包装+SendScratch/RecvScratch 保留式暂存（Linux cfg）；crates/mercury/tests/batch_io.rs 三臂对照=批量/逐报/分配计数，批宽 64 收发系统调用各 63×摊派（3495→55）确定、每报摊派成本 p50 持平、稳态 0 alloc/报（现行路径 1.00/报）、回环吞吐同量级（窗深投递延迟主导，墙钟只记录不设带）；TSV docs/review/fixtures/network-baseline/batch-io.tsv，证据页 docs/review/opt-02-01-03-batch-and-copy.md；platform 64+mercury 377/7/5/1 全绿）；**双交付登记待主席**：main 侧文本另载 `3590227、`7dc6d12、`c733e5a` 等交付。
-- [x] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。（本席 fc181f5/19a9c42/29cc302/f438b7d/1b27379, lane/bw15-platform：crates/server-runtime/tests/el7_mixed_deploy.rs 五腿真机混部=新版→原版 UDP（pid/WholeMachine 查询）+原版→新版 UDP（logger 注册与 birth/death 监听入册）+发现广播（addTCP/add 版本门两臂推送件到位）+新版→原版 TCP（注册 108+记录 107 帧化落 mldb）+新版→原版 UDP（裸数据报落 mldb），mldb component_names/strings 字节级断言；**四个真互操作 bug 修复**：contracts/machined.rs v51 pid u32+Listener/Signal extra 块殿后+ProcessMessage.port 线上网络序，message_logger 记录头 DebugMessageSource=4 字节裸枚举（38 vs 41 字节账锁定），MachinedDaemon answer_query_all 逐匹配应答（bwmachined.cpp:1410-1452）；TSV docs/review/fixtures/network-baseline/el7-mixed-deploy.tsv，证据页 docs/review/opt-02-01-04-el7-mixed-deploy.md；contracts 44+server-runtime lib 1700+mixed 1+message_logger 160+platform 64 全绿，20018 毒气探针前置）
+- [x] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。（bw15 席 `2ba686b`，lane/bw15-platform，main=`841315b`：crates/mercury/tests/network_baseline.rs 7 测=UDP/TCP 真回环 RTT p50/p90/p99+4MiB 吞吐+钉死钟丢包恢复两臂（16/16 恰一次重发+越序 ack 穿越）；记录 TSV docs/review/fixtures/network-baseline/net-baseline.tsv；mercury 377 lib+7 集成全绿（本席 main 复测 384 绿），回环墙钟数字机器相关只记录不设带）
+- [x] **OPT-02-01-02 评估缓冲复用**。**验收** 报告分配与峰值内存。（bw15 席 `dc549c4`/`739a3bc`，lane/bw15-platform，main=`3b5f15a`/`8b1793a`：crates/mercury/tests/buffer_alloc.rs 5 测=指针配对台账分配器+测量窗，Packet 1 alloc/1472B、收包循环每报 1 新箱、未确认窗每槽 1576B 且 ack 后活集归零、TCP 发送缓冲稳态写+重排队零分配=背衬复用证实；TSV docs/review/fixtures/network-baseline/buffer-alloc.tsv，证据页 docs/review/opt-02-01-02-buffer-reuse.md；mercury 377 lib+7+5 全绿（本席 main 复测绿），分配计数族逐跑恒等）
+- [x] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。（bw15 席 `bc1ee86`/`071bdc6`/`3e7c776`，lane/bw15-platform，main=`c733e5a`/`7dc6d12`/`3590227`：platform::socket 落 sendmmsg/recvmmsg 包装+SendScratch/RecvScratch 保留式暂存（Linux cfg）；crates/mercury/tests/batch_io.rs 三臂对照=批量/逐报/分配计数，批宽 64 收发系统调用各 63×摊派（3495→55）确定、每报摊派成本 p50 持平、稳态 0 alloc/报（现行路径 1.00/报）、回环吞吐同量级（窗深投递延迟主导，墙钟只记录不设带）；TSV docs/review/fixtures/network-baseline/batch-io.tsv，证据页 docs/review/opt-02-01-03-batch-and-copy.md；platform 64+mercury 377/7/5/1 全绿（本席 main 复测 455 绿））
+- [x] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。（bw15-platform 席 `fc181f5`/`19a9c42`/`29cc302`/`f438b7d`/`1b27379`，lane/bw15-platform，main=`261a2d0`/`25ee476`/`3675b18`/`62ea5d3`/`4b83ebb`：crates/server-runtime/tests/el7_mixed_deploy.rs 五腿真机混部（`#[ignore]` 场景，EL7_MIXED_OUT 落 TSV）=新版→原版 UDP（pid/WholeMachine 查询）+原版→新版 UDP（logger 注册与 birth/death 监听入册）+发现广播（addTCP/add 版本门两臂推送件到位）+新版→原版 TCP（注册 108+记录 107 帧化落 mldb）+新版→原版 UDP（裸数据报落 mldb），mldb component_names/strings 字节级断言；**四个真互操作 bug 修复**：contracts/machined 线格式对参考（main=`261a2d0`）/message_logger 记录头源字段宽（main=`25ee476`）/machined 进程统计查询答全匹配面（main=`3675b18`）/server-runtime 接 message_logger workspace 边（main=`62ea5d3`）；TSV docs/review/fixtures/network-baseline/el7-mixed-deploy.tsv，证据页 docs/review/opt-02-01-04-el7-mixed-deploy.md；本席 main 复测五腿全绿（5.01s，TSV 复捕与夹具逐字节恒等））
 
 ### OPT-03-01 Python 桥接基线
 
@@ -2886,10 +2886,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
-- [ ] **OPT-09-01-01 ；**跨席交付登记（两 lane 均已勾、均未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席四行全交（lane/bw14-script-host），opt-09-db-baseline 席四行全交（da4e411/da9a135/cb65282/7663701，lane/opt-09-db-baseline 7663701 止）——主席择一面并入。分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。
-- [ ] **OPT-09-01-02 ；**跨席交付登记（两 lane 均已勾、均未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席四行全交（lane/bw14-script-host），opt-09-db-baseline 席四行全交（da4e411/da9a135/cb65282/7663701，lane/opt-09-db-baseline 7663701 止）——主席择一面并入。评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
-- [ ] **OPT-09-01-03 ；**跨席交付登记（两 lane 均已勾、均未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席四行全交（lane/bw14-script-host），opt-09-db-baseline 席四行全交（da4e411/da9a135/cb65282/7663701，lane/opt-09-db-baseline 7663701 止）——主席择一面并入。评估写批次与归档整合**。**验收** 报告提交和恢复时长。
-- [ ] **OPT-09-01-04 ；**跨席交付登记（两 lane 均已勾、均未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席四行全交（lane/bw14-script-host），opt-09-db-baseline 席四行全交（da4e411/da9a135/cb65282/7663701，lane/opt-09-db-baseline 7663701 止）——主席择一面并入。复跑事务、重试与恢复**。**验收** 数据一致。
+- [x] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。（opt-09-db-baseline 席 `da4e411`，lane/opt-09-db-baseline，main=`e59ca31`：crates/db-postgres/tests/store_baseline.rs 6 测=512 行确定性语料同一数据集落 MySQL（DDL 对照参考 db_storage_mysql 布局+值类型逐 kind 对）与 PostgreSQL（JSONB 嵌套列 codec 往返）双后端，schema/确定性/嵌套列各单测；TSV docs/review/fixtures/store-baseline/store-baseline.tsv 22 行，证据页 docs/review/opt-09-01-01-store-baseline.md；workspace 新增 `mysql` 依赖（minimal-rust）；本席 main 复测 6 绿。⚠️ 与 bw14-script-host `7024fb1` 平行交付 FLAG 待主席择一）
+- [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。（opt-09-db-baseline 席 `da9a135`，lane/opt-09-db-baseline，main=`04f5d37`：crates/db-postgres/tests/store_pool_candidates.rs 3 测=连接池与预编译语句候选对照（参考 `numConnections_` 默认 5 长连会话+每线程一连接+启动期预编译实体 SQL 模板两形），各后端延迟与吞吐逐形报告且回读恒等；TSV docs/review/fixtures/store-pool/pool-candidates.tsv 48 行，证据页 docs/review/opt-09-01-02-store-pool.md；本席 main 复测 3 绿）
+- [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。（opt-09-db-baseline 席 `cb65282`，lane/opt-09-db-baseline，main=`8b1fb8a`：crates/db-postgres/tests/store_commit_candidates.rs 4 测=实体写缓冲进 Transaction 按归档周期一 `COMMIT`（参考 sqlite_database.cpp 131-177+db_config 5s 默认）与显式 WRITE_EXPLICIT 两臂提交时长+归档整合恢复时长报告，落库回读逐字段等；TSV docs/review/fixtures/store-commit/commit-candidates.tsv 16 行，证据页 docs/review/opt-09-01-03-store-commit.md；本席 main 复测 4 绿）
+- [x] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。（opt-09-db-baseline 席 `7663701`，lane/opt-09-db-baseline，main=`3a7b9d0`：crates/db-postgres/tests/store_recovery.rs 3 测=参考 MySqlBackgroundTask::doBackgroundTask 契约复跑——可重试失败恰一次重试（attempts 2/on_retry 1）、回滚批零幸存行、事务外断连恰一次自动恢复+事务内手动重连；恢复后数据一致计数钉死；TSV docs/review/fixtures/store-recovery/recovery.tsv 21 行，证据页 docs/review/opt-09-01-04-store-recovery.md；本席 main 复测 3 绿）
 
 ### OPT-10-01 地图加载和查询基线
 
@@ -2921,10 +2921,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化依赖缓存、并行转换和编辑器加载。比较冷构建、增量构建与大地图编辑时间，校验可复现产物。
 
-- [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。deliver 80c9b88（main，bw16-18 席）；**FLAG 双交付待主席**：lane/bw14-script-host 平行交付 `1fd4739+bb1e3ea` 未进 main（OPT-13-01-01）。
-- [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。deliver fb80b66（main，bw16-18 席）；**FLAG 双交付待主席**：lane/bw14-script-host 平行交付 `663dc8c+97817db` 未进 main（OPT-13-01-02）。
-- [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。deliver 4330bd7（main，bw16-18 席）；**FLAG 双交付待主席**：lane/bw14-script-host 平行交付 `827ed8e+00109d2` 未进 main（OPT-13-01-03）。
-- [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。deliver bb45885（main，bw16-18 席）；**FLAG 双交付待主席**：lane/bw14-script-host 平行交付 `b981ae7` 未进 main（OPT-13-01-04）。
+- [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。deliver 80c9b88
+- [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。deliver fb80b66
+- [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。deliver 4330bd7
+- [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。deliver bb45885
 
 ### OPT-14-01 发布包尺寸及首次运行
 
@@ -2938,34 +2938,35 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。；**证据（Linux 腿实测，行仍开=三端 runner 缺）**：`crates/platform/tests/io_timer_baseline.rs` 统一负载 512 ops@64KiB——顺序写 30.33µs/读 9.04µs/atomic_replace 55.81µs（fsync 大头）/mmap 单遍 ~1µs/时钟分辨率 1µs/1ms sleep 均值 1.0864ms/wakeup 往返 0.95µs；断言全数据面（往返/映射内容/节拍±10%），墙钟读数不入断言；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、macOS 卡 darwin SDK，同测试三端可跑待 BW-15-05 runner。夹具 `docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv`，证据 `docs/review/opt-15-01-01-io-timer-baseline.md`。；**双交付登记待主席**：bw14-script-host 席 lane 已勾（7081674，行内无面文本）；本席 Linux 腿如上（行仍开=三端 runner）。
-- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。；**Linux 腿登记（行仍开=三端图形矩阵缺 runner，BW-15-04）**：本仓像素面=确定性软件光栅器（`render::software`），设备/驱动面=宿主 CPU Intel i9-10880H @2.30GHz+内核 7.0.0-44-generic（无 GPU 依赖=驱动无关），帧时已由 main `5a80a78`（OPT-11-01-01 三端 profile 基线：320x240 4.9ms/640x480 21.5ms）钉死——本行剩余面=真 GPU 后端（D3D/Metal）三端设备+驱动+帧时，待 BW-15-04 runner 矩阵。；**双交付登记待主席**：bw14-script-host 席 lane 已勾（2f77126+勾 0b6d948：crates/client/tests/render_backend_baseline.rs 登记表三问=设备结构断言 640×480 RGBA8 adapter 0/驱动 probe 宿主环境文本/帧时 probe 64 帧 p50 15.6-18.8ms p99 24.2-25.1ms 入 RENDER_BACKEND_OUT）；本席 Linux 腿登记如上。
-- [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。；**Linux 腿登记（行仍开=三端）**：平台针对性优化的回归面=协议与功能套件全绿——workspace 166 套 7185 passed exit 0（含 mercury 传输/协议、platform 四 Windows 后端镜像 `--all-targets` 交叉验证、BW-15-01 逐 slice 门禁矩阵）；windows-gnu 全量编译卡 mercury Windows 臂（BW-15-03）、macOS 卡 darwin SDK，三端套件通过待 runner。；**双交付登记待主席**：bw14-script-host 席 lane 已勾（3761c24+勾 95ffb47：crates/platform/tests/platform_opt_parity.rs 批臂 sendmmsg/recvmmsg vs 泛化臂 sendto/recvfrom 同 loopback UDP 对——256 数据报字节/序/源三元组恒等+批臂系统调用形状 8+8 vs 泛化 256+256）；本席 Linux 腿登记如上。
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+  - 注记（2026-11-26，台账席）：Linux 腿已落——bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿。行保持开——「各平台」待 Windows/macOS 腿（三端 runner，BW-15-05-01）后补测再勾。
+- [x] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。(2026-11-26 lane/bw14-script-host 2f77126→main 25e40c7：crates/client/tests/render_backend_baseline.rs 按后端登记表采集三问——新树唯一出货像素后端=Device 下软件光栅器（参照侧 D3D9/OpenGL/cocos2d/Awesomium 四后端仅 BW-15-06-01 事实非移植，BACKENDS 留位即插）；设备面结构断言 SoftwareDevice 640×480 adapter=0 307200px RGBA8+帧序 1..=64 单设备对象+status=Ok+leaked()=0；驱动面=执行环境文本（CPU/核/OS/内核 probe 只印不断言）；帧时=固定镜头 check_device→step→present 64 帧逐帧 FRAME-TIME+FRAME-TAIL 报告，min/median/p99/max 记运行值不断言；结构契约逐相邻帧摘要异+帧 1..=8/64 复现 OPT-11-01-01 saved 钉+帧 1/7/31/64 纯帧序号复现+复跑恒等；提交目录 tests/baseline/render-backend-baseline.tsv 十列 linux-x86_64=measured，macos-arm64/windows-x86_64=pending rows 带 BW-15-04/BW-15-03 blocker 不编数字，语法检查拒 pending 带测量/未知后端/重复对/非数字/测量平台缺行；client 861 绿+集成全绿，clippy 净；本机 2 测绿)
+- [x] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。(2026-11-26 lane/bw14-script-host 3761c24→main 117a588：crates/platform/tests/platform_opt_parity.rs——同套协议场景两臂比结果：泛化 sendto/recvfrom 逐数据报 vs 批 sendmmsg/recvmmsg 逐窗口，同一 loopback UDP 对共发送套接字源三元组可比；256 数据报逐报字节+序恒等（内嵌大端序号=自身下标）+源 port/addr 网络序恒等+变长 16..=1200 抓聚合拆裂+批臂 8 send+8 recv vs 泛化 256+256；边沿同答：空批/空收 0/静默非阻塞两臂同 -1+EAGAIN（libc 约定，sendmmsg 注释"-errno"与实态不符如实登记）/8 槽收 5 排队恰 5 槽序字节恒等/单批同 sendto；自揭两发现=drained 错误形与槽宽=批容量（4 槽收 5 留队未丢，独立 C repro）；platform 64 lib+io_timer 1+parity 2+signal_call_sites 全绿，本机 2 测绿)
 
 ### OPT-16-01 采集依赖与增量构建基线
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。；deliver 96009f9（main）；**FLAG 双交付未决**：main `96009f9`（asset-pipeline tests/dependency_rebuild_baseline.rs 203 行集成测）与本席 `d11c3d2`（`ci/build-baseline.sh` fanout+冷/增量双腿 shell 测量：foundation 19 依赖者、release 冷 220.59s/增量 96.25s、debug 冷 53.47s/增量 3.81s、touch foundation 重编 11 crate 全闭包）互补非冲突——main 面是测试内基线，本席面是可复跑 CI 入口；本席勾行已自纠退回开（revert `6d07099`），证据 `docs/review/opt-16-01-01-build-baseline.md`，待主席择一/并认。
-- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171（main `8c37171`，time_queue 拆分评估 rebuild 25→7 crate fan-out 24→6；吸收自 origin/main `7ff40ee` 勾行，本席未重做）。
-- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。deliver 870ad04（main，asset-pipeline install_path_recheck.rs 289 行（res_packer install+双端 PackedSection 载回对照）；吸收自 origin/main，本席未重做）。
+- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。deliver 96009f9
+- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171
+- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。deliver 870ad04
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
 
-- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。deliver 38b99db（main，观测通道采集关/开长稳基线；吸收自 origin/main，本席未重做）。
-- [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。deliver 2a26627（main，采集缓冲与导出开销评估；吸收自 origin/main，本席未重做）。
-- [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。deliver 0ee4b28（main，采集完整性回归；吸收自 origin/main，本席未重做）。
+- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。deliver 38b99db
+- [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。deliver 2a26627
+- [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。deliver 0ee4b28
 
 ### OPT-26-01 固定事件回放并采集查询基线
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。deliver 8f42e4c（message_logger `qlog_replay_baseline.rs` 固定回放 20000 entry×11 查询面+样本报表；fixture `docs/review/fixtures/opt-26-01-01/qlog-replay-baseline.tsv`）；⚠️ 双交付 FLAG 主席择一：opt-26-db `4c75e00`（event_query_baseline.rs PG 语料面基线，未进 main）与本席 `8f42e4c`（message_logger 内存查询面基线）
-- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 他席交付未进 main，行保持开：opt-26-db `40b58e0`（import_batch_candidates.rs 五事务形 64 行 commit ~1.4×+分配峰值平坦）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理报告吞吐和峰值内存。
-- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 他席交付未进 main，行保持开：opt-26-db `bf335b5`（query_aggregation_candidates.rs name→id 索引 ~4746×+聚合答案相等）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理报告延迟变化。
-- [ ] **OPT-26-01-04 复算样本报表**。**验收** 他席交付未进 main，行保持开：opt-26-db `b34554a`（sample_report_rerun.rs 同流复算九键逐字节全等）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理窗口及计数与优化前一致。
+- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（opt26-db 席 `4c75e00`，lane/opt-26-db，main=`6973092`：crates/db-postgres/tests/event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账，钉定样本报表（四级窗口+五查询形计数）为 01-04 复算基线；TSV docs/review/fixtures/event-query/event-query.tsv 39 行，证据页 docs/review/opt-26-01-01-event-query-baseline.md；本席 main 复测 6 绿，TSV 复捕墙钟行随负载漂（结构计数行恒等）只记录不设带）；本席平行交付 lane-only `8f42e4c`（crates/message_logger/tests/qlog_replay_baseline.rs 内存查询面回放基线，未进 main——主席已择 opt-26-db `4c75e00` 面）
+- [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。（opt26-db 席 `40b58e0`，lane/opt-26-db，main=`027c6c0`：crates/db-postgres/tests/import_batch_candidates.rs 3 测=同 512 行语料五种事务形（每 1/16/64/256 行一提交+整库一事务）各报墙/吞吐/计数分配器峰值且逐形回读恒等；TSV docs/review/fixtures/import-batch/import-batch.tsv 30 行，证据页 docs/review/opt-26-01-02-import-batch.md；本席 main 复测 3 绿（批 64+ 后吞吐平坦 620-640 rows/s，批 1 最慢=每行一提交））
+- [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。（opt26-db 席 `bf335b5`，lane/opt-26-db，main=`5df3486`：crates/db-postgres/tests/query_aggregation_candidates.rs 3 测=一全扫建 name→id（512）+level→ids（200 键）两聚合图，同 128 名抽样网格前后对照——基线 name 查询 ~14× 键控 get，聚合后网格解析走图不走扫；TSV docs/review/fixtures/query-aggr/query-aggr.tsv 21 行，证据页 docs/review/opt-26-01-03-query-aggregation.md；本席 main 复测 3 绿（加速比两跑 8350×/4746×=负载敏感记录行，128 网格断言恒等））
+- [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。（opt26-db 席 `b34554a`，lane/opt-26-db，main=`1590095`：crates/db-postgres/tests/sample_report_rerun.rs 3 测=同固定事件流重放后从**存储语料**复算样本报表，对照盘上 docs/review/fixtures/event-query/event-query.tsv 基线（四级窗口+五查询形计数逐项等），再在每项优化（64 行批导入/两聚合图）后各复算一次仍等；证据页 docs/review/opt-26-01-04-sample-report-rerun.md；本席 main 复测 3 绿）
 
 ## 5. 实施顺序与里程碑
 
@@ -4395,8 +4396,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - Tick：`docs/perf-baseline-2026-11-24.md` 既有 11 行 criterion 时序表（`e9c0a52`，已在 main），四热面（time_queue/stream/math/updatables）× tick 尾延迟口径，100 样本 3s 预热可复现。
   - 分配数：`6b6cc9c` 落 `crates/foundation/tests/alloc_counts.rs` + `crates/server-runtime/tests/alloc_counts.rs`——计数全局分配器 + thread-local 追踪旗标（旗标与计数全在调用线程，并发测试线程互不污染；全局计数器版首跑即暴露互踩：纯浮点夹具数出幻影分配），夹具与时序表逐形对应（`iter_batched` 出时间窗的 setup 同样出计数窗），每测断言双跑恒等故数字按工具链逐位可复现；11 行基线：add_1000_timers 1010 次/112,440 B（每计时器 ~1 次、firing pass 0 次）、process_1000_due 0/0、add_cancel_process_100 108/12,504、encode 29/26,563、decode 20/11,481、math 四面全 0/0、updatables call pass 0/0、register_deregister_100 114/12,424；`cargo test -p foundation` 228+9 绿、`-p server-runtime` 1303+2 绿、两 crate `--tests` clippy 净。
   - 加载峰值：bots 二进制（debug，main `70a4672`）在 `LOAD_CLIENTS=4` 信封下 `/usr/bin/time -v` 实测三场景 peak RSS——steady-move 3,164 KiB（bots_online 4）、login-hurricane 3,180 KiB（online_peak 4、4/4 admitted）、dense-aoi 3,148 KiB（bots 4、max_visible 3）；`ci/load.sh` 3/3 PASS 落 TSV；离线面按仿真时间跑完故此峰是生成器自身足迹，实拓扑逐期 RSS/CPU 采样（`ResourceTracker`，BW-17-03-04）在 `crates/load` 已测但尚未接进 driver 报告（归 bw17 席）。
-- [ ] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。；**跨席交付登记（lane/bw19-docs 未并 main，行保持开待主席并入，本席不重做）**：bw19-docs 席 `6174b44`+勾 `f742b62`——`time_queue.rs` process 循环借用窗合并（每 fired timer 5-6 个 borrow_mut 窗→2 个，回调仍以队列未借状态运行=重入语义不变）+`tick.rs` Updatables.handles 指针恒等 hasher（BuildHasherDefault<PtrHasher> 替 RandomState，参照 removalHandle_ 纯字段读）；同 commit 双二进制噪声地板 -3.4% 下唯一双窗脱带夹具=updatables/call_1000_over_3_levels（-12.8%/-21.3%），timer 腿不作提速主张只保借用窗减半，提速主张限 dispatch 探测腿；`cargo test -p foundation -p server-runtime` 1562 过/0 挂（docs/perf-baseline-2026-11-24.md OPT-01-01-02 节）。
-- [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。（bw19-docs 席 ebbde2b，lane/bw19-docs 未并 main——合并须带入；本席 2026-11-26 真机复测：`resources --test data_section_cache_alloc` 3 绿（热路径零分配断言）+`foundation --lib stream` 49 绿+resources 全 crate 225 绿+foundation 238 绿，失效夹具随全 crate 套件复跑）；**双交付登记待主席**：main 侧文本另载 `e478d90` 等交付。
+- [x] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。（bw19-docs 席 `6174b44`，lane/bw19-docs，main=`8e17603`：两候选落码——`time_queue.rs` process 循环预回调簿记+post 回调收尾两借窗（每点火 5-6 窗→2，回调仍无借重入语义不变）+`tick.rs` `Updatables.handles` 指针键恒等 hasher（参考 removalHandle_ 平字段读，去移植侧种子探针）；同 commit 双二进制 10 轮交错 A/B 噪声地板 -3.4%，仅 `updatables/call_1000_over_3_levels` 两窗越带（-12.8%/-21.3%）=主张限逐 tick 派发探针，timer 处理不主张提速只保借窗减半；记录 docs/perf-baseline-2026-11-24.md OPT-01-01-02 节；本席 main 复测 foundation time_queue 35 绿+server-runtime tick 93 绿）
+- [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。`ebbde2b` 双面交付（main=`e478d90`）：
   - 资源缓存热路径零分配：`crates/resources/src/data_section_cache.rs` 链指针原是 `Option<String>` 路径拷贝（每次重链 2-6 次 String 分配）→ 槽位 arena（`Vec<CacheNode>` 整数双向链 + 侵入式自由链；`add` 一次性付两份 String——map key + 槽内 name 拷贝——稳态 relink 机器全零分配；section 在 entry 释放时 drop，与参照删节点同语义）。TDD 红先证旧实现逐操作计数（find 中段 6 次/36 B、尾段 5/30、purgeLRU 3/18、remove 中/尾 3/18、remove 头 2/12、head 命中/miss/原地重加 0），新实现 `crates/resources/tests/data_section_cache_alloc.rs` 全零断言 3 测绿，模块 llvm-cov 100.00%（380/380 行）；「复跑失效夹具」随 `cargo test -p resources` 222 全绿一并完成（multi_file_system 目录列举缓存失效 + data_section_cache 七测同套）。
   - BinaryStream 64 字节预留：`crates/foundation/src/stream.rs` 手写 `Default` = `Vec::with_capacity(64)`（参照 `MemoryOStream( int size = 64 )`，`lib/cstdmf/memory_stream.hpp`——参照默认构造即预留，`new()`/`from_u32_le` 同享；`from_slice` 读流包已有内存不预留）。红先证旧实现 61 字节小写 2 次分配，新实现 1 次/64 B；encode_mixed_payload 29→26 次（26,563→26,507 B）；`cargo test -p foundation` 228+10 绿（405 处 `BinaryStream::new()` 调用点无回归），clippy 净。
   - 加载峰值 A/B（bots 生成器，`LOAD_CLIENTS=4`/`LOAD_DURATION=2`，main `33e030a` ± 本 commit 双临时 worktree，3 轮取中位）：steady-move 3,216→3,456、login-hurricane 3,284→3,152、dense-aoi 3,248→3,168 KiB——差异全在 ±150-200 KiB 轮间摆幅内，生成器峰值 RSS 噪声内不变（分配数工作对离线面足迹本就无感）；A/B 表落 `docs/perf-baseline-2026-11-24.md` OPT-01-01-03 节。
@@ -4405,10 +4406,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 评估缓冲复用、批量收发与减少复制。比较 RPC RTT、网络吞吐、丢包恢复和内存占用，混跑旧线协议。
 
-- [x] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。（本席 2ba686b，lane/bw15-platform：crates/mercury/tests/network_baseline.rs 7 测=UDP/TCP 真回环 RTT p50/p90/p99+4MiB 吞吐+钉死钟丢包恢复两臂（16/16 恰一次重发+越序 ack 穿越）；记录 TSV docs/review/fixtures/network-baseline/net-baseline.tsv；mercury 377 lib+7 集成全绿，回环墙钟数字机器相关只记录不设带）；**双交付登记待主席**：main 侧文本另载 `841315b` 等交付。
-- [x] **OPT-02-01-02 评估缓冲复用**。**验收** 报告分配与峰值内存。（本席 dc549c4/739a3bc，lane/bw15-platform：crates/mercury/tests/buffer_alloc.rs 5 测=指针配对台账分配器+测量窗，Packet 1 alloc/1472B、收包循环每报 1 新箱、未确认窗每槽 1576B 且 ack 后活集归零、TCP 发送缓冲稳态写+重排队零分配=背衬复用证实；TSV docs/review/fixtures/network-baseline/buffer-alloc.tsv，证据页 docs/review/opt-02-01-02-buffer-reuse.md；mercury 377 lib+7+5 全绿，分配计数族逐跑恒等）；**双交付登记待主席**：main 侧文本另载 `3b5f15a、`8b1793a` 等交付。
-- [x] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。（本席 bc1ee86/071bdc6/3e7c776，lane/bw15-platform：platform::socket 落 sendmmsg/recvmmsg 包装+SendScratch/RecvScratch 保留式暂存（Linux cfg）；crates/mercury/tests/batch_io.rs 三臂对照=批量/逐报/分配计数，批宽 64 收发系统调用各 63×摊派（3495→55）确定、每报摊派成本 p50 持平、稳态 0 alloc/报（现行路径 1.00/报）、回环吞吐同量级（窗深投递延迟主导，墙钟只记录不设带）；TSV docs/review/fixtures/network-baseline/batch-io.tsv，证据页 docs/review/opt-02-01-03-batch-and-copy.md；platform 64+mercury 377/7/5/1 全绿）；**双交付登记待主席**：main 侧文本另载 `3590227、`7dc6d12、`c733e5a` 等交付。
-- [x] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。（本席 fc181f5/19a9c42/29cc302/f438b7d/1b27379, lane/bw15-platform：crates/server-runtime/tests/el7_mixed_deploy.rs 五腿真机混部=新版→原版 UDP（pid/WholeMachine 查询）+原版→新版 UDP（logger 注册与 birth/death 监听入册）+发现广播（addTCP/add 版本门两臂推送件到位）+新版→原版 TCP（注册 108+记录 107 帧化落 mldb）+新版→原版 UDP（裸数据报落 mldb），mldb component_names/strings 字节级断言；**四个真互操作 bug 修复**：contracts/machined.rs v51 pid u32+Listener/Signal extra 块殿后+ProcessMessage.port 线上网络序，message_logger 记录头 DebugMessageSource=4 字节裸枚举（38 vs 41 字节账锁定），MachinedDaemon answer_query_all 逐匹配应答（bwmachined.cpp:1410-1452）；TSV docs/review/fixtures/network-baseline/el7-mixed-deploy.tsv，证据页 docs/review/opt-02-01-04-el7-mixed-deploy.md；contracts 44+server-runtime lib 1700+mixed 1+message_logger 160+platform 64 全绿，20018 毒气探针前置）
+- [x] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。（bw15 席 `2ba686b`，lane/bw15-platform，main=`841315b`：crates/mercury/tests/network_baseline.rs 7 测=UDP/TCP 真回环 RTT p50/p90/p99+4MiB 吞吐+钉死钟丢包恢复两臂（16/16 恰一次重发+越序 ack 穿越）；记录 TSV docs/review/fixtures/network-baseline/net-baseline.tsv；mercury 377 lib+7 集成全绿（本席 main 复测 384 绿），回环墙钟数字机器相关只记录不设带）
+- [x] **OPT-02-01-02 评估缓冲复用**。**验收** 报告分配与峰值内存。（bw15 席 `dc549c4`/`739a3bc`，lane/bw15-platform，main=`3b5f15a`/`8b1793a`：crates/mercury/tests/buffer_alloc.rs 5 测=指针配对台账分配器+测量窗，Packet 1 alloc/1472B、收包循环每报 1 新箱、未确认窗每槽 1576B 且 ack 后活集归零、TCP 发送缓冲稳态写+重排队零分配=背衬复用证实；TSV docs/review/fixtures/network-baseline/buffer-alloc.tsv，证据页 docs/review/opt-02-01-02-buffer-reuse.md；mercury 377 lib+7+5 全绿（本席 main 复测绿），分配计数族逐跑恒等）
+- [x] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。（bw15 席 `bc1ee86`/`071bdc6`/`3e7c776`，lane/bw15-platform，main=`c733e5a`/`7dc6d12`/`3590227`：platform::socket 落 sendmmsg/recvmmsg 包装+SendScratch/RecvScratch 保留式暂存（Linux cfg）；crates/mercury/tests/batch_io.rs 三臂对照=批量/逐报/分配计数，批宽 64 收发系统调用各 63×摊派（3495→55）确定、每报摊派成本 p50 持平、稳态 0 alloc/报（现行路径 1.00/报）、回环吞吐同量级（窗深投递延迟主导，墙钟只记录不设带）；TSV docs/review/fixtures/network-baseline/batch-io.tsv，证据页 docs/review/opt-02-01-03-batch-and-copy.md；platform 64+mercury 377/7/5/1 全绿（本席 main 复测 455 绿））
+- [x] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。（bw15-platform 席 `fc181f5`/`19a9c42`/`29cc302`/`f438b7d`/`1b27379`，lane/bw15-platform，main=`261a2d0`/`25ee476`/`3675b18`/`62ea5d3`/`4b83ebb`：crates/server-runtime/tests/el7_mixed_deploy.rs 五腿真机混部（`#[ignore]` 场景，EL7_MIXED_OUT 落 TSV）=新版→原版 UDP（pid/WholeMachine 查询）+原版→新版 UDP（logger 注册与 birth/death 监听入册）+发现广播（addTCP/add 版本门两臂推送件到位）+新版→原版 TCP（注册 108+记录 107 帧化落 mldb）+新版→原版 UDP（裸数据报落 mldb），mldb component_names/strings 字节级断言；**四个真互操作 bug 修复**：contracts/machined 线格式对参考（main=`261a2d0`）/message_logger 记录头源字段宽（main=`25ee476`）/machined 进程统计查询答全匹配面（main=`3675b18`）/server-runtime 接 message_logger workspace 边（main=`62ea5d3`）；TSV docs/review/fixtures/network-baseline/el7-mixed-deploy.tsv，证据页 docs/review/opt-02-01-04-el7-mixed-deploy.md；本席 main 复测五腿全绿（5.01s，TSV 复捕与夹具逐字节恒等））
 
 ### OPT-03-01 Python 桥接基线
 
@@ -4467,10 +4468,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
-- [ ] **OPT-09-01-01 ；**跨席交付登记（两 lane 均已勾、均未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席四行全交（lane/bw14-script-host），opt-09-db-baseline 席四行全交（da4e411/da9a135/cb65282/7663701，lane/opt-09-db-baseline 7663701 止）——主席择一面并入。分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。
-- [ ] **OPT-09-01-02 ；**跨席交付登记（两 lane 均已勾、均未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席四行全交（lane/bw14-script-host），opt-09-db-baseline 席四行全交（da4e411/da9a135/cb65282/7663701，lane/opt-09-db-baseline 7663701 止）——主席择一面并入。评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
-- [ ] **OPT-09-01-03 ；**跨席交付登记（两 lane 均已勾、均未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席四行全交（lane/bw14-script-host），opt-09-db-baseline 席四行全交（da4e411/da9a135/cb65282/7663701，lane/opt-09-db-baseline 7663701 止）——主席择一面并入。评估写批次与归档整合**。**验收** 报告提交和恢复时长。
-- [ ] **OPT-09-01-04 ；**跨席交付登记（两 lane 均已勾、均未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席四行全交（lane/bw14-script-host），opt-09-db-baseline 席四行全交（da4e411/da9a135/cb65282/7663701，lane/opt-09-db-baseline 7663701 止）——主席择一面并入。复跑事务、重试与恢复**。**验收** 数据一致。
+- [x] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。（opt-09-db-baseline 席 `da4e411`，lane/opt-09-db-baseline，main=`e59ca31`：crates/db-postgres/tests/store_baseline.rs 6 测=512 行确定性语料同一数据集落 MySQL（DDL 对照参考 db_storage_mysql 布局+值类型逐 kind 对）与 PostgreSQL（JSONB 嵌套列 codec 往返）双后端，schema/确定性/嵌套列各单测；TSV docs/review/fixtures/store-baseline/store-baseline.tsv 22 行，证据页 docs/review/opt-09-01-01-store-baseline.md；workspace 新增 `mysql` 依赖（minimal-rust）；本席 main 复测 6 绿。⚠️ 与 bw14-script-host `7024fb1` 平行交付 FLAG 待主席择一）
+- [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。（opt-09-db-baseline 席 `da9a135`，lane/opt-09-db-baseline，main=`04f5d37`：crates/db-postgres/tests/store_pool_candidates.rs 3 测=连接池与预编译语句候选对照（参考 `numConnections_` 默认 5 长连会话+每线程一连接+启动期预编译实体 SQL 模板两形），各后端延迟与吞吐逐形报告且回读恒等；TSV docs/review/fixtures/store-pool/pool-candidates.tsv 48 行，证据页 docs/review/opt-09-01-02-store-pool.md；本席 main 复测 3 绿）
+- [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。（opt-09-db-baseline 席 `cb65282`，lane/opt-09-db-baseline，main=`8b1fb8a`：crates/db-postgres/tests/store_commit_candidates.rs 4 测=实体写缓冲进 Transaction 按归档周期一 `COMMIT`（参考 sqlite_database.cpp 131-177+db_config 5s 默认）与显式 WRITE_EXPLICIT 两臂提交时长+归档整合恢复时长报告，落库回读逐字段等；TSV docs/review/fixtures/store-commit/commit-candidates.tsv 16 行，证据页 docs/review/opt-09-01-03-store-commit.md；本席 main 复测 4 绿）
+- [x] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。（opt-09-db-baseline 席 `7663701`，lane/opt-09-db-baseline，main=`3a7b9d0`：crates/db-postgres/tests/store_recovery.rs 3 测=参考 MySqlBackgroundTask::doBackgroundTask 契约复跑——可重试失败恰一次重试（attempts 2/on_retry 1）、回滚批零幸存行、事务外断连恰一次自动恢复+事务内手动重连；恢复后数据一致计数钉死；TSV docs/review/fixtures/store-recovery/recovery.tsv 21 行，证据页 docs/review/opt-09-01-04-store-recovery.md；本席 main 复测 3 绿）
 
 ### OPT-10-01 地图加载和查询基线
 
@@ -4502,10 +4503,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化依赖缓存、并行转换和编辑器加载。比较冷构建、增量构建与大地图编辑时间，校验可复现产物。
 
-- [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。deliver 80c9b88（main，bw16-18 席）；**FLAG 双交付待主席**：lane/bw14-script-host 平行交付 `1fd4739+bb1e3ea` 未进 main（OPT-13-01-01）。
-- [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。deliver fb80b66（main，bw16-18 席）；**FLAG 双交付待主席**：lane/bw14-script-host 平行交付 `663dc8c+97817db` 未进 main（OPT-13-01-02）。
-- [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。deliver 4330bd7（main，bw16-18 席）；**FLAG 双交付待主席**：lane/bw14-script-host 平行交付 `827ed8e+00109d2` 未进 main（OPT-13-01-03）。
-- [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。deliver bb45885（main，bw16-18 席）；**FLAG 双交付待主席**：lane/bw14-script-host 平行交付 `b981ae7` 未进 main（OPT-13-01-04）。
+- [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。deliver 80c9b88
+- [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。deliver fb80b66
+- [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。deliver 4330bd7
+- [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。deliver bb45885
 
 ### OPT-14-01 发布包尺寸及首次运行
 
@@ -4519,34 +4520,35 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。；**证据（Linux 腿实测，行仍开=三端 runner 缺）**：`crates/platform/tests/io_timer_baseline.rs` 统一负载 512 ops@64KiB——顺序写 30.33µs/读 9.04µs/atomic_replace 55.81µs（fsync 大头）/mmap 单遍 ~1µs/时钟分辨率 1µs/1ms sleep 均值 1.0864ms/wakeup 往返 0.95µs；断言全数据面（往返/映射内容/节拍±10%），墙钟读数不入断言；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、macOS 卡 darwin SDK，同测试三端可跑待 BW-15-05 runner。夹具 `docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv`，证据 `docs/review/opt-15-01-01-io-timer-baseline.md`。；**双交付登记待主席**：bw14-script-host 席 lane 已勾（7081674，行内无面文本）；本席 Linux 腿如上（行仍开=三端 runner）。
-- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。；**Linux 腿登记（行仍开=三端图形矩阵缺 runner，BW-15-04）**：本仓像素面=确定性软件光栅器（`render::software`），设备/驱动面=宿主 CPU Intel i9-10880H @2.30GHz+内核 7.0.0-44-generic（无 GPU 依赖=驱动无关），帧时已由 main `5a80a78`（OPT-11-01-01 三端 profile 基线：320x240 4.9ms/640x480 21.5ms）钉死——本行剩余面=真 GPU 后端（D3D/Metal）三端设备+驱动+帧时，待 BW-15-04 runner 矩阵。；**双交付登记待主席**：bw14-script-host 席 lane 已勾（2f77126+勾 0b6d948：crates/client/tests/render_backend_baseline.rs 登记表三问=设备结构断言 640×480 RGBA8 adapter 0/驱动 probe 宿主环境文本/帧时 probe 64 帧 p50 15.6-18.8ms p99 24.2-25.1ms 入 RENDER_BACKEND_OUT）；本席 Linux 腿登记如上。
-- [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。；**Linux 腿登记（行仍开=三端）**：平台针对性优化的回归面=协议与功能套件全绿——workspace 166 套 7185 passed exit 0（含 mercury 传输/协议、platform 四 Windows 后端镜像 `--all-targets` 交叉验证、BW-15-01 逐 slice 门禁矩阵）；windows-gnu 全量编译卡 mercury Windows 臂（BW-15-03）、macOS 卡 darwin SDK，三端套件通过待 runner。；**双交付登记待主席**：bw14-script-host 席 lane 已勾（3761c24+勾 95ffb47：crates/platform/tests/platform_opt_parity.rs 批臂 sendmmsg/recvmmsg vs 泛化臂 sendto/recvfrom 同 loopback UDP 对——256 数据报字节/序/源三元组恒等+批臂系统调用形状 8+8 vs 泛化 256+256）；本席 Linux 腿登记如上。
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+  - 注记（2026-11-26，台账席）：Linux 腿已落——bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿。行保持开——「各平台」待 Windows/macOS 腿（三端 runner，BW-15-05-01）后补测再勾。
+- [x] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。(2026-11-26 lane/bw14-script-host 2f77126→main 25e40c7：crates/client/tests/render_backend_baseline.rs 按后端登记表采集三问——新树唯一出货像素后端=Device 下软件光栅器（参照侧 D3D9/OpenGL/cocos2d/Awesomium 四后端仅 BW-15-06-01 事实非移植，BACKENDS 留位即插）；设备面结构断言 SoftwareDevice 640×480 adapter=0 307200px RGBA8+帧序 1..=64 单设备对象+status=Ok+leaked()=0；驱动面=执行环境文本（CPU/核/OS/内核 probe 只印不断言）；帧时=固定镜头 check_device→step→present 64 帧逐帧 FRAME-TIME+FRAME-TAIL 报告，min/median/p99/max 记运行值不断言；结构契约逐相邻帧摘要异+帧 1..=8/64 复现 OPT-11-01-01 saved 钉+帧 1/7/31/64 纯帧序号复现+复跑恒等；提交目录 tests/baseline/render-backend-baseline.tsv 十列 linux-x86_64=measured，macos-arm64/windows-x86_64=pending rows 带 BW-15-04/BW-15-03 blocker 不编数字，语法检查拒 pending 带测量/未知后端/重复对/非数字/测量平台缺行；client 861 绿+集成全绿，clippy 净；本机 2 测绿)
+- [x] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。(2026-11-26 lane/bw14-script-host 3761c24→main 117a588：crates/platform/tests/platform_opt_parity.rs——同套协议场景两臂比结果：泛化 sendto/recvfrom 逐数据报 vs 批 sendmmsg/recvmmsg 逐窗口，同一 loopback UDP 对共发送套接字源三元组可比；256 数据报逐报字节+序恒等（内嵌大端序号=自身下标）+源 port/addr 网络序恒等+变长 16..=1200 抓聚合拆裂+批臂 8 send+8 recv vs 泛化 256+256；边沿同答：空批/空收 0/静默非阻塞两臂同 -1+EAGAIN（libc 约定，sendmmsg 注释"-errno"与实态不符如实登记）/8 槽收 5 排队恰 5 槽序字节恒等/单批同 sendto；自揭两发现=drained 错误形与槽宽=批容量（4 槽收 5 留队未丢，独立 C repro）；platform 64 lib+io_timer 1+parity 2+signal_call_sites 全绿，本机 2 测绿)
 
 ### OPT-16-01 采集依赖与增量构建基线
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。；deliver 96009f9（main）；**FLAG 双交付未决**：main `96009f9`（asset-pipeline tests/dependency_rebuild_baseline.rs 203 行集成测）与本席 `d11c3d2`（`ci/build-baseline.sh` fanout+冷/增量双腿 shell 测量：foundation 19 依赖者、release 冷 220.59s/增量 96.25s、debug 冷 53.47s/增量 3.81s、touch foundation 重编 11 crate 全闭包）互补非冲突——main 面是测试内基线，本席面是可复跑 CI 入口；本席勾行已自纠退回开（revert `6d07099`），证据 `docs/review/opt-16-01-01-build-baseline.md`，待主席择一/并认。
-- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171（main `8c37171`，time_queue 拆分评估 rebuild 25→7 crate fan-out 24→6；吸收自 origin/main `7ff40ee` 勾行，本席未重做）。
-- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。deliver 870ad04（main，asset-pipeline install_path_recheck.rs 289 行（res_packer install+双端 PackedSection 载回对照）；吸收自 origin/main，本席未重做）。
+- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。deliver 96009f9
+- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171
+- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。deliver 870ad04
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
 
-- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。deliver 38b99db（main，观测通道采集关/开长稳基线；吸收自 origin/main，本席未重做）。
-- [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。deliver 2a26627（main，采集缓冲与导出开销评估；吸收自 origin/main，本席未重做）。
-- [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。deliver 0ee4b28（main，采集完整性回归；吸收自 origin/main，本席未重做）。
+- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。deliver 38b99db
+- [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。deliver 2a26627
+- [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。deliver 0ee4b28
 
 ### OPT-26-01 固定事件回放并采集查询基线
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。deliver 8f42e4c（message_logger `qlog_replay_baseline.rs` 固定回放 20000 entry×11 查询面+样本报表；fixture `docs/review/fixtures/opt-26-01-01/qlog-replay-baseline.tsv`）；⚠️ 双交付 FLAG 主席择一：opt-26-db `4c75e00`（event_query_baseline.rs PG 语料面基线，未进 main）与本席 `8f42e4c`（message_logger 内存查询面基线）
-- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 他席交付未进 main，行保持开：opt-26-db `40b58e0`（import_batch_candidates.rs 五事务形 64 行 commit ~1.4×+分配峰值平坦）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理报告吞吐和峰值内存。
-- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 他席交付未进 main，行保持开：opt-26-db `bf335b5`（query_aggregation_candidates.rs name→id 索引 ~4746×+聚合答案相等）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理报告延迟变化。
-- [ ] **OPT-26-01-04 复算样本报表**。**验收** 他席交付未进 main，行保持开：opt-26-db `b34554a`（sample_report_rerun.rs 同流复算九键逐字节全等）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理窗口及计数与优化前一致。
+- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（opt26-db 席 `4c75e00`，lane/opt-26-db，main=`6973092`：crates/db-postgres/tests/event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账，钉定样本报表（四级窗口+五查询形计数）为 01-04 复算基线；TSV docs/review/fixtures/event-query/event-query.tsv 39 行，证据页 docs/review/opt-26-01-01-event-query-baseline.md；本席 main 复测 6 绿，TSV 复捕墙钟行随负载漂（结构计数行恒等）只记录不设带）；本席平行交付 lane-only `8f42e4c`（crates/message_logger/tests/qlog_replay_baseline.rs 内存查询面回放基线，未进 main——主席已择 opt-26-db `4c75e00` 面）
+- [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。（opt26-db 席 `40b58e0`，lane/opt-26-db，main=`027c6c0`：crates/db-postgres/tests/import_batch_candidates.rs 3 测=同 512 行语料五种事务形（每 1/16/64/256 行一提交+整库一事务）各报墙/吞吐/计数分配器峰值且逐形回读恒等；TSV docs/review/fixtures/import-batch/import-batch.tsv 30 行，证据页 docs/review/opt-26-01-02-import-batch.md；本席 main 复测 3 绿（批 64+ 后吞吐平坦 620-640 rows/s，批 1 最慢=每行一提交））
+- [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。（opt26-db 席 `bf335b5`，lane/opt-26-db，main=`5df3486`：crates/db-postgres/tests/query_aggregation_candidates.rs 3 测=一全扫建 name→id（512）+level→ids（200 键）两聚合图，同 128 名抽样网格前后对照——基线 name 查询 ~14× 键控 get，聚合后网格解析走图不走扫；TSV docs/review/fixtures/query-aggr/query-aggr.tsv 21 行，证据页 docs/review/opt-26-01-03-query-aggregation.md；本席 main 复测 3 绿（加速比两跑 8350×/4746×=负载敏感记录行，128 网格断言恒等））
+- [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。（opt26-db 席 `b34554a`，lane/opt-26-db，main=`1590095`：crates/db-postgres/tests/sample_report_rerun.rs 3 测=同固定事件流重放后从**存储语料**复算样本报表，对照盘上 docs/review/fixtures/event-query/event-query.tsv 基线（四级窗口+五查询形计数逐项等），再在每项优化（64 行批导入/两聚合图）后各复算一次仍等；证据页 docs/review/opt-26-01-04-sample-report-rerun.md；本席 main 复测 3 绿）
 
 ## 5. 实施顺序与里程碑
 
@@ -5937,8 +5939,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - Tick：`docs/perf-baseline-2026-11-24.md` 既有 11 行 criterion 时序表（`e9c0a52`，已在 main），四热面（time_queue/stream/math/updatables）× tick 尾延迟口径，100 样本 3s 预热可复现。
   - 分配数：`6b6cc9c` 落 `crates/foundation/tests/alloc_counts.rs` + `crates/server-runtime/tests/alloc_counts.rs`——计数全局分配器 + thread-local 追踪旗标（旗标与计数全在调用线程，并发测试线程互不污染；全局计数器版首跑即暴露互踩：纯浮点夹具数出幻影分配），夹具与时序表逐形对应（`iter_batched` 出时间窗的 setup 同样出计数窗），每测断言双跑恒等故数字按工具链逐位可复现；11 行基线：add_1000_timers 1010 次/112,440 B（每计时器 ~1 次、firing pass 0 次）、process_1000_due 0/0、add_cancel_process_100 108/12,504、encode 29/26,563、decode 20/11,481、math 四面全 0/0、updatables call pass 0/0、register_deregister_100 114/12,424；`cargo test -p foundation` 228+9 绿、`-p server-runtime` 1303+2 绿、两 crate `--tests` clippy 净。
   - 加载峰值：bots 二进制（debug，main `70a4672`）在 `LOAD_CLIENTS=4` 信封下 `/usr/bin/time -v` 实测三场景 peak RSS——steady-move 3,164 KiB（bots_online 4）、login-hurricane 3,180 KiB（online_peak 4、4/4 admitted）、dense-aoi 3,148 KiB（bots 4、max_visible 3）；`ci/load.sh` 3/3 PASS 落 TSV；离线面按仿真时间跑完故此峰是生成器自身足迹，实拓扑逐期 RSS/CPU 采样（`ResourceTracker`，BW-17-03-04）在 `crates/load` 已测但尚未接进 driver 报告（归 bw17 席）。
-- [ ] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。；**跨席交付登记（lane/bw19-docs 未并 main，行保持开待主席并入，本席不重做）**：bw19-docs 席 `6174b44`+勾 `f742b62`——`time_queue.rs` process 循环借用窗合并（每 fired timer 5-6 个 borrow_mut 窗→2 个，回调仍以队列未借状态运行=重入语义不变）+`tick.rs` Updatables.handles 指针恒等 hasher（BuildHasherDefault<PtrHasher> 替 RandomState，参照 removalHandle_ 纯字段读）；同 commit 双二进制噪声地板 -3.4% 下唯一双窗脱带夹具=updatables/call_1000_over_3_levels（-12.8%/-21.3%），timer 腿不作提速主张只保借用窗减半，提速主张限 dispatch 探测腿；`cargo test -p foundation -p server-runtime` 1562 过/0 挂（docs/perf-baseline-2026-11-24.md OPT-01-01-02 节）。
-- [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。（bw19-docs 席 ebbde2b，lane/bw19-docs 未并 main——合并须带入；本席 2026-11-26 真机复测：`resources --test data_section_cache_alloc` 3 绿（热路径零分配断言）+`foundation --lib stream` 49 绿+resources 全 crate 225 绿+foundation 238 绿，失效夹具随全 crate 套件复跑）；**双交付登记待主席**：main 侧文本另载 `e478d90` 等交付。
+- [x] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。（bw19-docs 席 `6174b44`，lane/bw19-docs，main=`8e17603`：两候选落码——`time_queue.rs` process 循环预回调簿记+post 回调收尾两借窗（每点火 5-6 窗→2，回调仍无借重入语义不变）+`tick.rs` `Updatables.handles` 指针键恒等 hasher（参考 removalHandle_ 平字段读，去移植侧种子探针）；同 commit 双二进制 10 轮交错 A/B 噪声地板 -3.4%，仅 `updatables/call_1000_over_3_levels` 两窗越带（-12.8%/-21.3%）=主张限逐 tick 派发探针，timer 处理不主张提速只保借窗减半；记录 docs/perf-baseline-2026-11-24.md OPT-01-01-02 节；本席 main 复测 foundation time_queue 35 绿+server-runtime tick 93 绿）
+- [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。`ebbde2b` 双面交付（main=`e478d90`）：
   - 资源缓存热路径零分配：`crates/resources/src/data_section_cache.rs` 链指针原是 `Option<String>` 路径拷贝（每次重链 2-6 次 String 分配）→ 槽位 arena（`Vec<CacheNode>` 整数双向链 + 侵入式自由链；`add` 一次性付两份 String——map key + 槽内 name 拷贝——稳态 relink 机器全零分配；section 在 entry 释放时 drop，与参照删节点同语义）。TDD 红先证旧实现逐操作计数（find 中段 6 次/36 B、尾段 5/30、purgeLRU 3/18、remove 中/尾 3/18、remove 头 2/12、head 命中/miss/原地重加 0），新实现 `crates/resources/tests/data_section_cache_alloc.rs` 全零断言 3 测绿，模块 llvm-cov 100.00%（380/380 行）；「复跑失效夹具」随 `cargo test -p resources` 222 全绿一并完成（multi_file_system 目录列举缓存失效 + data_section_cache 七测同套）。
   - BinaryStream 64 字节预留：`crates/foundation/src/stream.rs` 手写 `Default` = `Vec::with_capacity(64)`（参照 `MemoryOStream( int size = 64 )`，`lib/cstdmf/memory_stream.hpp`——参照默认构造即预留，`new()`/`from_u32_le` 同享；`from_slice` 读流包已有内存不预留）。红先证旧实现 61 字节小写 2 次分配，新实现 1 次/64 B；encode_mixed_payload 29→26 次（26,563→26,507 B）；`cargo test -p foundation` 228+10 绿（405 处 `BinaryStream::new()` 调用点无回归），clippy 净。
   - 加载峰值 A/B（bots 生成器，`LOAD_CLIENTS=4`/`LOAD_DURATION=2`，main `33e030a` ± 本 commit 双临时 worktree，3 轮取中位）：steady-move 3,216→3,456、login-hurricane 3,284→3,152、dense-aoi 3,248→3,168 KiB——差异全在 ±150-200 KiB 轮间摆幅内，生成器峰值 RSS 噪声内不变（分配数工作对离线面足迹本就无感）；A/B 表落 `docs/perf-baseline-2026-11-24.md` OPT-01-01-03 节。
@@ -5947,10 +5949,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 评估缓冲复用、批量收发与减少复制。比较 RPC RTT、网络吞吐、丢包恢复和内存占用，混跑旧线协议。
 
-- [x] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。（本席 2ba686b，lane/bw15-platform：crates/mercury/tests/network_baseline.rs 7 测=UDP/TCP 真回环 RTT p50/p90/p99+4MiB 吞吐+钉死钟丢包恢复两臂（16/16 恰一次重发+越序 ack 穿越）；记录 TSV docs/review/fixtures/network-baseline/net-baseline.tsv；mercury 377 lib+7 集成全绿，回环墙钟数字机器相关只记录不设带）；**双交付登记待主席**：main 侧文本另载 `841315b` 等交付。
-- [x] **OPT-02-01-02 评估缓冲复用**。**验收** 报告分配与峰值内存。（本席 dc549c4/739a3bc，lane/bw15-platform：crates/mercury/tests/buffer_alloc.rs 5 测=指针配对台账分配器+测量窗，Packet 1 alloc/1472B、收包循环每报 1 新箱、未确认窗每槽 1576B 且 ack 后活集归零、TCP 发送缓冲稳态写+重排队零分配=背衬复用证实；TSV docs/review/fixtures/network-baseline/buffer-alloc.tsv，证据页 docs/review/opt-02-01-02-buffer-reuse.md；mercury 377 lib+7+5 全绿，分配计数族逐跑恒等）；**双交付登记待主席**：main 侧文本另载 `3b5f15a、`8b1793a` 等交付。
-- [x] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。（本席 bc1ee86/071bdc6/3e7c776，lane/bw15-platform：platform::socket 落 sendmmsg/recvmmsg 包装+SendScratch/RecvScratch 保留式暂存（Linux cfg）；crates/mercury/tests/batch_io.rs 三臂对照=批量/逐报/分配计数，批宽 64 收发系统调用各 63×摊派（3495→55）确定、每报摊派成本 p50 持平、稳态 0 alloc/报（现行路径 1.00/报）、回环吞吐同量级（窗深投递延迟主导，墙钟只记录不设带）；TSV docs/review/fixtures/network-baseline/batch-io.tsv，证据页 docs/review/opt-02-01-03-batch-and-copy.md；platform 64+mercury 377/7/5/1 全绿）；**双交付登记待主席**：main 侧文本另载 `3590227、`7dc6d12、`c733e5a` 等交付。
-- [x] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。（本席 fc181f5/19a9c42/29cc302/f438b7d/1b27379, lane/bw15-platform：crates/server-runtime/tests/el7_mixed_deploy.rs 五腿真机混部=新版→原版 UDP（pid/WholeMachine 查询）+原版→新版 UDP（logger 注册与 birth/death 监听入册）+发现广播（addTCP/add 版本门两臂推送件到位）+新版→原版 TCP（注册 108+记录 107 帧化落 mldb）+新版→原版 UDP（裸数据报落 mldb），mldb component_names/strings 字节级断言；**四个真互操作 bug 修复**：contracts/machined.rs v51 pid u32+Listener/Signal extra 块殿后+ProcessMessage.port 线上网络序，message_logger 记录头 DebugMessageSource=4 字节裸枚举（38 vs 41 字节账锁定），MachinedDaemon answer_query_all 逐匹配应答（bwmachined.cpp:1410-1452）；TSV docs/review/fixtures/network-baseline/el7-mixed-deploy.tsv，证据页 docs/review/opt-02-01-04-el7-mixed-deploy.md；contracts 44+server-runtime lib 1700+mixed 1+message_logger 160+platform 64 全绿，20018 毒气探针前置）
+- [x] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。（bw15 席 `2ba686b`，lane/bw15-platform，main=`841315b`：crates/mercury/tests/network_baseline.rs 7 测=UDP/TCP 真回环 RTT p50/p90/p99+4MiB 吞吐+钉死钟丢包恢复两臂（16/16 恰一次重发+越序 ack 穿越）；记录 TSV docs/review/fixtures/network-baseline/net-baseline.tsv；mercury 377 lib+7 集成全绿（本席 main 复测 384 绿），回环墙钟数字机器相关只记录不设带）
+- [x] **OPT-02-01-02 评估缓冲复用**。**验收** 报告分配与峰值内存。（bw15 席 `dc549c4`/`739a3bc`，lane/bw15-platform，main=`3b5f15a`/`8b1793a`：crates/mercury/tests/buffer_alloc.rs 5 测=指针配对台账分配器+测量窗，Packet 1 alloc/1472B、收包循环每报 1 新箱、未确认窗每槽 1576B 且 ack 后活集归零、TCP 发送缓冲稳态写+重排队零分配=背衬复用证实；TSV docs/review/fixtures/network-baseline/buffer-alloc.tsv，证据页 docs/review/opt-02-01-02-buffer-reuse.md；mercury 377 lib+7+5 全绿（本席 main 复测绿），分配计数族逐跑恒等）
+- [x] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。（bw15 席 `bc1ee86`/`071bdc6`/`3e7c776`，lane/bw15-platform，main=`c733e5a`/`7dc6d12`/`3590227`：platform::socket 落 sendmmsg/recvmmsg 包装+SendScratch/RecvScratch 保留式暂存（Linux cfg）；crates/mercury/tests/batch_io.rs 三臂对照=批量/逐报/分配计数，批宽 64 收发系统调用各 63×摊派（3495→55）确定、每报摊派成本 p50 持平、稳态 0 alloc/报（现行路径 1.00/报）、回环吞吐同量级（窗深投递延迟主导，墙钟只记录不设带）；TSV docs/review/fixtures/network-baseline/batch-io.tsv，证据页 docs/review/opt-02-01-03-batch-and-copy.md；platform 64+mercury 377/7/5/1 全绿（本席 main 复测 455 绿））
+- [x] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。（bw15-platform 席 `fc181f5`/`19a9c42`/`29cc302`/`f438b7d`/`1b27379`，lane/bw15-platform，main=`261a2d0`/`25ee476`/`3675b18`/`62ea5d3`/`4b83ebb`：crates/server-runtime/tests/el7_mixed_deploy.rs 五腿真机混部（`#[ignore]` 场景，EL7_MIXED_OUT 落 TSV）=新版→原版 UDP（pid/WholeMachine 查询）+原版→新版 UDP（logger 注册与 birth/death 监听入册）+发现广播（addTCP/add 版本门两臂推送件到位）+新版→原版 TCP（注册 108+记录 107 帧化落 mldb）+新版→原版 UDP（裸数据报落 mldb），mldb component_names/strings 字节级断言；**四个真互操作 bug 修复**：contracts/machined 线格式对参考（main=`261a2d0`）/message_logger 记录头源字段宽（main=`25ee476`）/machined 进程统计查询答全匹配面（main=`3675b18`）/server-runtime 接 message_logger workspace 边（main=`62ea5d3`）；TSV docs/review/fixtures/network-baseline/el7-mixed-deploy.tsv，证据页 docs/review/opt-02-01-04-el7-mixed-deploy.md；本席 main 复测五腿全绿（5.01s，TSV 复捕与夹具逐字节恒等））
 
 ### OPT-03-01 Python 桥接基线
 
@@ -6009,10 +6011,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
-- [ ] **OPT-09-01-01 ；**跨席交付登记（两 lane 均已勾、均未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席四行全交（lane/bw14-script-host），opt-09-db-baseline 席四行全交（da4e411/da9a135/cb65282/7663701，lane/opt-09-db-baseline 7663701 止）——主席择一面并入。分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。
-- [ ] **OPT-09-01-02 ；**跨席交付登记（两 lane 均已勾、均未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席四行全交（lane/bw14-script-host），opt-09-db-baseline 席四行全交（da4e411/da9a135/cb65282/7663701，lane/opt-09-db-baseline 7663701 止）——主席择一面并入。评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
-- [ ] **OPT-09-01-03 ；**跨席交付登记（两 lane 均已勾、均未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席四行全交（lane/bw14-script-host），opt-09-db-baseline 席四行全交（da4e411/da9a135/cb65282/7663701，lane/opt-09-db-baseline 7663701 止）——主席择一面并入。评估写批次与归档整合**。**验收** 报告提交和恢复时长。
-- [ ] **OPT-09-01-04 ；**跨席交付登记（两 lane 均已勾、均未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席四行全交（lane/bw14-script-host），opt-09-db-baseline 席四行全交（da4e411/da9a135/cb65282/7663701，lane/opt-09-db-baseline 7663701 止）——主席择一面并入。复跑事务、重试与恢复**。**验收** 数据一致。
+- [x] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。（opt-09-db-baseline 席 `da4e411`，lane/opt-09-db-baseline，main=`e59ca31`：crates/db-postgres/tests/store_baseline.rs 6 测=512 行确定性语料同一数据集落 MySQL（DDL 对照参考 db_storage_mysql 布局+值类型逐 kind 对）与 PostgreSQL（JSONB 嵌套列 codec 往返）双后端，schema/确定性/嵌套列各单测；TSV docs/review/fixtures/store-baseline/store-baseline.tsv 22 行，证据页 docs/review/opt-09-01-01-store-baseline.md；workspace 新增 `mysql` 依赖（minimal-rust）；本席 main 复测 6 绿。⚠️ 与 bw14-script-host `7024fb1` 平行交付 FLAG 待主席择一）
+- [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。（opt-09-db-baseline 席 `da9a135`，lane/opt-09-db-baseline，main=`04f5d37`：crates/db-postgres/tests/store_pool_candidates.rs 3 测=连接池与预编译语句候选对照（参考 `numConnections_` 默认 5 长连会话+每线程一连接+启动期预编译实体 SQL 模板两形），各后端延迟与吞吐逐形报告且回读恒等；TSV docs/review/fixtures/store-pool/pool-candidates.tsv 48 行，证据页 docs/review/opt-09-01-02-store-pool.md；本席 main 复测 3 绿）
+- [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。（opt-09-db-baseline 席 `cb65282`，lane/opt-09-db-baseline，main=`8b1fb8a`：crates/db-postgres/tests/store_commit_candidates.rs 4 测=实体写缓冲进 Transaction 按归档周期一 `COMMIT`（参考 sqlite_database.cpp 131-177+db_config 5s 默认）与显式 WRITE_EXPLICIT 两臂提交时长+归档整合恢复时长报告，落库回读逐字段等；TSV docs/review/fixtures/store-commit/commit-candidates.tsv 16 行，证据页 docs/review/opt-09-01-03-store-commit.md；本席 main 复测 4 绿）
+- [x] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。（opt-09-db-baseline 席 `7663701`，lane/opt-09-db-baseline，main=`3a7b9d0`：crates/db-postgres/tests/store_recovery.rs 3 测=参考 MySqlBackgroundTask::doBackgroundTask 契约复跑——可重试失败恰一次重试（attempts 2/on_retry 1）、回滚批零幸存行、事务外断连恰一次自动恢复+事务内手动重连；恢复后数据一致计数钉死；TSV docs/review/fixtures/store-recovery/recovery.tsv 21 行，证据页 docs/review/opt-09-01-04-store-recovery.md；本席 main 复测 3 绿）
 
 ### OPT-10-01 地图加载和查询基线
 
@@ -6044,10 +6046,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化依赖缓存、并行转换和编辑器加载。比较冷构建、增量构建与大地图编辑时间，校验可复现产物。
 
-- [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。deliver 80c9b88（main，bw16-18 席）；**FLAG 双交付待主席**：lane/bw14-script-host 平行交付 `1fd4739+bb1e3ea` 未进 main（OPT-13-01-01）。
-- [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。deliver fb80b66（main，bw16-18 席）；**FLAG 双交付待主席**：lane/bw14-script-host 平行交付 `663dc8c+97817db` 未进 main（OPT-13-01-02）。
-- [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。deliver 4330bd7（main，bw16-18 席）；**FLAG 双交付待主席**：lane/bw14-script-host 平行交付 `827ed8e+00109d2` 未进 main（OPT-13-01-03）。
-- [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。deliver bb45885（main，bw16-18 席）；**FLAG 双交付待主席**：lane/bw14-script-host 平行交付 `b981ae7` 未进 main（OPT-13-01-04）。
+- [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。deliver 80c9b88
+- [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。deliver fb80b66
+- [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。deliver 4330bd7
+- [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。deliver bb45885
 
 ### OPT-14-01 发布包尺寸及首次运行
 
@@ -6061,34 +6063,35 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。；**证据（Linux 腿实测，行仍开=三端 runner 缺）**：`crates/platform/tests/io_timer_baseline.rs` 统一负载 512 ops@64KiB——顺序写 30.33µs/读 9.04µs/atomic_replace 55.81µs（fsync 大头）/mmap 单遍 ~1µs/时钟分辨率 1µs/1ms sleep 均值 1.0864ms/wakeup 往返 0.95µs；断言全数据面（往返/映射内容/节拍±10%），墙钟读数不入断言；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、macOS 卡 darwin SDK，同测试三端可跑待 BW-15-05 runner。夹具 `docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv`，证据 `docs/review/opt-15-01-01-io-timer-baseline.md`。；**双交付登记待主席**：bw14-script-host 席 lane 已勾（7081674，行内无面文本）；本席 Linux 腿如上（行仍开=三端 runner）。
-- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。；**Linux 腿登记（行仍开=三端图形矩阵缺 runner，BW-15-04）**：本仓像素面=确定性软件光栅器（`render::software`），设备/驱动面=宿主 CPU Intel i9-10880H @2.30GHz+内核 7.0.0-44-generic（无 GPU 依赖=驱动无关），帧时已由 main `5a80a78`（OPT-11-01-01 三端 profile 基线：320x240 4.9ms/640x480 21.5ms）钉死——本行剩余面=真 GPU 后端（D3D/Metal）三端设备+驱动+帧时，待 BW-15-04 runner 矩阵。；**双交付登记待主席**：bw14-script-host 席 lane 已勾（2f77126+勾 0b6d948：crates/client/tests/render_backend_baseline.rs 登记表三问=设备结构断言 640×480 RGBA8 adapter 0/驱动 probe 宿主环境文本/帧时 probe 64 帧 p50 15.6-18.8ms p99 24.2-25.1ms 入 RENDER_BACKEND_OUT）；本席 Linux 腿登记如上。
-- [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。；**Linux 腿登记（行仍开=三端）**：平台针对性优化的回归面=协议与功能套件全绿——workspace 166 套 7185 passed exit 0（含 mercury 传输/协议、platform 四 Windows 后端镜像 `--all-targets` 交叉验证、BW-15-01 逐 slice 门禁矩阵）；windows-gnu 全量编译卡 mercury Windows 臂（BW-15-03）、macOS 卡 darwin SDK，三端套件通过待 runner。；**双交付登记待主席**：bw14-script-host 席 lane 已勾（3761c24+勾 95ffb47：crates/platform/tests/platform_opt_parity.rs 批臂 sendmmsg/recvmmsg vs 泛化臂 sendto/recvfrom 同 loopback UDP 对——256 数据报字节/序/源三元组恒等+批臂系统调用形状 8+8 vs 泛化 256+256）；本席 Linux 腿登记如上。
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+  - 注记（2026-11-26，台账席）：Linux 腿已落——bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿。行保持开——「各平台」待 Windows/macOS 腿（三端 runner，BW-15-05-01）后补测再勾。
+- [x] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。(2026-11-26 lane/bw14-script-host 2f77126→main 25e40c7：crates/client/tests/render_backend_baseline.rs 按后端登记表采集三问——新树唯一出货像素后端=Device 下软件光栅器（参照侧 D3D9/OpenGL/cocos2d/Awesomium 四后端仅 BW-15-06-01 事实非移植，BACKENDS 留位即插）；设备面结构断言 SoftwareDevice 640×480 adapter=0 307200px RGBA8+帧序 1..=64 单设备对象+status=Ok+leaked()=0；驱动面=执行环境文本（CPU/核/OS/内核 probe 只印不断言）；帧时=固定镜头 check_device→step→present 64 帧逐帧 FRAME-TIME+FRAME-TAIL 报告，min/median/p99/max 记运行值不断言；结构契约逐相邻帧摘要异+帧 1..=8/64 复现 OPT-11-01-01 saved 钉+帧 1/7/31/64 纯帧序号复现+复跑恒等；提交目录 tests/baseline/render-backend-baseline.tsv 十列 linux-x86_64=measured，macos-arm64/windows-x86_64=pending rows 带 BW-15-04/BW-15-03 blocker 不编数字，语法检查拒 pending 带测量/未知后端/重复对/非数字/测量平台缺行；client 861 绿+集成全绿，clippy 净；本机 2 测绿)
+- [x] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。(2026-11-26 lane/bw14-script-host 3761c24→main 117a588：crates/platform/tests/platform_opt_parity.rs——同套协议场景两臂比结果：泛化 sendto/recvfrom 逐数据报 vs 批 sendmmsg/recvmmsg 逐窗口，同一 loopback UDP 对共发送套接字源三元组可比；256 数据报逐报字节+序恒等（内嵌大端序号=自身下标）+源 port/addr 网络序恒等+变长 16..=1200 抓聚合拆裂+批臂 8 send+8 recv vs 泛化 256+256；边沿同答：空批/空收 0/静默非阻塞两臂同 -1+EAGAIN（libc 约定，sendmmsg 注释"-errno"与实态不符如实登记）/8 槽收 5 排队恰 5 槽序字节恒等/单批同 sendto；自揭两发现=drained 错误形与槽宽=批容量（4 槽收 5 留队未丢，独立 C repro）；platform 64 lib+io_timer 1+parity 2+signal_call_sites 全绿，本机 2 测绿)
 
 ### OPT-16-01 采集依赖与增量构建基线
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。；deliver 96009f9（main）；**FLAG 双交付未决**：main `96009f9`（asset-pipeline tests/dependency_rebuild_baseline.rs 203 行集成测）与本席 `d11c3d2`（`ci/build-baseline.sh` fanout+冷/增量双腿 shell 测量：foundation 19 依赖者、release 冷 220.59s/增量 96.25s、debug 冷 53.47s/增量 3.81s、touch foundation 重编 11 crate 全闭包）互补非冲突——main 面是测试内基线，本席面是可复跑 CI 入口；本席勾行已自纠退回开（revert `6d07099`），证据 `docs/review/opt-16-01-01-build-baseline.md`，待主席择一/并认。
-- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171（main `8c37171`，time_queue 拆分评估 rebuild 25→7 crate fan-out 24→6；吸收自 origin/main `7ff40ee` 勾行，本席未重做）。
-- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。deliver 870ad04（main，asset-pipeline install_path_recheck.rs 289 行（res_packer install+双端 PackedSection 载回对照）；吸收自 origin/main，本席未重做）。
+- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。deliver 96009f9
+- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171
+- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。deliver 870ad04
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
 
-- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。deliver 38b99db（main，观测通道采集关/开长稳基线；吸收自 origin/main，本席未重做）。
-- [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。deliver 2a26627（main，采集缓冲与导出开销评估；吸收自 origin/main，本席未重做）。
-- [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。deliver 0ee4b28（main，采集完整性回归；吸收自 origin/main，本席未重做）。
+- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。deliver 38b99db
+- [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。deliver 2a26627
+- [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。deliver 0ee4b28
 
 ### OPT-26-01 固定事件回放并采集查询基线
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。deliver 8f42e4c（message_logger `qlog_replay_baseline.rs` 固定回放 20000 entry×11 查询面+样本报表；fixture `docs/review/fixtures/opt-26-01-01/qlog-replay-baseline.tsv`）；⚠️ 双交付 FLAG 主席择一：opt-26-db `4c75e00`（event_query_baseline.rs PG 语料面基线，未进 main）与本席 `8f42e4c`（message_logger 内存查询面基线）
-- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 他席交付未进 main，行保持开：opt-26-db `40b58e0`（import_batch_candidates.rs 五事务形 64 行 commit ~1.4×+分配峰值平坦）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理报告吞吐和峰值内存。
-- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 他席交付未进 main，行保持开：opt-26-db `bf335b5`（query_aggregation_candidates.rs name→id 索引 ~4746×+聚合答案相等）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理报告延迟变化。
-- [ ] **OPT-26-01-04 复算样本报表**。**验收** 他席交付未进 main，行保持开：opt-26-db `b34554a`（sample_report_rerun.rs 同流复算九键逐字节全等）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理窗口及计数与优化前一致。
+- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（opt26-db 席 `4c75e00`，lane/opt-26-db，main=`6973092`：crates/db-postgres/tests/event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账，钉定样本报表（四级窗口+五查询形计数）为 01-04 复算基线；TSV docs/review/fixtures/event-query/event-query.tsv 39 行，证据页 docs/review/opt-26-01-01-event-query-baseline.md；本席 main 复测 6 绿，TSV 复捕墙钟行随负载漂（结构计数行恒等）只记录不设带）；本席平行交付 lane-only `8f42e4c`（crates/message_logger/tests/qlog_replay_baseline.rs 内存查询面回放基线，未进 main——主席已择 opt-26-db `4c75e00` 面）
+- [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。（opt26-db 席 `40b58e0`，lane/opt-26-db，main=`027c6c0`：crates/db-postgres/tests/import_batch_candidates.rs 3 测=同 512 行语料五种事务形（每 1/16/64/256 行一提交+整库一事务）各报墙/吞吐/计数分配器峰值且逐形回读恒等；TSV docs/review/fixtures/import-batch/import-batch.tsv 30 行，证据页 docs/review/opt-26-01-02-import-batch.md；本席 main 复测 3 绿（批 64+ 后吞吐平坦 620-640 rows/s，批 1 最慢=每行一提交））
+- [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。（opt26-db 席 `bf335b5`，lane/opt-26-db，main=`5df3486`：crates/db-postgres/tests/query_aggregation_candidates.rs 3 测=一全扫建 name→id（512）+level→ids（200 键）两聚合图，同 128 名抽样网格前后对照——基线 name 查询 ~14× 键控 get，聚合后网格解析走图不走扫；TSV docs/review/fixtures/query-aggr/query-aggr.tsv 21 行，证据页 docs/review/opt-26-01-03-query-aggregation.md；本席 main 复测 3 绿（加速比两跑 8350×/4746×=负载敏感记录行，128 网格断言恒等））
+- [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。（opt26-db 席 `b34554a`，lane/opt-26-db，main=`1590095`：crates/db-postgres/tests/sample_report_rerun.rs 3 测=同固定事件流重放后从**存储语料**复算样本报表，对照盘上 docs/review/fixtures/event-query/event-query.tsv 基线（四级窗口+五查询形计数逐项等），再在每项优化（64 行批导入/两聚合图）后各复算一次仍等；证据页 docs/review/opt-26-01-04-sample-report-rerun.md；本席 main 复测 3 绿）
 
 ## 5. 实施顺序与里程碑
 
@@ -7479,8 +7482,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - Tick：`docs/perf-baseline-2026-11-24.md` 既有 11 行 criterion 时序表（`e9c0a52`，已在 main），四热面（time_queue/stream/math/updatables）× tick 尾延迟口径，100 样本 3s 预热可复现。
   - 分配数：`6b6cc9c` 落 `crates/foundation/tests/alloc_counts.rs` + `crates/server-runtime/tests/alloc_counts.rs`——计数全局分配器 + thread-local 追踪旗标（旗标与计数全在调用线程，并发测试线程互不污染；全局计数器版首跑即暴露互踩：纯浮点夹具数出幻影分配），夹具与时序表逐形对应（`iter_batched` 出时间窗的 setup 同样出计数窗），每测断言双跑恒等故数字按工具链逐位可复现；11 行基线：add_1000_timers 1010 次/112,440 B（每计时器 ~1 次、firing pass 0 次）、process_1000_due 0/0、add_cancel_process_100 108/12,504、encode 29/26,563、decode 20/11,481、math 四面全 0/0、updatables call pass 0/0、register_deregister_100 114/12,424；`cargo test -p foundation` 228+9 绿、`-p server-runtime` 1303+2 绿、两 crate `--tests` clippy 净。
   - 加载峰值：bots 二进制（debug，main `70a4672`）在 `LOAD_CLIENTS=4` 信封下 `/usr/bin/time -v` 实测三场景 peak RSS——steady-move 3,164 KiB（bots_online 4）、login-hurricane 3,180 KiB（online_peak 4、4/4 admitted）、dense-aoi 3,148 KiB（bots 4、max_visible 3）；`ci/load.sh` 3/3 PASS 落 TSV；离线面按仿真时间跑完故此峰是生成器自身足迹，实拓扑逐期 RSS/CPU 采样（`ResourceTracker`，BW-17-03-04）在 `crates/load` 已测但尚未接进 driver 报告（归 bw17 席）。
-- [ ] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。；**跨席交付登记（lane/bw19-docs 未并 main，行保持开待主席并入，本席不重做）**：bw19-docs 席 `6174b44`+勾 `f742b62`——`time_queue.rs` process 循环借用窗合并（每 fired timer 5-6 个 borrow_mut 窗→2 个，回调仍以队列未借状态运行=重入语义不变）+`tick.rs` Updatables.handles 指针恒等 hasher（BuildHasherDefault<PtrHasher> 替 RandomState，参照 removalHandle_ 纯字段读）；同 commit 双二进制噪声地板 -3.4% 下唯一双窗脱带夹具=updatables/call_1000_over_3_levels（-12.8%/-21.3%），timer 腿不作提速主张只保借用窗减半，提速主张限 dispatch 探测腿；`cargo test -p foundation -p server-runtime` 1562 过/0 挂（docs/perf-baseline-2026-11-24.md OPT-01-01-02 节）。
-- [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。（bw19-docs 席 ebbde2b，lane/bw19-docs 未并 main——合并须带入；本席 2026-11-26 真机复测：`resources --test data_section_cache_alloc` 3 绿（热路径零分配断言）+`foundation --lib stream` 49 绿+resources 全 crate 225 绿+foundation 238 绿，失效夹具随全 crate 套件复跑）；**双交付登记待主席**：main 侧文本另载 `e478d90` 等交付。
+- [x] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。（bw19-docs 席 `6174b44`，lane/bw19-docs，main=`8e17603`：两候选落码——`time_queue.rs` process 循环预回调簿记+post 回调收尾两借窗（每点火 5-6 窗→2，回调仍无借重入语义不变）+`tick.rs` `Updatables.handles` 指针键恒等 hasher（参考 removalHandle_ 平字段读，去移植侧种子探针）；同 commit 双二进制 10 轮交错 A/B 噪声地板 -3.4%，仅 `updatables/call_1000_over_3_levels` 两窗越带（-12.8%/-21.3%）=主张限逐 tick 派发探针，timer 处理不主张提速只保借窗减半；记录 docs/perf-baseline-2026-11-24.md OPT-01-01-02 节；本席 main 复测 foundation time_queue 35 绿+server-runtime tick 93 绿）
+- [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。`ebbde2b` 双面交付（main=`e478d90`）：
   - 资源缓存热路径零分配：`crates/resources/src/data_section_cache.rs` 链指针原是 `Option<String>` 路径拷贝（每次重链 2-6 次 String 分配）→ 槽位 arena（`Vec<CacheNode>` 整数双向链 + 侵入式自由链；`add` 一次性付两份 String——map key + 槽内 name 拷贝——稳态 relink 机器全零分配；section 在 entry 释放时 drop，与参照删节点同语义）。TDD 红先证旧实现逐操作计数（find 中段 6 次/36 B、尾段 5/30、purgeLRU 3/18、remove 中/尾 3/18、remove 头 2/12、head 命中/miss/原地重加 0），新实现 `crates/resources/tests/data_section_cache_alloc.rs` 全零断言 3 测绿，模块 llvm-cov 100.00%（380/380 行）；「复跑失效夹具」随 `cargo test -p resources` 222 全绿一并完成（multi_file_system 目录列举缓存失效 + data_section_cache 七测同套）。
   - BinaryStream 64 字节预留：`crates/foundation/src/stream.rs` 手写 `Default` = `Vec::with_capacity(64)`（参照 `MemoryOStream( int size = 64 )`，`lib/cstdmf/memory_stream.hpp`——参照默认构造即预留，`new()`/`from_u32_le` 同享；`from_slice` 读流包已有内存不预留）。红先证旧实现 61 字节小写 2 次分配，新实现 1 次/64 B；encode_mixed_payload 29→26 次（26,563→26,507 B）；`cargo test -p foundation` 228+10 绿（405 处 `BinaryStream::new()` 调用点无回归），clippy 净。
   - 加载峰值 A/B（bots 生成器，`LOAD_CLIENTS=4`/`LOAD_DURATION=2`，main `33e030a` ± 本 commit 双临时 worktree，3 轮取中位）：steady-move 3,216→3,456、login-hurricane 3,284→3,152、dense-aoi 3,248→3,168 KiB——差异全在 ±150-200 KiB 轮间摆幅内，生成器峰值 RSS 噪声内不变（分配数工作对离线面足迹本就无感）；A/B 表落 `docs/perf-baseline-2026-11-24.md` OPT-01-01-03 节。
@@ -7489,10 +7492,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 评估缓冲复用、批量收发与减少复制。比较 RPC RTT、网络吞吐、丢包恢复和内存占用，混跑旧线协议。
 
-- [x] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。（本席 2ba686b，lane/bw15-platform：crates/mercury/tests/network_baseline.rs 7 测=UDP/TCP 真回环 RTT p50/p90/p99+4MiB 吞吐+钉死钟丢包恢复两臂（16/16 恰一次重发+越序 ack 穿越）；记录 TSV docs/review/fixtures/network-baseline/net-baseline.tsv；mercury 377 lib+7 集成全绿，回环墙钟数字机器相关只记录不设带）；**双交付登记待主席**：main 侧文本另载 `841315b` 等交付。
-- [x] **OPT-02-01-02 评估缓冲复用**。**验收** 报告分配与峰值内存。（本席 dc549c4/739a3bc，lane/bw15-platform：crates/mercury/tests/buffer_alloc.rs 5 测=指针配对台账分配器+测量窗，Packet 1 alloc/1472B、收包循环每报 1 新箱、未确认窗每槽 1576B 且 ack 后活集归零、TCP 发送缓冲稳态写+重排队零分配=背衬复用证实；TSV docs/review/fixtures/network-baseline/buffer-alloc.tsv，证据页 docs/review/opt-02-01-02-buffer-reuse.md；mercury 377 lib+7+5 全绿，分配计数族逐跑恒等）；**双交付登记待主席**：main 侧文本另载 `3b5f15a、`8b1793a` 等交付。
-- [x] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。（本席 bc1ee86/071bdc6/3e7c776，lane/bw15-platform：platform::socket 落 sendmmsg/recvmmsg 包装+SendScratch/RecvScratch 保留式暂存（Linux cfg）；crates/mercury/tests/batch_io.rs 三臂对照=批量/逐报/分配计数，批宽 64 收发系统调用各 63×摊派（3495→55）确定、每报摊派成本 p50 持平、稳态 0 alloc/报（现行路径 1.00/报）、回环吞吐同量级（窗深投递延迟主导，墙钟只记录不设带）；TSV docs/review/fixtures/network-baseline/batch-io.tsv，证据页 docs/review/opt-02-01-03-batch-and-copy.md；platform 64+mercury 377/7/5/1 全绿）；**双交付登记待主席**：main 侧文本另载 `3590227、`7dc6d12、`c733e5a` 等交付。
-- [x] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。（本席 fc181f5/19a9c42/29cc302/f438b7d/1b27379, lane/bw15-platform：crates/server-runtime/tests/el7_mixed_deploy.rs 五腿真机混部=新版→原版 UDP（pid/WholeMachine 查询）+原版→新版 UDP（logger 注册与 birth/death 监听入册）+发现广播（addTCP/add 版本门两臂推送件到位）+新版→原版 TCP（注册 108+记录 107 帧化落 mldb）+新版→原版 UDP（裸数据报落 mldb），mldb component_names/strings 字节级断言；**四个真互操作 bug 修复**：contracts/machined.rs v51 pid u32+Listener/Signal extra 块殿后+ProcessMessage.port 线上网络序，message_logger 记录头 DebugMessageSource=4 字节裸枚举（38 vs 41 字节账锁定），MachinedDaemon answer_query_all 逐匹配应答（bwmachined.cpp:1410-1452）；TSV docs/review/fixtures/network-baseline/el7-mixed-deploy.tsv，证据页 docs/review/opt-02-01-04-el7-mixed-deploy.md；contracts 44+server-runtime lib 1700+mixed 1+message_logger 160+platform 64 全绿，20018 毒气探针前置）
+- [x] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。（bw15 席 `2ba686b`，lane/bw15-platform，main=`841315b`：crates/mercury/tests/network_baseline.rs 7 测=UDP/TCP 真回环 RTT p50/p90/p99+4MiB 吞吐+钉死钟丢包恢复两臂（16/16 恰一次重发+越序 ack 穿越）；记录 TSV docs/review/fixtures/network-baseline/net-baseline.tsv；mercury 377 lib+7 集成全绿（本席 main 复测 384 绿），回环墙钟数字机器相关只记录不设带）
+- [x] **OPT-02-01-02 评估缓冲复用**。**验收** 报告分配与峰值内存。（bw15 席 `dc549c4`/`739a3bc`，lane/bw15-platform，main=`3b5f15a`/`8b1793a`：crates/mercury/tests/buffer_alloc.rs 5 测=指针配对台账分配器+测量窗，Packet 1 alloc/1472B、收包循环每报 1 新箱、未确认窗每槽 1576B 且 ack 后活集归零、TCP 发送缓冲稳态写+重排队零分配=背衬复用证实；TSV docs/review/fixtures/network-baseline/buffer-alloc.tsv，证据页 docs/review/opt-02-01-02-buffer-reuse.md；mercury 377 lib+7+5 全绿（本席 main 复测绿），分配计数族逐跑恒等）
+- [x] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。（bw15 席 `bc1ee86`/`071bdc6`/`3e7c776`，lane/bw15-platform，main=`c733e5a`/`7dc6d12`/`3590227`：platform::socket 落 sendmmsg/recvmmsg 包装+SendScratch/RecvScratch 保留式暂存（Linux cfg）；crates/mercury/tests/batch_io.rs 三臂对照=批量/逐报/分配计数，批宽 64 收发系统调用各 63×摊派（3495→55）确定、每报摊派成本 p50 持平、稳态 0 alloc/报（现行路径 1.00/报）、回环吞吐同量级（窗深投递延迟主导，墙钟只记录不设带）；TSV docs/review/fixtures/network-baseline/batch-io.tsv，证据页 docs/review/opt-02-01-03-batch-and-copy.md；platform 64+mercury 377/7/5/1 全绿（本席 main 复测 455 绿））
+- [x] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。（bw15-platform 席 `fc181f5`/`19a9c42`/`29cc302`/`f438b7d`/`1b27379`，lane/bw15-platform，main=`261a2d0`/`25ee476`/`3675b18`/`62ea5d3`/`4b83ebb`：crates/server-runtime/tests/el7_mixed_deploy.rs 五腿真机混部（`#[ignore]` 场景，EL7_MIXED_OUT 落 TSV）=新版→原版 UDP（pid/WholeMachine 查询）+原版→新版 UDP（logger 注册与 birth/death 监听入册）+发现广播（addTCP/add 版本门两臂推送件到位）+新版→原版 TCP（注册 108+记录 107 帧化落 mldb）+新版→原版 UDP（裸数据报落 mldb），mldb component_names/strings 字节级断言；**四个真互操作 bug 修复**：contracts/machined 线格式对参考（main=`261a2d0`）/message_logger 记录头源字段宽（main=`25ee476`）/machined 进程统计查询答全匹配面（main=`3675b18`）/server-runtime 接 message_logger workspace 边（main=`62ea5d3`）；TSV docs/review/fixtures/network-baseline/el7-mixed-deploy.tsv，证据页 docs/review/opt-02-01-04-el7-mixed-deploy.md；本席 main 复测五腿全绿（5.01s，TSV 复捕与夹具逐字节恒等））
 
 ### OPT-03-01 Python 桥接基线
 
@@ -7551,10 +7554,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
-- [ ] **OPT-09-01-01 ；**跨席交付登记（两 lane 均已勾、均未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席四行全交（lane/bw14-script-host），opt-09-db-baseline 席四行全交（da4e411/da9a135/cb65282/7663701，lane/opt-09-db-baseline 7663701 止）——主席择一面并入。分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。
-- [ ] **OPT-09-01-02 ；**跨席交付登记（两 lane 均已勾、均未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席四行全交（lane/bw14-script-host），opt-09-db-baseline 席四行全交（da4e411/da9a135/cb65282/7663701，lane/opt-09-db-baseline 7663701 止）——主席择一面并入。评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
-- [ ] **OPT-09-01-03 ；**跨席交付登记（两 lane 均已勾、均未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席四行全交（lane/bw14-script-host），opt-09-db-baseline 席四行全交（da4e411/da9a135/cb65282/7663701，lane/opt-09-db-baseline 7663701 止）——主席择一面并入。评估写批次与归档整合**。**验收** 报告提交和恢复时长。
-- [ ] **OPT-09-01-04 ；**跨席交付登记（两 lane 均已勾、均未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席四行全交（lane/bw14-script-host），opt-09-db-baseline 席四行全交（da4e411/da9a135/cb65282/7663701，lane/opt-09-db-baseline 7663701 止）——主席择一面并入。复跑事务、重试与恢复**。**验收** 数据一致。
+- [x] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。（opt-09-db-baseline 席 `da4e411`，lane/opt-09-db-baseline，main=`e59ca31`：crates/db-postgres/tests/store_baseline.rs 6 测=512 行确定性语料同一数据集落 MySQL（DDL 对照参考 db_storage_mysql 布局+值类型逐 kind 对）与 PostgreSQL（JSONB 嵌套列 codec 往返）双后端，schema/确定性/嵌套列各单测；TSV docs/review/fixtures/store-baseline/store-baseline.tsv 22 行，证据页 docs/review/opt-09-01-01-store-baseline.md；workspace 新增 `mysql` 依赖（minimal-rust）；本席 main 复测 6 绿。⚠️ 与 bw14-script-host `7024fb1` 平行交付 FLAG 待主席择一）
+- [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。（opt-09-db-baseline 席 `da9a135`，lane/opt-09-db-baseline，main=`04f5d37`：crates/db-postgres/tests/store_pool_candidates.rs 3 测=连接池与预编译语句候选对照（参考 `numConnections_` 默认 5 长连会话+每线程一连接+启动期预编译实体 SQL 模板两形），各后端延迟与吞吐逐形报告且回读恒等；TSV docs/review/fixtures/store-pool/pool-candidates.tsv 48 行，证据页 docs/review/opt-09-01-02-store-pool.md；本席 main 复测 3 绿）
+- [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。（opt-09-db-baseline 席 `cb65282`，lane/opt-09-db-baseline，main=`8b1fb8a`：crates/db-postgres/tests/store_commit_candidates.rs 4 测=实体写缓冲进 Transaction 按归档周期一 `COMMIT`（参考 sqlite_database.cpp 131-177+db_config 5s 默认）与显式 WRITE_EXPLICIT 两臂提交时长+归档整合恢复时长报告，落库回读逐字段等；TSV docs/review/fixtures/store-commit/commit-candidates.tsv 16 行，证据页 docs/review/opt-09-01-03-store-commit.md；本席 main 复测 4 绿）
+- [x] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。（opt-09-db-baseline 席 `7663701`，lane/opt-09-db-baseline，main=`3a7b9d0`：crates/db-postgres/tests/store_recovery.rs 3 测=参考 MySqlBackgroundTask::doBackgroundTask 契约复跑——可重试失败恰一次重试（attempts 2/on_retry 1）、回滚批零幸存行、事务外断连恰一次自动恢复+事务内手动重连；恢复后数据一致计数钉死；TSV docs/review/fixtures/store-recovery/recovery.tsv 21 行，证据页 docs/review/opt-09-01-04-store-recovery.md；本席 main 复测 3 绿）
 
 ### OPT-10-01 地图加载和查询基线
 
@@ -7586,10 +7589,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化依赖缓存、并行转换和编辑器加载。比较冷构建、增量构建与大地图编辑时间，校验可复现产物。
 
-- [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。deliver 80c9b88（main，bw16-18 席）；**FLAG 双交付待主席**：lane/bw14-script-host 平行交付 `1fd4739+bb1e3ea` 未进 main（OPT-13-01-01）。
-- [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。deliver fb80b66（main，bw16-18 席）；**FLAG 双交付待主席**：lane/bw14-script-host 平行交付 `663dc8c+97817db` 未进 main（OPT-13-01-02）。
-- [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。deliver 4330bd7（main，bw16-18 席）；**FLAG 双交付待主席**：lane/bw14-script-host 平行交付 `827ed8e+00109d2` 未进 main（OPT-13-01-03）。
-- [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。deliver bb45885（main，bw16-18 席）；**FLAG 双交付待主席**：lane/bw14-script-host 平行交付 `b981ae7` 未进 main（OPT-13-01-04）。
+- [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。deliver 80c9b88
+- [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。deliver fb80b66
+- [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。deliver 4330bd7
+- [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。deliver bb45885
 
 ### OPT-14-01 发布包尺寸及首次运行
 
@@ -7603,34 +7606,35 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。；**证据（Linux 腿实测，行仍开=三端 runner 缺）**：`crates/platform/tests/io_timer_baseline.rs` 统一负载 512 ops@64KiB——顺序写 30.33µs/读 9.04µs/atomic_replace 55.81µs（fsync 大头）/mmap 单遍 ~1µs/时钟分辨率 1µs/1ms sleep 均值 1.0864ms/wakeup 往返 0.95µs；断言全数据面（往返/映射内容/节拍±10%），墙钟读数不入断言；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、macOS 卡 darwin SDK，同测试三端可跑待 BW-15-05 runner。夹具 `docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv`，证据 `docs/review/opt-15-01-01-io-timer-baseline.md`。；**双交付登记待主席**：bw14-script-host 席 lane 已勾（7081674，行内无面文本）；本席 Linux 腿如上（行仍开=三端 runner）。
-- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。；**Linux 腿登记（行仍开=三端图形矩阵缺 runner，BW-15-04）**：本仓像素面=确定性软件光栅器（`render::software`），设备/驱动面=宿主 CPU Intel i9-10880H @2.30GHz+内核 7.0.0-44-generic（无 GPU 依赖=驱动无关），帧时已由 main `5a80a78`（OPT-11-01-01 三端 profile 基线：320x240 4.9ms/640x480 21.5ms）钉死——本行剩余面=真 GPU 后端（D3D/Metal）三端设备+驱动+帧时，待 BW-15-04 runner 矩阵。；**双交付登记待主席**：bw14-script-host 席 lane 已勾（2f77126+勾 0b6d948：crates/client/tests/render_backend_baseline.rs 登记表三问=设备结构断言 640×480 RGBA8 adapter 0/驱动 probe 宿主环境文本/帧时 probe 64 帧 p50 15.6-18.8ms p99 24.2-25.1ms 入 RENDER_BACKEND_OUT）；本席 Linux 腿登记如上。
-- [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。；**Linux 腿登记（行仍开=三端）**：平台针对性优化的回归面=协议与功能套件全绿——workspace 166 套 7185 passed exit 0（含 mercury 传输/协议、platform 四 Windows 后端镜像 `--all-targets` 交叉验证、BW-15-01 逐 slice 门禁矩阵）；windows-gnu 全量编译卡 mercury Windows 臂（BW-15-03）、macOS 卡 darwin SDK，三端套件通过待 runner。；**双交付登记待主席**：bw14-script-host 席 lane 已勾（3761c24+勾 95ffb47：crates/platform/tests/platform_opt_parity.rs 批臂 sendmmsg/recvmmsg vs 泛化臂 sendto/recvfrom 同 loopback UDP 对——256 数据报字节/序/源三元组恒等+批臂系统调用形状 8+8 vs 泛化 256+256）；本席 Linux 腿登记如上。
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+  - 注记（2026-11-26，台账席）：Linux 腿已落——bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿。行保持开——「各平台」待 Windows/macOS 腿（三端 runner，BW-15-05-01）后补测再勾。
+- [x] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。(2026-11-26 lane/bw14-script-host 2f77126→main 25e40c7：crates/client/tests/render_backend_baseline.rs 按后端登记表采集三问——新树唯一出货像素后端=Device 下软件光栅器（参照侧 D3D9/OpenGL/cocos2d/Awesomium 四后端仅 BW-15-06-01 事实非移植，BACKENDS 留位即插）；设备面结构断言 SoftwareDevice 640×480 adapter=0 307200px RGBA8+帧序 1..=64 单设备对象+status=Ok+leaked()=0；驱动面=执行环境文本（CPU/核/OS/内核 probe 只印不断言）；帧时=固定镜头 check_device→step→present 64 帧逐帧 FRAME-TIME+FRAME-TAIL 报告，min/median/p99/max 记运行值不断言；结构契约逐相邻帧摘要异+帧 1..=8/64 复现 OPT-11-01-01 saved 钉+帧 1/7/31/64 纯帧序号复现+复跑恒等；提交目录 tests/baseline/render-backend-baseline.tsv 十列 linux-x86_64=measured，macos-arm64/windows-x86_64=pending rows 带 BW-15-04/BW-15-03 blocker 不编数字，语法检查拒 pending 带测量/未知后端/重复对/非数字/测量平台缺行；client 861 绿+集成全绿，clippy 净；本机 2 测绿)
+- [x] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。(2026-11-26 lane/bw14-script-host 3761c24→main 117a588：crates/platform/tests/platform_opt_parity.rs——同套协议场景两臂比结果：泛化 sendto/recvfrom 逐数据报 vs 批 sendmmsg/recvmmsg 逐窗口，同一 loopback UDP 对共发送套接字源三元组可比；256 数据报逐报字节+序恒等（内嵌大端序号=自身下标）+源 port/addr 网络序恒等+变长 16..=1200 抓聚合拆裂+批臂 8 send+8 recv vs 泛化 256+256；边沿同答：空批/空收 0/静默非阻塞两臂同 -1+EAGAIN（libc 约定，sendmmsg 注释"-errno"与实态不符如实登记）/8 槽收 5 排队恰 5 槽序字节恒等/单批同 sendto；自揭两发现=drained 错误形与槽宽=批容量（4 槽收 5 留队未丢，独立 C repro）；platform 64 lib+io_timer 1+parity 2+signal_call_sites 全绿，本机 2 测绿)
 
 ### OPT-16-01 采集依赖与增量构建基线
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。；deliver 96009f9（main）；**FLAG 双交付未决**：main `96009f9`（asset-pipeline tests/dependency_rebuild_baseline.rs 203 行集成测）与本席 `d11c3d2`（`ci/build-baseline.sh` fanout+冷/增量双腿 shell 测量：foundation 19 依赖者、release 冷 220.59s/增量 96.25s、debug 冷 53.47s/增量 3.81s、touch foundation 重编 11 crate 全闭包）互补非冲突——main 面是测试内基线，本席面是可复跑 CI 入口；本席勾行已自纠退回开（revert `6d07099`），证据 `docs/review/opt-16-01-01-build-baseline.md`，待主席择一/并认。
-- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171（main `8c37171`，time_queue 拆分评估 rebuild 25→7 crate fan-out 24→6；吸收自 origin/main `7ff40ee` 勾行，本席未重做）。
-- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。deliver 870ad04（main，asset-pipeline install_path_recheck.rs 289 行（res_packer install+双端 PackedSection 载回对照）；吸收自 origin/main，本席未重做）。
+- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。deliver 96009f9
+- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171
+- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。deliver 870ad04
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
 
-- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。deliver 38b99db（main，观测通道采集关/开长稳基线；吸收自 origin/main，本席未重做）。
-- [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。deliver 2a26627（main，采集缓冲与导出开销评估；吸收自 origin/main，本席未重做）。
-- [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。deliver 0ee4b28（main，采集完整性回归；吸收自 origin/main，本席未重做）。
+- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。deliver 38b99db
+- [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。deliver 2a26627
+- [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。deliver 0ee4b28
 
 ### OPT-26-01 固定事件回放并采集查询基线
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。deliver 8f42e4c（message_logger `qlog_replay_baseline.rs` 固定回放 20000 entry×11 查询面+样本报表；fixture `docs/review/fixtures/opt-26-01-01/qlog-replay-baseline.tsv`）；⚠️ 双交付 FLAG 主席择一：opt-26-db `4c75e00`（event_query_baseline.rs PG 语料面基线，未进 main）与本席 `8f42e4c`（message_logger 内存查询面基线）
-- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 他席交付未进 main，行保持开：opt-26-db `40b58e0`（import_batch_candidates.rs 五事务形 64 行 commit ~1.4×+分配峰值平坦）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理报告吞吐和峰值内存。
-- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 他席交付未进 main，行保持开：opt-26-db `bf335b5`（query_aggregation_candidates.rs name→id 索引 ~4746×+聚合答案相等）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理报告延迟变化。
-- [ ] **OPT-26-01-04 复算样本报表**。**验收** 他席交付未进 main，行保持开：opt-26-db `b34554a`（sample_report_rerun.rs 同流复算九键逐字节全等）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理窗口及计数与优化前一致。
+- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（opt26-db 席 `4c75e00`，lane/opt-26-db，main=`6973092`：crates/db-postgres/tests/event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账，钉定样本报表（四级窗口+五查询形计数）为 01-04 复算基线；TSV docs/review/fixtures/event-query/event-query.tsv 39 行，证据页 docs/review/opt-26-01-01-event-query-baseline.md；本席 main 复测 6 绿，TSV 复捕墙钟行随负载漂（结构计数行恒等）只记录不设带）；本席平行交付 lane-only `8f42e4c`（crates/message_logger/tests/qlog_replay_baseline.rs 内存查询面回放基线，未进 main——主席已择 opt-26-db `4c75e00` 面）
+- [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。（opt26-db 席 `40b58e0`，lane/opt-26-db，main=`027c6c0`：crates/db-postgres/tests/import_batch_candidates.rs 3 测=同 512 行语料五种事务形（每 1/16/64/256 行一提交+整库一事务）各报墙/吞吐/计数分配器峰值且逐形回读恒等；TSV docs/review/fixtures/import-batch/import-batch.tsv 30 行，证据页 docs/review/opt-26-01-02-import-batch.md；本席 main 复测 3 绿（批 64+ 后吞吐平坦 620-640 rows/s，批 1 最慢=每行一提交））
+- [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。（opt26-db 席 `bf335b5`，lane/opt-26-db，main=`5df3486`：crates/db-postgres/tests/query_aggregation_candidates.rs 3 测=一全扫建 name→id（512）+level→ids（200 键）两聚合图，同 128 名抽样网格前后对照——基线 name 查询 ~14× 键控 get，聚合后网格解析走图不走扫；TSV docs/review/fixtures/query-aggr/query-aggr.tsv 21 行，证据页 docs/review/opt-26-01-03-query-aggregation.md；本席 main 复测 3 绿（加速比两跑 8350×/4746×=负载敏感记录行，128 网格断言恒等））
+- [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。（opt26-db 席 `b34554a`，lane/opt-26-db，main=`1590095`：crates/db-postgres/tests/sample_report_rerun.rs 3 测=同固定事件流重放后从**存储语料**复算样本报表，对照盘上 docs/review/fixtures/event-query/event-query.tsv 基线（四级窗口+五查询形计数逐项等），再在每项优化（64 行批导入/两聚合图）后各复算一次仍等；证据页 docs/review/opt-26-01-04-sample-report-rerun.md；本席 main 复测 3 绿）
 
 ## 5. 实施顺序与里程碑
 
@@ -9060,8 +9064,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - Tick：`docs/perf-baseline-2026-11-24.md` 既有 11 行 criterion 时序表（`e9c0a52`，已在 main），四热面（time_queue/stream/math/updatables）× tick 尾延迟口径，100 样本 3s 预热可复现。
   - 分配数：`6b6cc9c` 落 `crates/foundation/tests/alloc_counts.rs` + `crates/server-runtime/tests/alloc_counts.rs`——计数全局分配器 + thread-local 追踪旗标（旗标与计数全在调用线程，并发测试线程互不污染；全局计数器版首跑即暴露互踩：纯浮点夹具数出幻影分配），夹具与时序表逐形对应（`iter_batched` 出时间窗的 setup 同样出计数窗），每测断言双跑恒等故数字按工具链逐位可复现；11 行基线：add_1000_timers 1010 次/112,440 B（每计时器 ~1 次、firing pass 0 次）、process_1000_due 0/0、add_cancel_process_100 108/12,504、encode 29/26,563、decode 20/11,481、math 四面全 0/0、updatables call pass 0/0、register_deregister_100 114/12,424；`cargo test -p foundation` 228+9 绿、`-p server-runtime` 1303+2 绿、两 crate `--tests` clippy 净。
   - 加载峰值：bots 二进制（debug，main `70a4672`）在 `LOAD_CLIENTS=4` 信封下 `/usr/bin/time -v` 实测三场景 peak RSS——steady-move 3,164 KiB（bots_online 4）、login-hurricane 3,180 KiB（online_peak 4、4/4 admitted）、dense-aoi 3,148 KiB（bots 4、max_visible 3）；`ci/load.sh` 3/3 PASS 落 TSV；离线面按仿真时间跑完故此峰是生成器自身足迹，实拓扑逐期 RSS/CPU 采样（`ResourceTracker`，BW-17-03-04）在 `crates/load` 已测但尚未接进 driver 报告（归 bw17 席）。
-- [ ] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。；**跨席交付登记（lane/bw19-docs 未并 main，行保持开待主席并入，本席不重做）**：bw19-docs 席 `6174b44`+勾 `f742b62`——`time_queue.rs` process 循环借用窗合并（每 fired timer 5-6 个 borrow_mut 窗→2 个，回调仍以队列未借状态运行=重入语义不变）+`tick.rs` Updatables.handles 指针恒等 hasher（BuildHasherDefault<PtrHasher> 替 RandomState，参照 removalHandle_ 纯字段读）；同 commit 双二进制噪声地板 -3.4% 下唯一双窗脱带夹具=updatables/call_1000_over_3_levels（-12.8%/-21.3%），timer 腿不作提速主张只保借用窗减半，提速主张限 dispatch 探测腿；`cargo test -p foundation -p server-runtime` 1562 过/0 挂（docs/perf-baseline-2026-11-24.md OPT-01-01-02 节）。
-- [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。（bw19-docs 席 ebbde2b，lane/bw19-docs 未并 main——合并须带入；本席 2026-11-26 真机复测：`resources --test data_section_cache_alloc` 3 绿（热路径零分配断言）+`foundation --lib stream` 49 绿+resources 全 crate 225 绿+foundation 238 绿，失效夹具随全 crate 套件复跑）；**双交付登记待主席**：main 侧文本另载 `e478d90` 等交付。
+- [x] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。（bw19-docs 席 `6174b44`，lane/bw19-docs，main=`8e17603`：两候选落码——`time_queue.rs` process 循环预回调簿记+post 回调收尾两借窗（每点火 5-6 窗→2，回调仍无借重入语义不变）+`tick.rs` `Updatables.handles` 指针键恒等 hasher（参考 removalHandle_ 平字段读，去移植侧种子探针）；同 commit 双二进制 10 轮交错 A/B 噪声地板 -3.4%，仅 `updatables/call_1000_over_3_levels` 两窗越带（-12.8%/-21.3%）=主张限逐 tick 派发探针，timer 处理不主张提速只保借窗减半；记录 docs/perf-baseline-2026-11-24.md OPT-01-01-02 节；本席 main 复测 foundation time_queue 35 绿+server-runtime tick 93 绿）
+- [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。`ebbde2b` 双面交付（main=`e478d90`）：
   - 资源缓存热路径零分配：`crates/resources/src/data_section_cache.rs` 链指针原是 `Option<String>` 路径拷贝（每次重链 2-6 次 String 分配）→ 槽位 arena（`Vec<CacheNode>` 整数双向链 + 侵入式自由链；`add` 一次性付两份 String——map key + 槽内 name 拷贝——稳态 relink 机器全零分配；section 在 entry 释放时 drop，与参照删节点同语义）。TDD 红先证旧实现逐操作计数（find 中段 6 次/36 B、尾段 5/30、purgeLRU 3/18、remove 中/尾 3/18、remove 头 2/12、head 命中/miss/原地重加 0），新实现 `crates/resources/tests/data_section_cache_alloc.rs` 全零断言 3 测绿，模块 llvm-cov 100.00%（380/380 行）；「复跑失效夹具」随 `cargo test -p resources` 222 全绿一并完成（multi_file_system 目录列举缓存失效 + data_section_cache 七测同套）。
   - BinaryStream 64 字节预留：`crates/foundation/src/stream.rs` 手写 `Default` = `Vec::with_capacity(64)`（参照 `MemoryOStream( int size = 64 )`，`lib/cstdmf/memory_stream.hpp`——参照默认构造即预留，`new()`/`from_u32_le` 同享；`from_slice` 读流包已有内存不预留）。红先证旧实现 61 字节小写 2 次分配，新实现 1 次/64 B；encode_mixed_payload 29→26 次（26,563→26,507 B）；`cargo test -p foundation` 228+10 绿（405 处 `BinaryStream::new()` 调用点无回归），clippy 净。
   - 加载峰值 A/B（bots 生成器，`LOAD_CLIENTS=4`/`LOAD_DURATION=2`，main `33e030a` ± 本 commit 双临时 worktree，3 轮取中位）：steady-move 3,216→3,456、login-hurricane 3,284→3,152、dense-aoi 3,248→3,168 KiB——差异全在 ±150-200 KiB 轮间摆幅内，生成器峰值 RSS 噪声内不变（分配数工作对离线面足迹本就无感）；A/B 表落 `docs/perf-baseline-2026-11-24.md` OPT-01-01-03 节。
@@ -9070,10 +9074,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 评估缓冲复用、批量收发与减少复制。比较 RPC RTT、网络吞吐、丢包恢复和内存占用，混跑旧线协议。
 
-- [x] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。（本席 2ba686b，lane/bw15-platform：crates/mercury/tests/network_baseline.rs 7 测=UDP/TCP 真回环 RTT p50/p90/p99+4MiB 吞吐+钉死钟丢包恢复两臂（16/16 恰一次重发+越序 ack 穿越）；记录 TSV docs/review/fixtures/network-baseline/net-baseline.tsv；mercury 377 lib+7 集成全绿，回环墙钟数字机器相关只记录不设带）；**双交付登记待主席**：main 侧文本另载 `841315b` 等交付。
-- [x] **OPT-02-01-02 评估缓冲复用**。**验收** 报告分配与峰值内存。（本席 dc549c4/739a3bc，lane/bw15-platform：crates/mercury/tests/buffer_alloc.rs 5 测=指针配对台账分配器+测量窗，Packet 1 alloc/1472B、收包循环每报 1 新箱、未确认窗每槽 1576B 且 ack 后活集归零、TCP 发送缓冲稳态写+重排队零分配=背衬复用证实；TSV docs/review/fixtures/network-baseline/buffer-alloc.tsv，证据页 docs/review/opt-02-01-02-buffer-reuse.md；mercury 377 lib+7+5 全绿，分配计数族逐跑恒等）；**双交付登记待主席**：main 侧文本另载 `3b5f15a、`8b1793a` 等交付。
-- [x] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。（本席 bc1ee86/071bdc6/3e7c776，lane/bw15-platform：platform::socket 落 sendmmsg/recvmmsg 包装+SendScratch/RecvScratch 保留式暂存（Linux cfg）；crates/mercury/tests/batch_io.rs 三臂对照=批量/逐报/分配计数，批宽 64 收发系统调用各 63×摊派（3495→55）确定、每报摊派成本 p50 持平、稳态 0 alloc/报（现行路径 1.00/报）、回环吞吐同量级（窗深投递延迟主导，墙钟只记录不设带）；TSV docs/review/fixtures/network-baseline/batch-io.tsv，证据页 docs/review/opt-02-01-03-batch-and-copy.md；platform 64+mercury 377/7/5/1 全绿）；**双交付登记待主席**：main 侧文本另载 `3590227、`7dc6d12、`c733e5a` 等交付。
-- [x] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。（本席 fc181f5/19a9c42/29cc302/f438b7d/1b27379, lane/bw15-platform：crates/server-runtime/tests/el7_mixed_deploy.rs 五腿真机混部=新版→原版 UDP（pid/WholeMachine 查询）+原版→新版 UDP（logger 注册与 birth/death 监听入册）+发现广播（addTCP/add 版本门两臂推送件到位）+新版→原版 TCP（注册 108+记录 107 帧化落 mldb）+新版→原版 UDP（裸数据报落 mldb），mldb component_names/strings 字节级断言；**四个真互操作 bug 修复**：contracts/machined.rs v51 pid u32+Listener/Signal extra 块殿后+ProcessMessage.port 线上网络序，message_logger 记录头 DebugMessageSource=4 字节裸枚举（38 vs 41 字节账锁定），MachinedDaemon answer_query_all 逐匹配应答（bwmachined.cpp:1410-1452）；TSV docs/review/fixtures/network-baseline/el7-mixed-deploy.tsv，证据页 docs/review/opt-02-01-04-el7-mixed-deploy.md；contracts 44+server-runtime lib 1700+mixed 1+message_logger 160+platform 64 全绿，20018 毒气探针前置）
+- [x] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。（bw15 席 `2ba686b`，lane/bw15-platform，main=`841315b`：crates/mercury/tests/network_baseline.rs 7 测=UDP/TCP 真回环 RTT p50/p90/p99+4MiB 吞吐+钉死钟丢包恢复两臂（16/16 恰一次重发+越序 ack 穿越）；记录 TSV docs/review/fixtures/network-baseline/net-baseline.tsv；mercury 377 lib+7 集成全绿（本席 main 复测 384 绿），回环墙钟数字机器相关只记录不设带）
+- [x] **OPT-02-01-02 评估缓冲复用**。**验收** 报告分配与峰值内存。（bw15 席 `dc549c4`/`739a3bc`，lane/bw15-platform，main=`3b5f15a`/`8b1793a`：crates/mercury/tests/buffer_alloc.rs 5 测=指针配对台账分配器+测量窗，Packet 1 alloc/1472B、收包循环每报 1 新箱、未确认窗每槽 1576B 且 ack 后活集归零、TCP 发送缓冲稳态写+重排队零分配=背衬复用证实；TSV docs/review/fixtures/network-baseline/buffer-alloc.tsv，证据页 docs/review/opt-02-01-02-buffer-reuse.md；mercury 377 lib+7+5 全绿（本席 main 复测绿），分配计数族逐跑恒等）
+- [x] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。（bw15 席 `bc1ee86`/`071bdc6`/`3e7c776`，lane/bw15-platform，main=`c733e5a`/`7dc6d12`/`3590227`：platform::socket 落 sendmmsg/recvmmsg 包装+SendScratch/RecvScratch 保留式暂存（Linux cfg）；crates/mercury/tests/batch_io.rs 三臂对照=批量/逐报/分配计数，批宽 64 收发系统调用各 63×摊派（3495→55）确定、每报摊派成本 p50 持平、稳态 0 alloc/报（现行路径 1.00/报）、回环吞吐同量级（窗深投递延迟主导，墙钟只记录不设带）；TSV docs/review/fixtures/network-baseline/batch-io.tsv，证据页 docs/review/opt-02-01-03-batch-and-copy.md；platform 64+mercury 377/7/5/1 全绿（本席 main 复测 455 绿））
+- [x] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。（bw15-platform 席 `fc181f5`/`19a9c42`/`29cc302`/`f438b7d`/`1b27379`，lane/bw15-platform，main=`261a2d0`/`25ee476`/`3675b18`/`62ea5d3`/`4b83ebb`：crates/server-runtime/tests/el7_mixed_deploy.rs 五腿真机混部（`#[ignore]` 场景，EL7_MIXED_OUT 落 TSV）=新版→原版 UDP（pid/WholeMachine 查询）+原版→新版 UDP（logger 注册与 birth/death 监听入册）+发现广播（addTCP/add 版本门两臂推送件到位）+新版→原版 TCP（注册 108+记录 107 帧化落 mldb）+新版→原版 UDP（裸数据报落 mldb），mldb component_names/strings 字节级断言；**四个真互操作 bug 修复**：contracts/machined 线格式对参考（main=`261a2d0`）/message_logger 记录头源字段宽（main=`25ee476`）/machined 进程统计查询答全匹配面（main=`3675b18`）/server-runtime 接 message_logger workspace 边（main=`62ea5d3`）；TSV docs/review/fixtures/network-baseline/el7-mixed-deploy.tsv，证据页 docs/review/opt-02-01-04-el7-mixed-deploy.md；本席 main 复测五腿全绿（5.01s，TSV 复捕与夹具逐字节恒等））
 
 ### OPT-03-01 Python 桥接基线
 
@@ -9132,10 +9136,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
-- [ ] **OPT-09-01-01 ；**跨席交付登记（两 lane 均已勾、均未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席四行全交（lane/bw14-script-host），opt-09-db-baseline 席四行全交（da4e411/da9a135/cb65282/7663701，lane/opt-09-db-baseline 7663701 止）——主席择一面并入。分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。
-- [ ] **OPT-09-01-02 ；**跨席交付登记（两 lane 均已勾、均未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席四行全交（lane/bw14-script-host），opt-09-db-baseline 席四行全交（da4e411/da9a135/cb65282/7663701，lane/opt-09-db-baseline 7663701 止）——主席择一面并入。评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
-- [ ] **OPT-09-01-03 ；**跨席交付登记（两 lane 均已勾、均未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席四行全交（lane/bw14-script-host），opt-09-db-baseline 席四行全交（da4e411/da9a135/cb65282/7663701，lane/opt-09-db-baseline 7663701 止）——主席择一面并入。评估写批次与归档整合**。**验收** 报告提交和恢复时长。
-- [ ] **OPT-09-01-04 ；**跨席交付登记（两 lane 均已勾、均未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席四行全交（lane/bw14-script-host），opt-09-db-baseline 席四行全交（da4e411/da9a135/cb65282/7663701，lane/opt-09-db-baseline 7663701 止）——主席择一面并入。复跑事务、重试与恢复**。**验收** 数据一致。
+- [x] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。（opt-09-db-baseline 席 `da4e411`，lane/opt-09-db-baseline，main=`e59ca31`：crates/db-postgres/tests/store_baseline.rs 6 测=512 行确定性语料同一数据集落 MySQL（DDL 对照参考 db_storage_mysql 布局+值类型逐 kind 对）与 PostgreSQL（JSONB 嵌套列 codec 往返）双后端，schema/确定性/嵌套列各单测；TSV docs/review/fixtures/store-baseline/store-baseline.tsv 22 行，证据页 docs/review/opt-09-01-01-store-baseline.md；workspace 新增 `mysql` 依赖（minimal-rust）；本席 main 复测 6 绿。⚠️ 与 bw14-script-host `7024fb1` 平行交付 FLAG 待主席择一）
+- [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。（opt-09-db-baseline 席 `da9a135`，lane/opt-09-db-baseline，main=`04f5d37`：crates/db-postgres/tests/store_pool_candidates.rs 3 测=连接池与预编译语句候选对照（参考 `numConnections_` 默认 5 长连会话+每线程一连接+启动期预编译实体 SQL 模板两形），各后端延迟与吞吐逐形报告且回读恒等；TSV docs/review/fixtures/store-pool/pool-candidates.tsv 48 行，证据页 docs/review/opt-09-01-02-store-pool.md；本席 main 复测 3 绿）
+- [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。（opt-09-db-baseline 席 `cb65282`，lane/opt-09-db-baseline，main=`8b1fb8a`：crates/db-postgres/tests/store_commit_candidates.rs 4 测=实体写缓冲进 Transaction 按归档周期一 `COMMIT`（参考 sqlite_database.cpp 131-177+db_config 5s 默认）与显式 WRITE_EXPLICIT 两臂提交时长+归档整合恢复时长报告，落库回读逐字段等；TSV docs/review/fixtures/store-commit/commit-candidates.tsv 16 行，证据页 docs/review/opt-09-01-03-store-commit.md；本席 main 复测 4 绿）
+- [x] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。（opt-09-db-baseline 席 `7663701`，lane/opt-09-db-baseline，main=`3a7b9d0`：crates/db-postgres/tests/store_recovery.rs 3 测=参考 MySqlBackgroundTask::doBackgroundTask 契约复跑——可重试失败恰一次重试（attempts 2/on_retry 1）、回滚批零幸存行、事务外断连恰一次自动恢复+事务内手动重连；恢复后数据一致计数钉死；TSV docs/review/fixtures/store-recovery/recovery.tsv 21 行，证据页 docs/review/opt-09-01-04-store-recovery.md；本席 main 复测 3 绿）
 
 ### OPT-10-01 地图加载和查询基线
 
@@ -9167,10 +9171,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化依赖缓存、并行转换和编辑器加载。比较冷构建、增量构建与大地图编辑时间，校验可复现产物。
 
-- [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。deliver 80c9b88（main，bw16-18 席）；**FLAG 双交付待主席**：lane/bw14-script-host 平行交付 `1fd4739+bb1e3ea` 未进 main（OPT-13-01-01）。
-- [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。deliver fb80b66（main，bw16-18 席）；**FLAG 双交付待主席**：lane/bw14-script-host 平行交付 `663dc8c+97817db` 未进 main（OPT-13-01-02）。
-- [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。deliver 4330bd7（main，bw16-18 席）；**FLAG 双交付待主席**：lane/bw14-script-host 平行交付 `827ed8e+00109d2` 未进 main（OPT-13-01-03）。
-- [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。deliver bb45885（main，bw16-18 席）；**FLAG 双交付待主席**：lane/bw14-script-host 平行交付 `b981ae7` 未进 main（OPT-13-01-04）。
+- [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。deliver 80c9b88
+- [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。deliver fb80b66
+- [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。deliver 4330bd7
+- [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。deliver bb45885
 
 ### OPT-14-01 发布包尺寸及首次运行
 
@@ -9184,34 +9188,35 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。；**证据（Linux 腿实测，行仍开=三端 runner 缺）**：`crates/platform/tests/io_timer_baseline.rs` 统一负载 512 ops@64KiB——顺序写 30.33µs/读 9.04µs/atomic_replace 55.81µs（fsync 大头）/mmap 单遍 ~1µs/时钟分辨率 1µs/1ms sleep 均值 1.0864ms/wakeup 往返 0.95µs；断言全数据面（往返/映射内容/节拍±10%），墙钟读数不入断言；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、macOS 卡 darwin SDK，同测试三端可跑待 BW-15-05 runner。夹具 `docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv`，证据 `docs/review/opt-15-01-01-io-timer-baseline.md`。；**双交付登记待主席**：bw14-script-host 席 lane 已勾（7081674，行内无面文本）；本席 Linux 腿如上（行仍开=三端 runner）。
-- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。；**Linux 腿登记（行仍开=三端图形矩阵缺 runner，BW-15-04）**：本仓像素面=确定性软件光栅器（`render::software`），设备/驱动面=宿主 CPU Intel i9-10880H @2.30GHz+内核 7.0.0-44-generic（无 GPU 依赖=驱动无关），帧时已由 main `5a80a78`（OPT-11-01-01 三端 profile 基线：320x240 4.9ms/640x480 21.5ms）钉死——本行剩余面=真 GPU 后端（D3D/Metal）三端设备+驱动+帧时，待 BW-15-04 runner 矩阵。；**双交付登记待主席**：bw14-script-host 席 lane 已勾（2f77126+勾 0b6d948：crates/client/tests/render_backend_baseline.rs 登记表三问=设备结构断言 640×480 RGBA8 adapter 0/驱动 probe 宿主环境文本/帧时 probe 64 帧 p50 15.6-18.8ms p99 24.2-25.1ms 入 RENDER_BACKEND_OUT）；本席 Linux 腿登记如上。
-- [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。；**Linux 腿登记（行仍开=三端）**：平台针对性优化的回归面=协议与功能套件全绿——workspace 166 套 7185 passed exit 0（含 mercury 传输/协议、platform 四 Windows 后端镜像 `--all-targets` 交叉验证、BW-15-01 逐 slice 门禁矩阵）；windows-gnu 全量编译卡 mercury Windows 臂（BW-15-03）、macOS 卡 darwin SDK，三端套件通过待 runner。；**双交付登记待主席**：bw14-script-host 席 lane 已勾（3761c24+勾 95ffb47：crates/platform/tests/platform_opt_parity.rs 批臂 sendmmsg/recvmmsg vs 泛化臂 sendto/recvfrom 同 loopback UDP 对——256 数据报字节/序/源三元组恒等+批臂系统调用形状 8+8 vs 泛化 256+256）；本席 Linux 腿登记如上。
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+  - 注记（2026-11-26，台账席）：Linux 腿已落——bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿。行保持开——「各平台」待 Windows/macOS 腿（三端 runner，BW-15-05-01）后补测再勾。
+- [x] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。(2026-11-26 lane/bw14-script-host 2f77126→main 25e40c7：crates/client/tests/render_backend_baseline.rs 按后端登记表采集三问——新树唯一出货像素后端=Device 下软件光栅器（参照侧 D3D9/OpenGL/cocos2d/Awesomium 四后端仅 BW-15-06-01 事实非移植，BACKENDS 留位即插）；设备面结构断言 SoftwareDevice 640×480 adapter=0 307200px RGBA8+帧序 1..=64 单设备对象+status=Ok+leaked()=0；驱动面=执行环境文本（CPU/核/OS/内核 probe 只印不断言）；帧时=固定镜头 check_device→step→present 64 帧逐帧 FRAME-TIME+FRAME-TAIL 报告，min/median/p99/max 记运行值不断言；结构契约逐相邻帧摘要异+帧 1..=8/64 复现 OPT-11-01-01 saved 钉+帧 1/7/31/64 纯帧序号复现+复跑恒等；提交目录 tests/baseline/render-backend-baseline.tsv 十列 linux-x86_64=measured，macos-arm64/windows-x86_64=pending rows 带 BW-15-04/BW-15-03 blocker 不编数字，语法检查拒 pending 带测量/未知后端/重复对/非数字/测量平台缺行；client 861 绿+集成全绿，clippy 净；本机 2 测绿)
+- [x] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。(2026-11-26 lane/bw14-script-host 3761c24→main 117a588：crates/platform/tests/platform_opt_parity.rs——同套协议场景两臂比结果：泛化 sendto/recvfrom 逐数据报 vs 批 sendmmsg/recvmmsg 逐窗口，同一 loopback UDP 对共发送套接字源三元组可比；256 数据报逐报字节+序恒等（内嵌大端序号=自身下标）+源 port/addr 网络序恒等+变长 16..=1200 抓聚合拆裂+批臂 8 send+8 recv vs 泛化 256+256；边沿同答：空批/空收 0/静默非阻塞两臂同 -1+EAGAIN（libc 约定，sendmmsg 注释"-errno"与实态不符如实登记）/8 槽收 5 排队恰 5 槽序字节恒等/单批同 sendto；自揭两发现=drained 错误形与槽宽=批容量（4 槽收 5 留队未丢，独立 C repro）；platform 64 lib+io_timer 1+parity 2+signal_call_sites 全绿，本机 2 测绿)
 
 ### OPT-16-01 采集依赖与增量构建基线
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。；deliver 96009f9（main）；**FLAG 双交付未决**：main `96009f9`（asset-pipeline tests/dependency_rebuild_baseline.rs 203 行集成测）与本席 `d11c3d2`（`ci/build-baseline.sh` fanout+冷/增量双腿 shell 测量：foundation 19 依赖者、release 冷 220.59s/增量 96.25s、debug 冷 53.47s/增量 3.81s、touch foundation 重编 11 crate 全闭包）互补非冲突——main 面是测试内基线，本席面是可复跑 CI 入口；本席勾行已自纠退回开（revert `6d07099`），证据 `docs/review/opt-16-01-01-build-baseline.md`，待主席择一/并认。
-- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171（main `8c37171`，time_queue 拆分评估 rebuild 25→7 crate fan-out 24→6；吸收自 origin/main `7ff40ee` 勾行，本席未重做）。
-- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。deliver 870ad04（main，asset-pipeline install_path_recheck.rs 289 行（res_packer install+双端 PackedSection 载回对照）；吸收自 origin/main，本席未重做）。
+- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。deliver 96009f9
+- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171
+- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。deliver 870ad04
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
 
-- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。deliver 38b99db（main，观测通道采集关/开长稳基线；吸收自 origin/main，本席未重做）。
-- [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。deliver 2a26627（main，采集缓冲与导出开销评估；吸收自 origin/main，本席未重做）。
-- [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。deliver 0ee4b28（main，采集完整性回归；吸收自 origin/main，本席未重做）。
+- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。deliver 38b99db
+- [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。deliver 2a26627
+- [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。deliver 0ee4b28
 
 ### OPT-26-01 固定事件回放并采集查询基线
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。deliver 8f42e4c（message_logger `qlog_replay_baseline.rs` 固定回放 20000 entry×11 查询面+样本报表；fixture `docs/review/fixtures/opt-26-01-01/qlog-replay-baseline.tsv`）；⚠️ 双交付 FLAG 主席择一：opt-26-db `4c75e00`（event_query_baseline.rs PG 语料面基线，未进 main）与本席 `8f42e4c`（message_logger 内存查询面基线）
-- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 他席交付未进 main，行保持开：opt-26-db `40b58e0`（import_batch_candidates.rs 五事务形 64 行 commit ~1.4×+分配峰值平坦）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理报告吞吐和峰值内存。
-- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 他席交付未进 main，行保持开：opt-26-db `bf335b5`（query_aggregation_candidates.rs name→id 索引 ~4746×+聚合答案相等）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理报告延迟变化。
-- [ ] **OPT-26-01-04 复算样本报表**。**验收** 他席交付未进 main，行保持开：opt-26-db `b34554a`（sample_report_rerun.rs 同流复算九键逐字节全等）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理窗口及计数与优化前一致。
+- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（opt26-db 席 `4c75e00`，lane/opt-26-db，main=`6973092`：crates/db-postgres/tests/event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账，钉定样本报表（四级窗口+五查询形计数）为 01-04 复算基线；TSV docs/review/fixtures/event-query/event-query.tsv 39 行，证据页 docs/review/opt-26-01-01-event-query-baseline.md；本席 main 复测 6 绿，TSV 复捕墙钟行随负载漂（结构计数行恒等）只记录不设带）；本席平行交付 lane-only `8f42e4c`（crates/message_logger/tests/qlog_replay_baseline.rs 内存查询面回放基线，未进 main——主席已择 opt-26-db `4c75e00` 面）
+- [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。（opt26-db 席 `40b58e0`，lane/opt-26-db，main=`027c6c0`：crates/db-postgres/tests/import_batch_candidates.rs 3 测=同 512 行语料五种事务形（每 1/16/64/256 行一提交+整库一事务）各报墙/吞吐/计数分配器峰值且逐形回读恒等；TSV docs/review/fixtures/import-batch/import-batch.tsv 30 行，证据页 docs/review/opt-26-01-02-import-batch.md；本席 main 复测 3 绿（批 64+ 后吞吐平坦 620-640 rows/s，批 1 最慢=每行一提交））
+- [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。（opt26-db 席 `bf335b5`，lane/opt-26-db，main=`5df3486`：crates/db-postgres/tests/query_aggregation_candidates.rs 3 测=一全扫建 name→id（512）+level→ids（200 键）两聚合图，同 128 名抽样网格前后对照——基线 name 查询 ~14× 键控 get，聚合后网格解析走图不走扫；TSV docs/review/fixtures/query-aggr/query-aggr.tsv 21 行，证据页 docs/review/opt-26-01-03-query-aggregation.md；本席 main 复测 3 绿（加速比两跑 8350×/4746×=负载敏感记录行，128 网格断言恒等））
+- [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。（opt26-db 席 `b34554a`，lane/opt-26-db，main=`1590095`：crates/db-postgres/tests/sample_report_rerun.rs 3 测=同固定事件流重放后从**存储语料**复算样本报表，对照盘上 docs/review/fixtures/event-query/event-query.tsv 基线（四级窗口+五查询形计数逐项等），再在每项优化（64 行批导入/两聚合图）后各复算一次仍等；证据页 docs/review/opt-26-01-04-sample-report-rerun.md；本席 main 复测 3 绿）
 
 ## 5. 实施顺序与里程碑
 
@@ -10602,8 +10607,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - Tick：`docs/perf-baseline-2026-11-24.md` 既有 11 行 criterion 时序表（`e9c0a52`，已在 main），四热面（time_queue/stream/math/updatables）× tick 尾延迟口径，100 样本 3s 预热可复现。
   - 分配数：`6b6cc9c` 落 `crates/foundation/tests/alloc_counts.rs` + `crates/server-runtime/tests/alloc_counts.rs`——计数全局分配器 + thread-local 追踪旗标（旗标与计数全在调用线程，并发测试线程互不污染；全局计数器版首跑即暴露互踩：纯浮点夹具数出幻影分配），夹具与时序表逐形对应（`iter_batched` 出时间窗的 setup 同样出计数窗），每测断言双跑恒等故数字按工具链逐位可复现；11 行基线：add_1000_timers 1010 次/112,440 B（每计时器 ~1 次、firing pass 0 次）、process_1000_due 0/0、add_cancel_process_100 108/12,504、encode 29/26,563、decode 20/11,481、math 四面全 0/0、updatables call pass 0/0、register_deregister_100 114/12,424；`cargo test -p foundation` 228+9 绿、`-p server-runtime` 1303+2 绿、两 crate `--tests` clippy 净。
   - 加载峰值：bots 二进制（debug，main `70a4672`）在 `LOAD_CLIENTS=4` 信封下 `/usr/bin/time -v` 实测三场景 peak RSS——steady-move 3,164 KiB（bots_online 4）、login-hurricane 3,180 KiB（online_peak 4、4/4 admitted）、dense-aoi 3,148 KiB（bots 4、max_visible 3）；`ci/load.sh` 3/3 PASS 落 TSV；离线面按仿真时间跑完故此峰是生成器自身足迹，实拓扑逐期 RSS/CPU 采样（`ResourceTracker`，BW-17-03-04）在 `crates/load` 已测但尚未接进 driver 报告（归 bw17 席）。
-- [ ] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。；**跨席交付登记（lane/bw19-docs 未并 main，行保持开待主席并入，本席不重做）**：bw19-docs 席 `6174b44`+勾 `f742b62`——`time_queue.rs` process 循环借用窗合并（每 fired timer 5-6 个 borrow_mut 窗→2 个，回调仍以队列未借状态运行=重入语义不变）+`tick.rs` Updatables.handles 指针恒等 hasher（BuildHasherDefault<PtrHasher> 替 RandomState，参照 removalHandle_ 纯字段读）；同 commit 双二进制噪声地板 -3.4% 下唯一双窗脱带夹具=updatables/call_1000_over_3_levels（-12.8%/-21.3%），timer 腿不作提速主张只保借用窗减半，提速主张限 dispatch 探测腿；`cargo test -p foundation -p server-runtime` 1562 过/0 挂（docs/perf-baseline-2026-11-24.md OPT-01-01-02 节）。
-- [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。（bw19-docs 席 ebbde2b，lane/bw19-docs 未并 main——合并须带入；本席 2026-11-26 真机复测：`resources --test data_section_cache_alloc` 3 绿（热路径零分配断言）+`foundation --lib stream` 49 绿+resources 全 crate 225 绿+foundation 238 绿，失效夹具随全 crate 套件复跑）；**双交付登记待主席**：main 侧文本另载 `e478d90` 等交付。
+- [x] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。（bw19-docs 席 `6174b44`，lane/bw19-docs，main=`8e17603`：两候选落码——`time_queue.rs` process 循环预回调簿记+post 回调收尾两借窗（每点火 5-6 窗→2，回调仍无借重入语义不变）+`tick.rs` `Updatables.handles` 指针键恒等 hasher（参考 removalHandle_ 平字段读，去移植侧种子探针）；同 commit 双二进制 10 轮交错 A/B 噪声地板 -3.4%，仅 `updatables/call_1000_over_3_levels` 两窗越带（-12.8%/-21.3%）=主张限逐 tick 派发探针，timer 处理不主张提速只保借窗减半；记录 docs/perf-baseline-2026-11-24.md OPT-01-01-02 节；本席 main 复测 foundation time_queue 35 绿+server-runtime tick 93 绿）
+- [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。`ebbde2b` 双面交付（main=`e478d90`）：
   - 资源缓存热路径零分配：`crates/resources/src/data_section_cache.rs` 链指针原是 `Option<String>` 路径拷贝（每次重链 2-6 次 String 分配）→ 槽位 arena（`Vec<CacheNode>` 整数双向链 + 侵入式自由链；`add` 一次性付两份 String——map key + 槽内 name 拷贝——稳态 relink 机器全零分配；section 在 entry 释放时 drop，与参照删节点同语义）。TDD 红先证旧实现逐操作计数（find 中段 6 次/36 B、尾段 5/30、purgeLRU 3/18、remove 中/尾 3/18、remove 头 2/12、head 命中/miss/原地重加 0），新实现 `crates/resources/tests/data_section_cache_alloc.rs` 全零断言 3 测绿，模块 llvm-cov 100.00%（380/380 行）；「复跑失效夹具」随 `cargo test -p resources` 222 全绿一并完成（multi_file_system 目录列举缓存失效 + data_section_cache 七测同套）。
   - BinaryStream 64 字节预留：`crates/foundation/src/stream.rs` 手写 `Default` = `Vec::with_capacity(64)`（参照 `MemoryOStream( int size = 64 )`，`lib/cstdmf/memory_stream.hpp`——参照默认构造即预留，`new()`/`from_u32_le` 同享；`from_slice` 读流包已有内存不预留）。红先证旧实现 61 字节小写 2 次分配，新实现 1 次/64 B；encode_mixed_payload 29→26 次（26,563→26,507 B）；`cargo test -p foundation` 228+10 绿（405 处 `BinaryStream::new()` 调用点无回归），clippy 净。
   - 加载峰值 A/B（bots 生成器，`LOAD_CLIENTS=4`/`LOAD_DURATION=2`，main `33e030a` ± 本 commit 双临时 worktree，3 轮取中位）：steady-move 3,216→3,456、login-hurricane 3,284→3,152、dense-aoi 3,248→3,168 KiB——差异全在 ±150-200 KiB 轮间摆幅内，生成器峰值 RSS 噪声内不变（分配数工作对离线面足迹本就无感）；A/B 表落 `docs/perf-baseline-2026-11-24.md` OPT-01-01-03 节。
@@ -10612,10 +10617,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 评估缓冲复用、批量收发与减少复制。比较 RPC RTT、网络吞吐、丢包恢复和内存占用，混跑旧线协议。
 
-- [x] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。（本席 2ba686b，lane/bw15-platform：crates/mercury/tests/network_baseline.rs 7 测=UDP/TCP 真回环 RTT p50/p90/p99+4MiB 吞吐+钉死钟丢包恢复两臂（16/16 恰一次重发+越序 ack 穿越）；记录 TSV docs/review/fixtures/network-baseline/net-baseline.tsv；mercury 377 lib+7 集成全绿，回环墙钟数字机器相关只记录不设带）；**双交付登记待主席**：main 侧文本另载 `841315b` 等交付。
-- [x] **OPT-02-01-02 评估缓冲复用**。**验收** 报告分配与峰值内存。（本席 dc549c4/739a3bc，lane/bw15-platform：crates/mercury/tests/buffer_alloc.rs 5 测=指针配对台账分配器+测量窗，Packet 1 alloc/1472B、收包循环每报 1 新箱、未确认窗每槽 1576B 且 ack 后活集归零、TCP 发送缓冲稳态写+重排队零分配=背衬复用证实；TSV docs/review/fixtures/network-baseline/buffer-alloc.tsv，证据页 docs/review/opt-02-01-02-buffer-reuse.md；mercury 377 lib+7+5 全绿，分配计数族逐跑恒等）；**双交付登记待主席**：main 侧文本另载 `3b5f15a、`8b1793a` 等交付。
-- [x] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。（本席 bc1ee86/071bdc6/3e7c776，lane/bw15-platform：platform::socket 落 sendmmsg/recvmmsg 包装+SendScratch/RecvScratch 保留式暂存（Linux cfg）；crates/mercury/tests/batch_io.rs 三臂对照=批量/逐报/分配计数，批宽 64 收发系统调用各 63×摊派（3495→55）确定、每报摊派成本 p50 持平、稳态 0 alloc/报（现行路径 1.00/报）、回环吞吐同量级（窗深投递延迟主导，墙钟只记录不设带）；TSV docs/review/fixtures/network-baseline/batch-io.tsv，证据页 docs/review/opt-02-01-03-batch-and-copy.md；platform 64+mercury 377/7/5/1 全绿）；**双交付登记待主席**：main 侧文本另载 `3590227、`7dc6d12、`c733e5a` 等交付。
-- [x] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。（本席 fc181f5/19a9c42/29cc302/f438b7d/1b27379, lane/bw15-platform：crates/server-runtime/tests/el7_mixed_deploy.rs 五腿真机混部=新版→原版 UDP（pid/WholeMachine 查询）+原版→新版 UDP（logger 注册与 birth/death 监听入册）+发现广播（addTCP/add 版本门两臂推送件到位）+新版→原版 TCP（注册 108+记录 107 帧化落 mldb）+新版→原版 UDP（裸数据报落 mldb），mldb component_names/strings 字节级断言；**四个真互操作 bug 修复**：contracts/machined.rs v51 pid u32+Listener/Signal extra 块殿后+ProcessMessage.port 线上网络序，message_logger 记录头 DebugMessageSource=4 字节裸枚举（38 vs 41 字节账锁定），MachinedDaemon answer_query_all 逐匹配应答（bwmachined.cpp:1410-1452）；TSV docs/review/fixtures/network-baseline/el7-mixed-deploy.tsv，证据页 docs/review/opt-02-01-04-el7-mixed-deploy.md；contracts 44+server-runtime lib 1700+mixed 1+message_logger 160+platform 64 全绿，20018 毒气探针前置）
+- [x] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。（bw15 席 `2ba686b`，lane/bw15-platform，main=`841315b`：crates/mercury/tests/network_baseline.rs 7 测=UDP/TCP 真回环 RTT p50/p90/p99+4MiB 吞吐+钉死钟丢包恢复两臂（16/16 恰一次重发+越序 ack 穿越）；记录 TSV docs/review/fixtures/network-baseline/net-baseline.tsv；mercury 377 lib+7 集成全绿（本席 main 复测 384 绿），回环墙钟数字机器相关只记录不设带）
+- [x] **OPT-02-01-02 评估缓冲复用**。**验收** 报告分配与峰值内存。（bw15 席 `dc549c4`/`739a3bc`，lane/bw15-platform，main=`3b5f15a`/`8b1793a`：crates/mercury/tests/buffer_alloc.rs 5 测=指针配对台账分配器+测量窗，Packet 1 alloc/1472B、收包循环每报 1 新箱、未确认窗每槽 1576B 且 ack 后活集归零、TCP 发送缓冲稳态写+重排队零分配=背衬复用证实；TSV docs/review/fixtures/network-baseline/buffer-alloc.tsv，证据页 docs/review/opt-02-01-02-buffer-reuse.md；mercury 377 lib+7+5 全绿（本席 main 复测绿），分配计数族逐跑恒等）
+- [x] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。（bw15 席 `bc1ee86`/`071bdc6`/`3e7c776`，lane/bw15-platform，main=`c733e5a`/`7dc6d12`/`3590227`：platform::socket 落 sendmmsg/recvmmsg 包装+SendScratch/RecvScratch 保留式暂存（Linux cfg）；crates/mercury/tests/batch_io.rs 三臂对照=批量/逐报/分配计数，批宽 64 收发系统调用各 63×摊派（3495→55）确定、每报摊派成本 p50 持平、稳态 0 alloc/报（现行路径 1.00/报）、回环吞吐同量级（窗深投递延迟主导，墙钟只记录不设带）；TSV docs/review/fixtures/network-baseline/batch-io.tsv，证据页 docs/review/opt-02-01-03-batch-and-copy.md；platform 64+mercury 377/7/5/1 全绿（本席 main 复测 455 绿））
+- [x] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。（bw15-platform 席 `fc181f5`/`19a9c42`/`29cc302`/`f438b7d`/`1b27379`，lane/bw15-platform，main=`261a2d0`/`25ee476`/`3675b18`/`62ea5d3`/`4b83ebb`：crates/server-runtime/tests/el7_mixed_deploy.rs 五腿真机混部（`#[ignore]` 场景，EL7_MIXED_OUT 落 TSV）=新版→原版 UDP（pid/WholeMachine 查询）+原版→新版 UDP（logger 注册与 birth/death 监听入册）+发现广播（addTCP/add 版本门两臂推送件到位）+新版→原版 TCP（注册 108+记录 107 帧化落 mldb）+新版→原版 UDP（裸数据报落 mldb），mldb component_names/strings 字节级断言；**四个真互操作 bug 修复**：contracts/machined 线格式对参考（main=`261a2d0`）/message_logger 记录头源字段宽（main=`25ee476`）/machined 进程统计查询答全匹配面（main=`3675b18`）/server-runtime 接 message_logger workspace 边（main=`62ea5d3`）；TSV docs/review/fixtures/network-baseline/el7-mixed-deploy.tsv，证据页 docs/review/opt-02-01-04-el7-mixed-deploy.md；本席 main 复测五腿全绿（5.01s，TSV 复捕与夹具逐字节恒等））
 
 ### OPT-03-01 Python 桥接基线
 
@@ -10674,10 +10679,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
-- [ ] **OPT-09-01-01 ；**跨席交付登记（两 lane 均已勾、均未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席四行全交（lane/bw14-script-host），opt-09-db-baseline 席四行全交（da4e411/da9a135/cb65282/7663701，lane/opt-09-db-baseline 7663701 止）——主席择一面并入。分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。
-- [ ] **OPT-09-01-02 ；**跨席交付登记（两 lane 均已勾、均未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席四行全交（lane/bw14-script-host），opt-09-db-baseline 席四行全交（da4e411/da9a135/cb65282/7663701，lane/opt-09-db-baseline 7663701 止）——主席择一面并入。评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
-- [ ] **OPT-09-01-03 ；**跨席交付登记（两 lane 均已勾、均未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席四行全交（lane/bw14-script-host），opt-09-db-baseline 席四行全交（da4e411/da9a135/cb65282/7663701，lane/opt-09-db-baseline 7663701 止）——主席择一面并入。评估写批次与归档整合**。**验收** 报告提交和恢复时长。
-- [ ] **OPT-09-01-04 ；**跨席交付登记（两 lane 均已勾、均未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席四行全交（lane/bw14-script-host），opt-09-db-baseline 席四行全交（da4e411/da9a135/cb65282/7663701，lane/opt-09-db-baseline 7663701 止）——主席择一面并入。复跑事务、重试与恢复**。**验收** 数据一致。
+- [x] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。（opt-09-db-baseline 席 `da4e411`，lane/opt-09-db-baseline，main=`e59ca31`：crates/db-postgres/tests/store_baseline.rs 6 测=512 行确定性语料同一数据集落 MySQL（DDL 对照参考 db_storage_mysql 布局+值类型逐 kind 对）与 PostgreSQL（JSONB 嵌套列 codec 往返）双后端，schema/确定性/嵌套列各单测；TSV docs/review/fixtures/store-baseline/store-baseline.tsv 22 行，证据页 docs/review/opt-09-01-01-store-baseline.md；workspace 新增 `mysql` 依赖（minimal-rust）；本席 main 复测 6 绿。⚠️ 与 bw14-script-host `7024fb1` 平行交付 FLAG 待主席择一）
+- [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。（opt-09-db-baseline 席 `da9a135`，lane/opt-09-db-baseline，main=`04f5d37`：crates/db-postgres/tests/store_pool_candidates.rs 3 测=连接池与预编译语句候选对照（参考 `numConnections_` 默认 5 长连会话+每线程一连接+启动期预编译实体 SQL 模板两形），各后端延迟与吞吐逐形报告且回读恒等；TSV docs/review/fixtures/store-pool/pool-candidates.tsv 48 行，证据页 docs/review/opt-09-01-02-store-pool.md；本席 main 复测 3 绿）
+- [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。（opt-09-db-baseline 席 `cb65282`，lane/opt-09-db-baseline，main=`8b1fb8a`：crates/db-postgres/tests/store_commit_candidates.rs 4 测=实体写缓冲进 Transaction 按归档周期一 `COMMIT`（参考 sqlite_database.cpp 131-177+db_config 5s 默认）与显式 WRITE_EXPLICIT 两臂提交时长+归档整合恢复时长报告，落库回读逐字段等；TSV docs/review/fixtures/store-commit/commit-candidates.tsv 16 行，证据页 docs/review/opt-09-01-03-store-commit.md；本席 main 复测 4 绿）
+- [x] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。（opt-09-db-baseline 席 `7663701`，lane/opt-09-db-baseline，main=`3a7b9d0`：crates/db-postgres/tests/store_recovery.rs 3 测=参考 MySqlBackgroundTask::doBackgroundTask 契约复跑——可重试失败恰一次重试（attempts 2/on_retry 1）、回滚批零幸存行、事务外断连恰一次自动恢复+事务内手动重连；恢复后数据一致计数钉死；TSV docs/review/fixtures/store-recovery/recovery.tsv 21 行，证据页 docs/review/opt-09-01-04-store-recovery.md；本席 main 复测 3 绿）
 
 ### OPT-10-01 地图加载和查询基线
 
@@ -10709,10 +10714,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化依赖缓存、并行转换和编辑器加载。比较冷构建、增量构建与大地图编辑时间，校验可复现产物。
 
-- [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。deliver 80c9b88（main，bw16-18 席）；**FLAG 双交付待主席**：lane/bw14-script-host 平行交付 `1fd4739+bb1e3ea` 未进 main（OPT-13-01-01）。
-- [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。deliver fb80b66（main，bw16-18 席）；**FLAG 双交付待主席**：lane/bw14-script-host 平行交付 `663dc8c+97817db` 未进 main（OPT-13-01-02）。
-- [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。deliver 4330bd7（main，bw16-18 席）；**FLAG 双交付待主席**：lane/bw14-script-host 平行交付 `827ed8e+00109d2` 未进 main（OPT-13-01-03）。
-- [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。deliver bb45885（main，bw16-18 席）；**FLAG 双交付待主席**：lane/bw14-script-host 平行交付 `b981ae7` 未进 main（OPT-13-01-04）。
+- [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。deliver 80c9b88
+- [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。deliver fb80b66
+- [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。deliver 4330bd7
+- [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。deliver bb45885
 
 ### OPT-14-01 发布包尺寸及首次运行
 
@@ -10726,34 +10731,35 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
-- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。；**证据（Linux 腿实测，行仍开=三端 runner 缺）**：`crates/platform/tests/io_timer_baseline.rs` 统一负载 512 ops@64KiB——顺序写 30.33µs/读 9.04µs/atomic_replace 55.81µs（fsync 大头）/mmap 单遍 ~1µs/时钟分辨率 1µs/1ms sleep 均值 1.0864ms/wakeup 往返 0.95µs；断言全数据面（往返/映射内容/节拍±10%），墙钟读数不入断言；windows-gnu 卡 mercury 无 Windows 臂（BW-15-03）、macOS 卡 darwin SDK，同测试三端可跑待 BW-15-05 runner。夹具 `docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv`，证据 `docs/review/opt-15-01-01-io-timer-baseline.md`。；**双交付登记待主席**：bw14-script-host 席 lane 已勾（7081674，行内无面文本）；本席 Linux 腿如上（行仍开=三端 runner）。
-- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。；**Linux 腿登记（行仍开=三端图形矩阵缺 runner，BW-15-04）**：本仓像素面=确定性软件光栅器（`render::software`），设备/驱动面=宿主 CPU Intel i9-10880H @2.30GHz+内核 7.0.0-44-generic（无 GPU 依赖=驱动无关），帧时已由 main `5a80a78`（OPT-11-01-01 三端 profile 基线：320x240 4.9ms/640x480 21.5ms）钉死——本行剩余面=真 GPU 后端（D3D/Metal）三端设备+驱动+帧时，待 BW-15-04 runner 矩阵。；**双交付登记待主席**：bw14-script-host 席 lane 已勾（2f77126+勾 0b6d948：crates/client/tests/render_backend_baseline.rs 登记表三问=设备结构断言 640×480 RGBA8 adapter 0/驱动 probe 宿主环境文本/帧时 probe 64 帧 p50 15.6-18.8ms p99 24.2-25.1ms 入 RENDER_BACKEND_OUT）；本席 Linux 腿登记如上。
-- [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。；**Linux 腿登记（行仍开=三端）**：平台针对性优化的回归面=协议与功能套件全绿——workspace 166 套 7185 passed exit 0（含 mercury 传输/协议、platform 四 Windows 后端镜像 `--all-targets` 交叉验证、BW-15-01 逐 slice 门禁矩阵）；windows-gnu 全量编译卡 mercury Windows 臂（BW-15-03）、macOS 卡 darwin SDK，三端套件通过待 runner。；**双交付登记待主席**：bw14-script-host 席 lane 已勾（3761c24+勾 95ffb47：crates/platform/tests/platform_opt_parity.rs 批臂 sendmmsg/recvmmsg vs 泛化臂 sendto/recvfrom 同 loopback UDP 对——256 数据报字节/序/源三元组恒等+批臂系统调用形状 8+8 vs 泛化 256+256）；本席 Linux 腿登记如上。
+- [ ] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。
+  - 注记（2026-11-26，台账席）：Linux 腿已落——bw15-platform 席 `56c2673`，lane/bw15-platform，main=`f6107e8`：crates/platform/tests/io_timer_baseline.rs Linux 腿 1 测 9 行=64KiB 顺序写 30µs/读 9µs/原子替换 56µs/mmap 读 506µs 每遍/定时分辨率 1µs/sleep 1ms 均值 1.086ms/唤醒往返 0.95µs，512 ops 统一负载，host=linux-x86_64；TSV docs/review/fixtures/opt-15-01-01/io-timer-linux.tsv，证据页 docs/review/opt-15-01-01-io-timer-baseline.md；本席 main 复测绿。行保持开——「各平台」待 Windows/macOS 腿（三端 runner，BW-15-05-01）后补测再勾。
+- [x] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。(2026-11-26 lane/bw14-script-host 2f77126→main 25e40c7：crates/client/tests/render_backend_baseline.rs 按后端登记表采集三问——新树唯一出货像素后端=Device 下软件光栅器（参照侧 D3D9/OpenGL/cocos2d/Awesomium 四后端仅 BW-15-06-01 事实非移植，BACKENDS 留位即插）；设备面结构断言 SoftwareDevice 640×480 adapter=0 307200px RGBA8+帧序 1..=64 单设备对象+status=Ok+leaked()=0；驱动面=执行环境文本（CPU/核/OS/内核 probe 只印不断言）；帧时=固定镜头 check_device→step→present 64 帧逐帧 FRAME-TIME+FRAME-TAIL 报告，min/median/p99/max 记运行值不断言；结构契约逐相邻帧摘要异+帧 1..=8/64 复现 OPT-11-01-01 saved 钉+帧 1/7/31/64 纯帧序号复现+复跑恒等；提交目录 tests/baseline/render-backend-baseline.tsv 十列 linux-x86_64=measured，macos-arm64/windows-x86_64=pending rows 带 BW-15-04/BW-15-03 blocker 不编数字，语法检查拒 pending 带测量/未知后端/重复对/非数字/测量平台缺行；client 861 绿+集成全绿，clippy 净；本机 2 测绿)
+- [x] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。(2026-11-26 lane/bw14-script-host 3761c24→main 117a588：crates/platform/tests/platform_opt_parity.rs——同套协议场景两臂比结果：泛化 sendto/recvfrom 逐数据报 vs 批 sendmmsg/recvmmsg 逐窗口，同一 loopback UDP 对共发送套接字源三元组可比；256 数据报逐报字节+序恒等（内嵌大端序号=自身下标）+源 port/addr 网络序恒等+变长 16..=1200 抓聚合拆裂+批臂 8 send+8 recv vs 泛化 256+256；边沿同答：空批/空收 0/静默非阻塞两臂同 -1+EAGAIN（libc 约定，sendmmsg 注释"-errno"与实态不符如实登记）/8 槽收 5 排队恰 5 槽序字节恒等/单批同 sendto；自揭两发现=drained 错误形与槽宽=批容量（4 槽收 5 留队未丢，独立 C repro）；platform 64 lib+io_timer 1+parity 2+signal_call_sites 全绿，本机 2 测绿)
 
 ### OPT-16-01 采集依赖与增量构建基线
 
 根据第一轮依赖图调整过重或高度耦合的 crate，比较增量编译耗时，保留接口和安装路径兼容。
 
-- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。；deliver 96009f9（main）；**FLAG 双交付未决**：main `96009f9`（asset-pipeline tests/dependency_rebuild_baseline.rs 203 行集成测）与本席 `d11c3d2`（`ci/build-baseline.sh` fanout+冷/增量双腿 shell 测量：foundation 19 依赖者、release 冷 220.59s/增量 96.25s、debug 冷 53.47s/增量 3.81s、touch foundation 重编 11 crate 全闭包）互补非冲突——main 面是测试内基线，本席面是可复跑 CI 入口；本席勾行已自纠退回开（revert `6d07099`），证据 `docs/review/opt-16-01-01-build-baseline.md`，待主席择一/并认。
-- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171（main `8c37171`，time_queue 拆分评估 rebuild 25→7 crate fan-out 24→6；吸收自 origin/main `7ff40ee` 勾行，本席未重做）。
-- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。deliver 870ad04（main，asset-pipeline install_path_recheck.rs 289 行（res_packer install+双端 PackedSection 载回对照）；吸收自 origin/main，本席未重做）。
+- [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。deliver 96009f9
+- [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171
+- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。deliver 870ad04
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
 
-- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。deliver 38b99db（main，观测通道采集关/开长稳基线；吸收自 origin/main，本席未重做）。
-- [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。deliver 2a26627（main，采集缓冲与导出开销评估；吸收自 origin/main，本席未重做）。
-- [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。deliver 0ee4b28（main，采集完整性回归；吸收自 origin/main，本席未重做）。
+- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。deliver 38b99db
+- [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。deliver 2a26627
+- [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。deliver 0ee4b28
 
 ### OPT-26-01 固定事件回放并采集查询基线
 
 以相同事件回放优化批处理和查询，比较导入速率、查询时延及内存占用，核对报表一致性。
 
-- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。deliver 8f42e4c（message_logger `qlog_replay_baseline.rs` 固定回放 20000 entry×11 查询面+样本报表；fixture `docs/review/fixtures/opt-26-01-01/qlog-replay-baseline.tsv`）；⚠️ 双交付 FLAG 主席择一：opt-26-db `4c75e00`（event_query_baseline.rs PG 语料面基线，未进 main）与本席 `8f42e4c`（message_logger 内存查询面基线）
-- [ ] **OPT-26-01-02 评估导入批大小**。**验收** 他席交付未进 main，行保持开：opt-26-db `40b58e0`（import_batch_candidates.rs 五事务形 64 行 commit ~1.4×+分配峰值平坦）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理报告吞吐和峰值内存。
-- [ ] **OPT-26-01-03 评估查询聚合**。**验收** 他席交付未进 main，行保持开：opt-26-db `bf335b5`（query_aggregation_candidates.rs name→id 索引 ~4746×+聚合答案相等）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理报告延迟变化。
-- [ ] **OPT-26-01-04 复算样本报表**。**验收** 他席交付未进 main，行保持开：opt-26-db `b34554a`（sample_report_rerun.rs 同流复算九键逐字节全等）；簇按 lane 名归 opt-26-db 席，主席并入后按勾行态处理窗口及计数与优化前一致。
+- [x] **OPT-26-01-01 固定事件回放并采集查询基线**。**验收** 保留导入、查询及内存数据。（opt26-db 席 `4c75e00`，lane/opt-26-db，main=`6973092`：crates/db-postgres/tests/event_query_baseline.rs 6 测=512 实体迁移面导入+三代事件存储契约回放+get/name 查询延迟+lookup_entities 全扫形+计数分配器窗口账，钉定样本报表（四级窗口+五查询形计数）为 01-04 复算基线；TSV docs/review/fixtures/event-query/event-query.tsv 39 行，证据页 docs/review/opt-26-01-01-event-query-baseline.md；本席 main 复测 6 绿，TSV 复捕墙钟行随负载漂（结构计数行恒等）只记录不设带）；本席平行交付 lane-only `8f42e4c`（crates/message_logger/tests/qlog_replay_baseline.rs 内存查询面回放基线，未进 main——主席已择 opt-26-db `4c75e00` 面）
+- [x] **OPT-26-01-02 评估导入批大小**。**验收** 报告吞吐和峰值内存。（opt26-db 席 `40b58e0`，lane/opt-26-db，main=`027c6c0`：crates/db-postgres/tests/import_batch_candidates.rs 3 测=同 512 行语料五种事务形（每 1/16/64/256 行一提交+整库一事务）各报墙/吞吐/计数分配器峰值且逐形回读恒等；TSV docs/review/fixtures/import-batch/import-batch.tsv 30 行，证据页 docs/review/opt-26-01-02-import-batch.md；本席 main 复测 3 绿（批 64+ 后吞吐平坦 620-640 rows/s，批 1 最慢=每行一提交））
+- [x] **OPT-26-01-03 评估查询聚合**。**验收** 报告延迟变化。（opt26-db 席 `bf335b5`，lane/opt-26-db，main=`5df3486`：crates/db-postgres/tests/query_aggregation_candidates.rs 3 测=一全扫建 name→id（512）+level→ids（200 键）两聚合图，同 128 名抽样网格前后对照——基线 name 查询 ~14× 键控 get，聚合后网格解析走图不走扫；TSV docs/review/fixtures/query-aggr/query-aggr.tsv 21 行，证据页 docs/review/opt-26-01-03-query-aggregation.md；本席 main 复测 3 绿（加速比两跑 8350×/4746×=负载敏感记录行，128 网格断言恒等））
+- [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。（opt26-db 席 `b34554a`，lane/opt-26-db，main=`1590095`：crates/db-postgres/tests/sample_report_rerun.rs 3 测=同固定事件流重放后从**存储语料**复算样本报表，对照盘上 docs/review/fixtures/event-query/event-query.tsv 基线（四级窗口+五查询形计数逐项等），再在每项优化（64 行批导入/两聚合图）后各复算一次仍等；证据页 docs/review/opt-26-01-04-sample-report-rerun.md；本席 main 复测 3 绿）
 
 ## 5. 实施顺序与里程碑
 

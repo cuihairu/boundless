@@ -1,0 +1,128 @@
+{
+ "asset-pipeline": [
+  "client",
+  "compiled-space",
+  "foundation",
+  "physics",
+  "resources",
+  "terrain",
+  "waypoint-gen"
+ ],
+ "bots": [
+  "load"
+ ],
+ "boundless-server": [
+  "platform",
+  "resources",
+  "server-runtime"
+ ],
+ "chunk": [
+  "foundation",
+  "physics",
+  "resources",
+  "terrain"
+ ],
+ "client": [
+  "chunk",
+  "foundation",
+  "physics",
+  "resources",
+  "waypoint"
+ ],
+ "compiled-space": [
+  "foundation",
+  "physics",
+  "scene"
+ ],
+ "contracts": [
+  "foundation"
+ ],
+ "db": [
+  "entitydef",
+  "foundation",
+  "mercury",
+  "resources"
+ ],
+ "db-postgres": [
+  "db",
+  "entitydef",
+  "foundation",
+  "mercury"
+ ],
+ "entitydef": [
+  "foundation",
+  "resources"
+ ],
+ "foundation": [],
+ "launcher": [
+  "resources"
+ ],
+ "load": [
+  "foundation",
+  "resources",
+  "watcher"
+ ],
+ "mercury": [
+  "foundation",
+  "platform"
+ ],
+ "message_logger": [],
+ "physics": [
+  "foundation"
+ ],
+ "platform": [
+  "foundation"
+ ],
+ "plugin-host": [
+  "platform"
+ ],
+ "profiler": [],
+ "python-host": [
+  "foundation",
+  "profiler",
+  "resources"
+ ],
+ "python-module": [],
+ "resources": [
+  "foundation"
+ ],
+ "scene": [
+  "foundation",
+  "physics"
+ ],
+ "server-runtime": [
+  "client",
+  "contracts",
+  "db",
+  "db-postgres",
+  "entitydef",
+  "foundation",
+  "mercury",
+  "message_logger",
+  "physics",
+  "platform",
+  "profiler",
+  "resources",
+  "watcher",
+  "waypoint"
+ ],
+ "terrain": [
+  "resources"
+ ],
+ "test-support": [
+  "asset-pipeline",
+  "chunk",
+  "foundation",
+  "platform",
+  "python-host",
+  "resources",
+  "server-runtime"
+ ],
+ "watcher": [],
+ "waypoint": [
+  "foundation"
+ ],
+ "waypoint-gen": [
+  "foundation"
+ ]
+}

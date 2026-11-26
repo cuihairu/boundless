@@ -37,7 +37,36 @@ use crate::server_app::ServerApp;
 use crate::shutdown::GameTime;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::rc::Rc;
+
+/// An identity hasher for the pointer-keyed `handles` map. The keys are
+/// heap addresses the allocator already spreads, so re-hashing them
+/// with `std`'s seeded multiply-xor only adds latency to the per-tick
+/// removal-handle probe (the reference reads `removalHandle_` as a
+/// plain field; the port pays a map probe for the same assertion).
+/// Hashing is on the hot path of every `call()` pass.
+#[derive(Default)]
+struct PtrHasher(usize);
+
+impl Hasher for PtrHasher {
+    fn finish(&self) -> u64 {
+        self.0 as u64
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 = self.0.rotate_left(8) | *byte as usize;
+        }
+    }
+
+    fn write_usize(&mut self, n: usize) {
+        self.0 = n;
+    }
+}
+
+/// `BuildHasherDefault`-compatible builder for [`PtrHasher`].
+type PtrBuildHasher = BuildHasherDefault<PtrHasher>;
 
 /// `cstdmf::Updatable`: "This interface should be implemented by any
 /// object that wants to receive updates. The CellApp can register
@@ -57,7 +86,7 @@ pub struct Updatables {
     /// `objects_`: `None` marks a hole punched by a mid-pass removal.
     objects: Vec<Option<Rc<RefCell<dyn Updatable>>>>,
     /// `removalHandle_` per object, keyed by allocation identity.
-    handles: HashMap<usize, i32>,
+    handles: HashMap<usize, i32, PtrBuildHasher>,
     /// `levelSize_`.
     level_size: Vec<i32>,
     /// `inUpdate_`.
@@ -71,7 +100,7 @@ impl Updatables {
     pub fn new(num_levels: usize) -> Self {
         Self {
             objects: Vec::new(),
-            handles: HashMap::new(),
+            handles: HashMap::default(),
             level_size: vec![0; num_levels],
             in_update: false,
             deleted_objects: 0,

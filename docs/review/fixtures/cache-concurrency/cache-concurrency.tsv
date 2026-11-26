@@ -1,0 +1,16 @@
+nocache_ns_avg	36868
+cold_ns_avg	74032
+store_overhead_ratio	2.01
+hot_ns_avg	64151
+cold_cache_writes	48
+hot_cache_hits	48
+cold_to_hot_speedup	1.15
+seq_buckets	24
+workers	4
+concurrent_stores	48
+concurrent_serves	48
+ccold_wall_ms	1.573
+chot_wall_ms	1.830
+concurrent_buckets	24
+cross_instance_serves	48
+eval_wall_ms	23.742
