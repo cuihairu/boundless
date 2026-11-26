@@ -1162,9 +1162,9 @@
 覆盖客户端流式数据下载、回放头、压缩块、tick 写入和完成回调。与 Cell 采集及客户端回放读取联验。
 
 - [x] **BW-07-05-01 分块发送客户端资源** `(548e9de)`。**验收** 块顺序和完成回调吻合。
-- [x] **BW-07-05-02 写入回放头及元数据** `(70f5fee)`。**验收** 原版读取器可解析。（replay_writer.rs 头/元数据字节按 initFromStream/readFromStream 解析规则金样钉死：版本 [0,0,9,2] 子补丁在前、sigLen@33、numTicks@39 在签名外；元数据签名链自头签名；server-runtime 不得依赖 client 席读取器，按层禁令走金样向量。**本席 2026-11-25 核档+补交付 replay_header.rs（+203：`generate_nonce`/`new_with_random_nonce`+8 定向测，99.67%→99.69%）**：2026-11-25 核档+补交付 server-runtime/src/replay_header.rs 1043 行（+203：`generate_nonce`/`ReplayHeader::new_with_random_nonce` + 8 定向测）。**存档已在 main（7ac6b2a「write replay header and metadata」，本席按档核档+补测+补缺面）**：头块 `ReplayHeader`（`replay_header.ipp:8`，version=四 u8 subpatch/patch/minor/major + digest 16 + gameUpdateFrequency u8 + timestamp u32 + nonce 8 + reportedSignatureLength u16 全在 checksum 内，签名殿后，**numTicks 在签外**因 finalise 会改写；`streamSize/calculateStreamSize/signatureLengthFieldOffset/numTicksFieldOffset/checkSufficientLength` 全齐）、元数据块 `ReplayMetaData`（`replay_metadata.cpp:60`：`streamSize_` u32 + 键值对，`std::map`=BTreeMap 键序，replace 保持 `streamSize_` 同步；错误文案逐字 "Insufficient data for meta-data"/"Meta-data corrupted"）、`write_replay_prefix`=`ReplayDataFileWriter` 构造器（`replay_data_file_writer.cpp:65`）**用头签名 prime 校验方案**再写元数据。**原版读取器可解析**两条独立验证：seat B `replay_write.rs` 用真 `MD5SumScheme`（16 字节 MD5）逐字节钉版面（block.len()==55=4+16+1+4+8+2+16+4、版本字节 [0,0,9,2]、numTicks 在偏移 51、签名=md5(前 35 字节)）且 `client::replay::parse_header` 逐字段回读+整块消费尽；seat A `replay_header.rs` 自带忠实读取器 round-trip + 版本不符/坏签名/短流/元数据超长四类拒绝臂。本席补缺面=`initNonce`（`replay_header.cpp:82`：nonce 为空则 `RAND_bytes` 填 8 字节，端口读 /dev/urandom）+ 8 测（四错误文案+`From<StreamError>`、streamSize/numTicks 偏移=47/43、篡改元数据签名→BadSignature、键长标记中途截断→退出键值循环报 Truncated、值中途截断同、短片段<4 字节拒、>254 字节值走 `BW_PACK3` 四字节前缀、`generate_nonce` 8 字节且两次抽样不同+随机 nonce 头 round-trip）。llvm-cov 行覆盖 replay_header.rs **93.67%→99.69%**（639/641，余 2 行=checkSufficientLength 内 `read_u16`/`read_u32` 的 Err 臂不可达假路径，切片恒长 2/4 字节，04-01/04-02 同口径）。同簇同面另见：replay_recording.rs 99.81%、replay_data.rs 98.45% 达标；**replay_write.rs 93.54%、replay_tick.rs 89.76% 未达 ≥98%**（属 BW-07-05-03，覆盖率未达不勾）。clippy/fmt 净；server-runtime 库 1233 测绿；workspace 5597 测 0 FAILED。下一步 BW-07-05-03。）
-- [x] **BW-07-05-03 写入压缩 Tick 块** `(70f5fee)`。**验收** 已知事件序列可无损读取。（块字节金样：块长@0、逐 tick [gameTime][dataLen][压缩包装]、签名链上一块；zip1-9 级经 ZlibDecoder 往返 bit 级复原；窗口缺口（头/中/尾）按空条目 [tick][0] 补齐——参考实现在窗口首 tick 缺失时 find 解引用 end()，移植版按同格式安全落空条目；块 99.27% 行覆盖。**本席同日补测 replay_tick.rs/replay_write.rs 边缘面（+19 定向测，replay_tick 89.76%→100%、replay_write 93.54%→99.28%）**：2026-11-25 核档+补交付 server-runtime/src/replay_tick.rs（+222）与 replay_write.rs（+220），17 定向测。**存档已在 main（seat B 7ac6b2a/4300ff3 已交付 tick 块写面+`client::replay::parse_tick_chunks`/`decompress_tick` 读取器，无损读取验收由其既有测 `a_known_event_sequence_round_trips_end_to_end`/`tick_payloads_compress_and_round_trip_losslessly`/`the_recorded_file_parses_back_losslessly`/`missing_ticks_are_written_as_empty_headers` 钉死）**，本席按档核档+llvm-cov 找缺口补测：**replay_tick.rs 89.76%→100%（771/771）**——补 zip BW_PACK3 长载荷帧（60 事件 ≥255B→`zip_best_compression`，压缩帧=packed 原长+packed 压长+zlib 流，`zip_stream.cpp:281`）、未知压缩 tag→`BadCompressionTag(20)`、坏 zlib→`BadZlib`、空载荷无 tag→`CorruptTickHeader`、9 变体 Display 文案+`From<StreamError>`、访问器/状态语义（`last_tick_pending_write` 在 numTicksToSign 未满前恒 0、`finalise` 才出块、`is_finalising`）、首 tick 空 blob 忽略（`:218`）、**num_cells=0 永不完 tick 怪癖**（`TickReplayData::new(7,0)` left=0→`transfer_from_cell` 拒→tick 开在 7 但 finalise 出 0 块，参照逐字）、fresh writer `signAndWriteCompletedTickData` 空转（`:317`）、**签名只入队不放行**（`has_more_tick_data_to_write` 在 sign 后仍 true，直到 `on_chunk_write_complete(1)` 释放 first..=last 缓冲）、读侧短流/chunk 长 100 越界→`Stream(Truncated)`；**replay_write.rs 93.54%→99.28%（1098/1106）**——补 `Sha256Checksum` 32 字节签名全文件往返（SHA-256 方案+zip-9 载荷 `decompress_tick` 逐字节）、元数据 `has_key`/`size`/`clear`、写侧头 `num_ticks()==0`、`TickReplayData.raise_expected_cells` 只升不降+outstanding 同步加 delta、**chunk 冲刷时后 tick 仍缓冲则不关文件**（tick 3 先完触发 1-2 块冲刷，`num_ticks_written==2` 且 `!is_closed`）、释放后 finalise 惰性（文件尺寸不变）、`/dev/full` 拒写→error path 一次+errorString 含 "No space left"+后续 add/finalise 惰性。余 8 行归 BW-07-05-04（finalise patch Err 臂 865/写文件 error 早退 889/`fail` 体内 913/915/监听器错误体 1070-1072/测试 /dev/full 守卫 1936——本项已用 /dev/full 覆盖 fail 主体，余下是 patch 失败臂与回调重入细节）。坑：**`has_more_tick_data_to_write`=缓冲首 key < current_tick**（不是缓冲非空）、numCells=0 的 tick 永不完成（open 在 current_tick 但 left=0）、签名与放行分离（引用后台写模型，放行才删缓冲）、`on_write_complete_position` 的 `last_chunk_length` 含 4 字节长度字+签名长。clippy/fmt 净；server-runtime 库 1252 测绿（+19）；workspace 5616 测 0 FAILED。下一步 BW-07-05-04。）
-- [x] **BW-07-05-04 处理结束和失败** `(70f5fee)`。**验收** 文件关闭与回调次数符合基线。（finalise 后 seek numTicks 偏移补写+chmod 0444；close(false) 静默放文件；错误路径留 sink 可查、路径即刻注销；完成回调按 userArg 记账、最后一笔落齐后自动 closeWriter，监听器 1 完成+1 销毁与基线一致。**本席同日补钉回调基线（+3 定向测，replay_write 99.32%）**：2026-11-25 补交付 server-runtime/src/replay_write.rs（+160，3 定向测）。**存档已在 main（seat B 4300ff3/123efb6「close replay files and notify listeners」已交付 finalise/close/fail 面及其 5 测；另一份 4300ff3 在 lane/bw12-perf-bots 未并 main，main 树上 replay_file_writer.rs 908 行文件在而 lib.rs 未声明=孤儿，归主席）**，本席补齐验收缺口：**finalise**（`replay_data_file_writer.cpp:534-559`：patch_pending 门=同步端口对引用后台写时序的保序——最后一块写完前不关文件，patch numTicks 在 file 内 seek+写回+seek 回尾+chmod 0o444，patch Err→`fail()`，尾块 `on_write_complete(0)` 排空自关）、**close(false)**（`closeWriter` 置 finalising+放文件不 patch：numTicks 恒 0、文件仍可写）、**fail()**（error 只记一次+close_writer+逐监听器 `on_writing_error`）、**回调基线**（`on_writing_complete` 每写一次：两 chunk+finalise 尾=3 次可见——**首块完成发生在构造器内、先于 add_listener，挂上的监听器永远看不到它**（基线坑）；`on_writer_destroyed` 每次 drop 恰一次）、**/dev/full 拒写**（首块写即 fail：errorString 含 "No space left"、is_closed=true 且 **is_finalising=true**（closeWriter 置位——错误态与 finalise 态同源，不是 "错误非 finalise"）、tick 计数恒 0、后续 add_tick_data/finalise 全惰性、error 只报一次、drop 后 destroyed=1）。llvm-cov 行覆盖 replay_write.rs **99.28%→99.32%**（1175/1183；余 8 行=finalise patch Err 臂 865/写文件 error 早退 889/`fail` 体内 913/915（/dev/full 路径的 fail 主体已由首块写失败覆盖，此四处是 patch 段失败臂与回调重入细节，构造法无法在不 mock 文件系统下触达）/测试自身 /dev/full 存在性守卫 1936/panic 监听器错误体 2019-2020，04-01 口径登记）。replay_tick.rs 100% 不动。坑：`CountingListener` 的错误体覆盖靠真实 /dev/full 写失败而非 mock；`is_finalising` 在错误后也是 true（引用 `closeWriter` 如此）；完成回调先于监听器挂载的首块不计数。clippy/fmt 净；server-runtime 库 1255 测绿（+3）；workspace 5619 测 0 FAILED。BW-07-05 全簇勾账完毕。）
+- [x] **BW-07-05-02 写入回放头及元数据** `(70f5fee)`。**验收** 原版读取器可解析。（replay_writer.rs 头/元数据字节按 initFromStream/readFromStream 解析规则金样钉死：版本 [0,0,9,2] 子补丁在前、sigLen@33、numTicks@39 在签名外；元数据签名链自头签名；server-runtime 不得依赖 client 席读取器，按层禁令走金样向量）
+- [x] **BW-07-05-03 写入压缩 Tick 块** `(70f5fee)`。**验收** 已知事件序列可无损读取。（块字节金样：块长@0、逐 tick [gameTime][dataLen][压缩包装]、签名链上一块；zip1-9 级经 ZlibDecoder 往返 bit 级复原；窗口缺口（头/中/尾）按空条目 [tick][0] 补齐——参考实现在窗口首 tick 缺失时 find 解引用 end()，移植版按同格式安全落空条目；块 99.27% 行覆盖）
+- [x] **BW-07-05-04 处理结束和失败** `(70f5fee)`。**验收** 文件关闭与回调次数符合基线。（finalise 后 seek numTicks 偏移补写+chmod 0444；close(false) 静默放文件；错误路径留 sink 可查、路径即刻注销；完成回调按 userArg 记账、最后一笔落齐后自动 closeWriter，监听器 1 完成+1 销毁与基线一致）
 
 ### BW-08 CellApp、Space、AOI 与实体迁移
 
@@ -1747,7 +1747,7 @@
 - [x] **BW-14-04-03 布置配置及样例资源**。**验收** 首次启动可定位。（commit 5da86a6）
   - 证据：`ci/install-layout.sh` + `docs/review/bw14-04-installable-artifact-layout.md`（b0a4d3e 起，5da86a6 完成）——`res/server/bw.xml` + `res/scripts/`（21 项样例资源镜像）随包布置（install-layout PASS：配置/资源/二进制/模块/`data/` 齐全）。**工具半**：装后 `process_defs -r <prefix>/res` 首启定位并加载安装资源树（install-cli-res PASS）。**服务器半**：`apps/server/src/main.rs`（5da86a6）按参考 `BIGWORLD_MAIN` 接入 `BWResource`/`BWConfig` 链，装后 `boundless-server <role>` 以 `BW_RES_PATH=<prefix>/res` 首启定位安装配置（install-res-server PASS：无「Could not find」/「No configuration section」，正常启动/停止 exit 0）；`role_lifecycle.rs` 首启定位/未定位双测试钉死观测差（定位静默、未定位记参考失败行）。
 - [ ] **BW-14-04-04 执行干净安装烟测**。**验收** 三端能启动和停止。
-  - 证据（部分，未勾）：本席 `ci/install-layout.sh` 全链复跑（988ff5f 修两处过时模块名后 13 行 PASS：装后 server start/stop 出 `BaseApp is running`+`has shut down.` exit 0、CLI/资源定位/build parity/导入/升级/卸载全绿；夹具 `docs/review/fixtures/opt-14-01-03/install-upgrade-rerun.tsv`、证据 `docs/review/opt-14-01-03-install-upgrade-rerun.md`）。Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
+  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
 - [x] **BW-14-04-05 执行升级与卸载**。**验收** 验证用户数据保留行为。（commit b0a4d3e）
   - 证据：`ci/install-layout.sh`（b0a4d3e）——归档只携带包属树（`bin lib res`），用户数据在 `data/`（**不在归档**）。装后种子 `data/db/user.db`，篡改包属文件 `res/server/bw.xml` 后**升级**解包：包属文件还原为打包字节、`data/db/user.db` 保留（install-upgrade PASS）；**卸载**删除 `bin/ lib/ res/`、`data/db/user.db` 保留（install-uninstall PASS）。self-test 绿色全链路 + 4 条红色臂（启动失败/CLI 失败/坏模块/缺定义资源树均按预期咬合）。
 
@@ -1772,7 +1772,7 @@
 - [x] **BW-15-01-06 校验路径大小写、编码和系统目录**。**验收** 代表性夹具可寻址。（commit aa6e2ee）
   - 证据：`crates/platform/src/path.rs`（aa6e2ee）——`correct_case_of_path`（参考 `WinFileSystem::correctCaseOfPath`（win_file_system.cpp:782）的 POSIX 对应：`realpath(3)` 在大小写不敏感卷上解析出盘上真实拼写、敏感卷上即恒等、缺失路径原样返回）；`real_path`（canonical 定点、symlink 解析、缺失报 `ENOENT`）；`join`（参考 `getAbsolutePath` 的 base+path（unix_file_system.cpp:466），补缺 `'/'`）；`home_dir`（`$HOME`）/`temp_dir`（`TMPDIR`→`TMP`→`TEMP`→`/tmp`）；编码 `path_bytes`/`path_from_bytes` 字节级往返（POSIX 路径是字节串非必 UTF-8，实测 `0xFF` 字节往返）+ lossy。Linux 实测 7 测：temp 系统目录夹具写读可寻址、HOME 绝对、join 三态（缺分隔/已带/空 base）、realpath 不定点+symlink+缺失三态、correct_case 缺失原样/存在=realpath、非 UTF-8 往返。**Windows `%USERPROFILE%`/`%TEMP%`/`GetFullPathNameW` 后端归 BW-15-03 Windows runner 平台移植**（本项验收为代表性夹具可寻址，Linux 已实测过：`path::tests::temp_dir_holds_an_addressable_fixture`，temp 系统目录夹具写读可寻址）。
 - [ ] **BW-15-01-07 校验网络地址与断网行为**。**验收** IPv4/IPv6 和失联状态可复测。
-  - 证据（部分，未勾）：IPv4 侧与失联侧**原语层已齐**——地址校验 `inet_aton`/`host_by_name`/`host_by_addr`（`socket.rs`，含点分十进制与主机名区分测试）；断网 `Endpoint::enable_error_queue`+`read_error_queue`（04d4133 时的 macOS 可编译系旧代实况；f2ef112 取 theirs 把 socket.rs 951→887 行连带丢光 sin_len/u8 族/msg_controllen/error-queue 四组 BSD 臂，5f0b706 恢复，见下），**失联可复测实测**：`endpoint.rs::the_error_queue_reports_a_refused_packet`（无监听端口发包→ICMP unreachable 入错误队列→`ECONNREFUSED`+offender 回读→队列排空）。**待决（用户拍板）**：IPv6。参考 BigWorld 的 `Address`/`Endpoint` 是 IPv4-only（`uint32 ip`+`sockaddr_in`，`socket.rs` 文档已注明"the reference only builds IPv4 addresses"）；若本移植要支持 IPv6 则属**参考外偏差**，需改 `Address` 为双族枚举并波及 `endpoint`/`packet_receiver`/`packet`（`sockaddr_in6`、`AF_INET6`），改动面大且与在飞文件重叠。
+  - 证据（部分，未勾）：IPv4 侧与失联侧**原语层已齐**——地址校验 `inet_aton`/`host_by_name`/`host_by_addr`（`socket.rs`，含点分十进制与主机名区分测试）；断网 `Endpoint::enable_error_queue`+`read_error_queue`（04d4133 起在 macOS 亦可编译，见下），**失联可复测实测**：`endpoint.rs::the_error_queue_reports_a_refused_packet`（无监听端口发包→ICMP unreachable 入错误队列→`ECONNREFUSED`+offender 回读→队列排空）。**待决（用户拍板）**：IPv6。参考 BigWorld 的 `Address`/`Endpoint` 是 IPv4-only（`uint32 ip`+`sockaddr_in`，`socket.rs` 文档已注明"the reference only builds IPv4 addresses"）；若本移植要支持 IPv6 则属**参考外偏差**，需改 `Address` 为双族枚举并波及 `endpoint`/`packet_receiver`/`packet`（`sockaddr_in6`、`AF_INET6`），改动面大且与在飞文件重叠。
 
 #### BW-15-02 Linux
 
@@ -1815,7 +1815,7 @@
 三个原生 runner 分别构建、跑协议/资源/Python/持久化测试和实际进程启动测试。持久化矩阵覆盖 MySQL、PostgreSQL、XML 主存储及 SQLite 二级库，三端 DBApp 均连接真实 PostgreSQL 实例验证登录、写档和重启加载。再组合三端客户端与服务端、替换独立服务进程，核对版本标识、结果和关服顺序。
 
 - [ ] **BW-15-05-01 配置三端原生 runner**。**验收** 每端独立构建和启动。
-  - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；`resources` 端 Windows 已清：`bwresource.rs` 的 `Metadata::uid`/`/proc/self` 探针早经 `fix: gate the proc self uid probe on unix` 门控、本轮 `file_system.rs` 的 `symlinks_follow_stat_semantics` 测试补 `#[cfg(unix)]`（`cargo check -p resources --target x86_64-pc-windows-gnu --all-targets` 0 error，Linux 232 测全绿）；Windows 端真 blocker 是 `mercury` 未门控的 `event_dispatcher`/`udp_channel`/`packet_receiver`/`platform::socket` import（E0433，属 bw02 席）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
+  - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；Windows 端构建被 `resources` 预存 unix-only 代码挡（`std::os::unix`/`Metadata::uid`，E0433/E0599，属 BW-15-03）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
 - [ ] **BW-15-05-02 在三端执行协议、资源与 Python 测试**。**验收** 各端分别留存结果。
 - [ ] **BW-15-05-03 配置 MySQL、XML 与 SQLite 测试矩阵**。**验收** 每种模式产生独立结果。
 - [ ] **BW-15-05-04 配置 PostgreSQL 真实后端矩阵**。**验收** 各端完成登录、写档和重启读档。
@@ -2868,10 +2868,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化空间流式装载、碰撞走查和导航缓存。比较峰值内存、场景冷启动和查询尾延迟，核对坐标与碰撞结果。
 
-- [ ] **OPT-10-01-01 ；**跨席交付登记（lane/bw14-script-host 未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席交付见彼 lane 勾行（01=37ec32a map_load_baseline/02=7fc6d76 map_stream_opt/03=bfde122 query_cache_opt/04=eb163d4 map_rerun_fixtures）。测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。
-- [ ] **OPT-10-01-02 ；**跨席交付登记（lane/bw14-script-host 未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席交付见彼 lane 勾行（01=37ec32a map_load_baseline/02=7fc6d76 map_stream_opt/03=bfde122 query_cache_opt/04=eb163d4 map_rerun_fixtures）。优化空间流式加载**。**验收** 报告峰值内存及加载速度。
-- [ ] **OPT-10-01-03 ；**跨席交付登记（lane/bw14-script-host 未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席交付见彼 lane 勾行（01=37ec32a map_load_baseline/02=7fc6d76 map_stream_opt/03=bfde122 query_cache_opt/04=eb163d4 map_rerun_fixtures）。优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。
-- [ ] **OPT-10-01-04 ；**跨席交付登记（lane/bw14-script-host 未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席交付见彼 lane 勾行（01=37ec32a map_load_baseline/02=7fc6d76 map_stream_opt/03=bfde122 query_cache_opt/04=eb163d4 map_rerun_fixtures）。复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
+- [ ] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。
+- [ ] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。
+- [ ] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。
+- [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
 
 ### OPT-11-01 三端固定镜头基线
 
@@ -3301,7 +3301,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-14-04-03 布置配置及样例资源**。**验收** 首次启动可定位。（commit 5da86a6）
   - 证据：`ci/install-layout.sh` + `docs/review/bw14-04-installable-artifact-layout.md`（b0a4d3e 起，5da86a6 完成）——`res/server/bw.xml` + `res/scripts/`（21 项样例资源镜像）随包布置（install-layout PASS：配置/资源/二进制/模块/`data/` 齐全）。**工具半**：装后 `process_defs -r <prefix>/res` 首启定位并加载安装资源树（install-cli-res PASS）。**服务器半**：`apps/server/src/main.rs`（5da86a6）按参考 `BIGWORLD_MAIN` 接入 `BWResource`/`BWConfig` 链，装后 `boundless-server <role>` 以 `BW_RES_PATH=<prefix>/res` 首启定位安装配置（install-res-server PASS：无「Could not find」/「No configuration section」，正常启动/停止 exit 0）；`role_lifecycle.rs` 首启定位/未定位双测试钉死观测差（定位静默、未定位记参考失败行）。
 - [ ] **BW-14-04-04 执行干净安装烟测**。**验收** 三端能启动和停止。
-  - 证据（部分，未勾）：本席 `ci/install-layout.sh` 全链复跑（988ff5f 修两处过时模块名后 13 行 PASS：装后 server start/stop 出 `BaseApp is running`+`has shut down.` exit 0、CLI/资源定位/build parity/导入/升级/卸载全绿；夹具 `docs/review/fixtures/opt-14-01-03/install-upgrade-rerun.tsv`、证据 `docs/review/opt-14-01-03-install-upgrade-rerun.md`）。Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
+  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
 - [x] **BW-14-04-05 执行升级与卸载**。**验收** 验证用户数据保留行为。（commit b0a4d3e）
   - 证据：`ci/install-layout.sh`（b0a4d3e）——归档只携带包属树（`bin lib res`），用户数据在 `data/`（**不在归档**）。装后种子 `data/db/user.db`，篡改包属文件 `res/server/bw.xml` 后**升级**解包：包属文件还原为打包字节、`data/db/user.db` 保留（install-upgrade PASS）；**卸载**删除 `bin/ lib/ res/`、`data/db/user.db` 保留（install-uninstall PASS）。self-test 绿色全链路 + 4 条红色臂（启动失败/CLI 失败/坏模块/缺定义资源树均按预期咬合）。
 
@@ -3326,7 +3326,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-15-01-06 校验路径大小写、编码和系统目录**。**验收** 代表性夹具可寻址。（commit aa6e2ee）
   - 证据：`crates/platform/src/path.rs`（aa6e2ee）——`correct_case_of_path`（参考 `WinFileSystem::correctCaseOfPath`（win_file_system.cpp:782）的 POSIX 对应：`realpath(3)` 在大小写不敏感卷上解析出盘上真实拼写、敏感卷上即恒等、缺失路径原样返回）；`real_path`（canonical 定点、symlink 解析、缺失报 `ENOENT`）；`join`（参考 `getAbsolutePath` 的 base+path（unix_file_system.cpp:466），补缺 `'/'`）；`home_dir`（`$HOME`）/`temp_dir`（`TMPDIR`→`TMP`→`TEMP`→`/tmp`）；编码 `path_bytes`/`path_from_bytes` 字节级往返（POSIX 路径是字节串非必 UTF-8，实测 `0xFF` 字节往返）+ lossy。Linux 实测 7 测：temp 系统目录夹具写读可寻址、HOME 绝对、join 三态（缺分隔/已带/空 base）、realpath 不定点+symlink+缺失三态、correct_case 缺失原样/存在=realpath、非 UTF-8 往返。**Windows `%USERPROFILE%`/`%TEMP%`/`GetFullPathNameW` 后端归 BW-15-03 Windows runner 平台移植**（本项验收为代表性夹具可寻址，Linux 已实测过：`path::tests::temp_dir_holds_an_addressable_fixture`，temp 系统目录夹具写读可寻址）。
 - [ ] **BW-15-01-07 校验网络地址与断网行为**。**验收** IPv4/IPv6 和失联状态可复测。
-  - 证据（部分，未勾）：IPv4 侧与失联侧**原语层已齐**——地址校验 `inet_aton`/`host_by_name`/`host_by_addr`（`socket.rs`，含点分十进制与主机名区分测试）；断网 `Endpoint::enable_error_queue`+`read_error_queue`（04d4133 时的 macOS 可编译系旧代实况；f2ef112 取 theirs 把 socket.rs 951→887 行连带丢光 sin_len/u8 族/msg_controllen/error-queue 四组 BSD 臂，5f0b706 恢复，见下），**失联可复测实测**：`endpoint.rs::the_error_queue_reports_a_refused_packet`（无监听端口发包→ICMP unreachable 入错误队列→`ECONNREFUSED`+offender 回读→队列排空）。**待决（用户拍板）**：IPv6。参考 BigWorld 的 `Address`/`Endpoint` 是 IPv4-only（`uint32 ip`+`sockaddr_in`，`socket.rs` 文档已注明"the reference only builds IPv4 addresses"）；若本移植要支持 IPv6 则属**参考外偏差**，需改 `Address` 为双族枚举并波及 `endpoint`/`packet_receiver`/`packet`（`sockaddr_in6`、`AF_INET6`），改动面大且与在飞文件重叠。
+  - 证据（部分，未勾）：IPv4 侧与失联侧**原语层已齐**——地址校验 `inet_aton`/`host_by_name`/`host_by_addr`（`socket.rs`，含点分十进制与主机名区分测试）；断网 `Endpoint::enable_error_queue`+`read_error_queue`（04d4133 起在 macOS 亦可编译，见下），**失联可复测实测**：`endpoint.rs::the_error_queue_reports_a_refused_packet`（无监听端口发包→ICMP unreachable 入错误队列→`ECONNREFUSED`+offender 回读→队列排空）。**待决（用户拍板）**：IPv6。参考 BigWorld 的 `Address`/`Endpoint` 是 IPv4-only（`uint32 ip`+`sockaddr_in`，`socket.rs` 文档已注明"the reference only builds IPv4 addresses"）；若本移植要支持 IPv6 则属**参考外偏差**，需改 `Address` 为双族枚举并波及 `endpoint`/`packet_receiver`/`packet`（`sockaddr_in6`、`AF_INET6`），改动面大且与在飞文件重叠。
 
 #### BW-15-02 Linux
 
@@ -3369,7 +3369,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 三个原生 runner 分别构建、跑协议/资源/Python/持久化测试和实际进程启动测试。持久化矩阵覆盖 MySQL、PostgreSQL、XML 主存储及 SQLite 二级库，三端 DBApp 均连接真实 PostgreSQL 实例验证登录、写档和重启加载。再组合三端客户端与服务端、替换独立服务进程，核对版本标识、结果和关服顺序。
 
 - [ ] **BW-15-05-01 配置三端原生 runner**。**验收** 每端独立构建和启动。
-  - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；`resources` 端 Windows 已清：`bwresource.rs` 的 `Metadata::uid`/`/proc/self` 探针早经 `fix: gate the proc self uid probe on unix` 门控、本轮 `file_system.rs` 的 `symlinks_follow_stat_semantics` 测试补 `#[cfg(unix)]`（`cargo check -p resources --target x86_64-pc-windows-gnu --all-targets` 0 error，Linux 232 测全绿）；Windows 端真 blocker 是 `mercury` 未门控的 `event_dispatcher`/`udp_channel`/`packet_receiver`/`platform::socket` import（E0433，属 bw02 席）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
+  - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；Windows 端构建被 `resources` 预存 unix-only 代码挡（`std::os::unix`/`Metadata::uid`，E0433/E0599，属 BW-15-03）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
 - [ ] **BW-15-05-02 在三端执行协议、资源与 Python 测试**。**验收** 各端分别留存结果。
 - [ ] **BW-15-05-03 配置 MySQL、XML 与 SQLite 测试矩阵**。**验收** 每种模式产生独立结果。
 - [ ] **BW-15-05-04 配置 PostgreSQL 真实后端矩阵**。**验收** 各端完成登录、写档和重启读档。
@@ -4422,10 +4422,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化空间流式装载、碰撞走查和导航缓存。比较峰值内存、场景冷启动和查询尾延迟，核对坐标与碰撞结果。
 
-- [ ] **OPT-10-01-01 ；**跨席交付登记（lane/bw14-script-host 未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席交付见彼 lane 勾行（01=37ec32a map_load_baseline/02=7fc6d76 map_stream_opt/03=bfde122 query_cache_opt/04=eb163d4 map_rerun_fixtures）。测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。
-- [ ] **OPT-10-01-02 ；**跨席交付登记（lane/bw14-script-host 未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席交付见彼 lane 勾行（01=37ec32a map_load_baseline/02=7fc6d76 map_stream_opt/03=bfde122 query_cache_opt/04=eb163d4 map_rerun_fixtures）。优化空间流式加载**。**验收** 报告峰值内存及加载速度。
-- [ ] **OPT-10-01-03 ；**跨席交付登记（lane/bw14-script-host 未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席交付见彼 lane 勾行（01=37ec32a map_load_baseline/02=7fc6d76 map_stream_opt/03=bfde122 query_cache_opt/04=eb163d4 map_rerun_fixtures）。优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。
-- [ ] **OPT-10-01-04 ；**跨席交付登记（lane/bw14-script-host 未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席交付见彼 lane 勾行（01=37ec32a map_load_baseline/02=7fc6d76 map_stream_opt/03=bfde122 query_cache_opt/04=eb163d4 map_rerun_fixtures）。复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
+- [ ] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。
+- [ ] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。
+- [ ] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。
+- [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
 
 ### OPT-11-01 三端固定镜头基线
 
@@ -4828,7 +4828,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-14-04-03 布置配置及样例资源**。**验收** 首次启动可定位。（commit 5da86a6）
   - 证据：`ci/install-layout.sh` + `docs/review/bw14-04-installable-artifact-layout.md`（b0a4d3e 起，5da86a6 完成）——`res/server/bw.xml` + `res/scripts/`（21 项样例资源镜像）随包布置（install-layout PASS：配置/资源/二进制/模块/`data/` 齐全）。**工具半**：装后 `process_defs -r <prefix>/res` 首启定位并加载安装资源树（install-cli-res PASS）。**服务器半**：`apps/server/src/main.rs`（5da86a6）按参考 `BIGWORLD_MAIN` 接入 `BWResource`/`BWConfig` 链，装后 `boundless-server <role>` 以 `BW_RES_PATH=<prefix>/res` 首启定位安装配置（install-res-server PASS：无「Could not find」/「No configuration section」，正常启动/停止 exit 0）；`role_lifecycle.rs` 首启定位/未定位双测试钉死观测差（定位静默、未定位记参考失败行）。
 - [ ] **BW-14-04-04 执行干净安装烟测**。**验收** 三端能启动和停止。
-  - 证据（部分，未勾）：本席 `ci/install-layout.sh` 全链复跑（988ff5f 修两处过时模块名后 13 行 PASS：装后 server start/stop 出 `BaseApp is running`+`has shut down.` exit 0、CLI/资源定位/build parity/导入/升级/卸载全绿；夹具 `docs/review/fixtures/opt-14-01-03/install-upgrade-rerun.tsv`、证据 `docs/review/opt-14-01-03-install-upgrade-rerun.md`）。Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
+  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
 - [x] **BW-14-04-05 执行升级与卸载**。**验收** 验证用户数据保留行为。（commit b0a4d3e）
   - 证据：`ci/install-layout.sh`（b0a4d3e）——归档只携带包属树（`bin lib res`），用户数据在 `data/`（**不在归档**）。装后种子 `data/db/user.db`，篡改包属文件 `res/server/bw.xml` 后**升级**解包：包属文件还原为打包字节、`data/db/user.db` 保留（install-upgrade PASS）；**卸载**删除 `bin/ lib/ res/`、`data/db/user.db` 保留（install-uninstall PASS）。self-test 绿色全链路 + 4 条红色臂（启动失败/CLI 失败/坏模块/缺定义资源树均按预期咬合）。
 
@@ -4853,7 +4853,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-15-01-06 校验路径大小写、编码和系统目录**。**验收** 代表性夹具可寻址。（commit aa6e2ee）
   - 证据：`crates/platform/src/path.rs`（aa6e2ee）——`correct_case_of_path`（参考 `WinFileSystem::correctCaseOfPath`（win_file_system.cpp:782）的 POSIX 对应：`realpath(3)` 在大小写不敏感卷上解析出盘上真实拼写、敏感卷上即恒等、缺失路径原样返回）；`real_path`（canonical 定点、symlink 解析、缺失报 `ENOENT`）；`join`（参考 `getAbsolutePath` 的 base+path（unix_file_system.cpp:466），补缺 `'/'`）；`home_dir`（`$HOME`）/`temp_dir`（`TMPDIR`→`TMP`→`TEMP`→`/tmp`）；编码 `path_bytes`/`path_from_bytes` 字节级往返（POSIX 路径是字节串非必 UTF-8，实测 `0xFF` 字节往返）+ lossy。Linux 实测 7 测：temp 系统目录夹具写读可寻址、HOME 绝对、join 三态（缺分隔/已带/空 base）、realpath 不定点+symlink+缺失三态、correct_case 缺失原样/存在=realpath、非 UTF-8 往返。**Windows `%USERPROFILE%`/`%TEMP%`/`GetFullPathNameW` 后端归 BW-15-03 Windows runner 平台移植**（本项验收为代表性夹具可寻址，Linux 已实测过：`path::tests::temp_dir_holds_an_addressable_fixture`，temp 系统目录夹具写读可寻址）。
 - [ ] **BW-15-01-07 校验网络地址与断网行为**。**验收** IPv4/IPv6 和失联状态可复测。
-  - 证据（部分，未勾）：IPv4 侧与失联侧**原语层已齐**——地址校验 `inet_aton`/`host_by_name`/`host_by_addr`（`socket.rs`，含点分十进制与主机名区分测试）；断网 `Endpoint::enable_error_queue`+`read_error_queue`（04d4133 时的 macOS 可编译系旧代实况；f2ef112 取 theirs 把 socket.rs 951→887 行连带丢光 sin_len/u8 族/msg_controllen/error-queue 四组 BSD 臂，5f0b706 恢复，见下），**失联可复测实测**：`endpoint.rs::the_error_queue_reports_a_refused_packet`（无监听端口发包→ICMP unreachable 入错误队列→`ECONNREFUSED`+offender 回读→队列排空）。**待决（用户拍板）**：IPv6。参考 BigWorld 的 `Address`/`Endpoint` 是 IPv4-only（`uint32 ip`+`sockaddr_in`，`socket.rs` 文档已注明"the reference only builds IPv4 addresses"）；若本移植要支持 IPv6 则属**参考外偏差**，需改 `Address` 为双族枚举并波及 `endpoint`/`packet_receiver`/`packet`（`sockaddr_in6`、`AF_INET6`），改动面大且与在飞文件重叠。
+  - 证据（部分，未勾）：IPv4 侧与失联侧**原语层已齐**——地址校验 `inet_aton`/`host_by_name`/`host_by_addr`（`socket.rs`，含点分十进制与主机名区分测试）；断网 `Endpoint::enable_error_queue`+`read_error_queue`（04d4133 起在 macOS 亦可编译，见下），**失联可复测实测**：`endpoint.rs::the_error_queue_reports_a_refused_packet`（无监听端口发包→ICMP unreachable 入错误队列→`ECONNREFUSED`+offender 回读→队列排空）。**待决（用户拍板）**：IPv6。参考 BigWorld 的 `Address`/`Endpoint` 是 IPv4-only（`uint32 ip`+`sockaddr_in`，`socket.rs` 文档已注明"the reference only builds IPv4 addresses"）；若本移植要支持 IPv6 则属**参考外偏差**，需改 `Address` 为双族枚举并波及 `endpoint`/`packet_receiver`/`packet`（`sockaddr_in6`、`AF_INET6`），改动面大且与在飞文件重叠。
 
 #### BW-15-02 Linux
 
@@ -4896,7 +4896,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 三个原生 runner 分别构建、跑协议/资源/Python/持久化测试和实际进程启动测试。持久化矩阵覆盖 MySQL、PostgreSQL、XML 主存储及 SQLite 二级库，三端 DBApp 均连接真实 PostgreSQL 实例验证登录、写档和重启加载。再组合三端客户端与服务端、替换独立服务进程，核对版本标识、结果和关服顺序。
 
 - [ ] **BW-15-05-01 配置三端原生 runner**。**验收** 每端独立构建和启动。
-  - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；`resources` 端 Windows 已清：`bwresource.rs` 的 `Metadata::uid`/`/proc/self` 探针早经 `fix: gate the proc self uid probe on unix` 门控、本轮 `file_system.rs` 的 `symlinks_follow_stat_semantics` 测试补 `#[cfg(unix)]`（`cargo check -p resources --target x86_64-pc-windows-gnu --all-targets` 0 error，Linux 232 测全绿）；Windows 端真 blocker 是 `mercury` 未门控的 `event_dispatcher`/`udp_channel`/`packet_receiver`/`platform::socket` import（E0433，属 bw02 席）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
+  - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；Windows 端构建被 `resources` 预存 unix-only 代码挡（`std::os::unix`/`Metadata::uid`，E0433/E0599，属 BW-15-03）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
 - [ ] **BW-15-05-02 在三端执行协议、资源与 Python 测试**。**验收** 各端分别留存结果。
 - [ ] **BW-15-05-03 配置 MySQL、XML 与 SQLite 测试矩阵**。**验收** 每种模式产生独立结果。
 - [ ] **BW-15-05-04 配置 PostgreSQL 真实后端矩阵**。**验收** 各端完成登录、写档和重启读档。
@@ -5949,10 +5949,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化空间流式装载、碰撞走查和导航缓存。比较峰值内存、场景冷启动和查询尾延迟，核对坐标与碰撞结果。
 
-- [ ] **OPT-10-01-01 ；**跨席交付登记（lane/bw14-script-host 未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席交付见彼 lane 勾行（01=37ec32a map_load_baseline/02=7fc6d76 map_stream_opt/03=bfde122 query_cache_opt/04=eb163d4 map_rerun_fixtures）。测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。
-- [ ] **OPT-10-01-02 ；**跨席交付登记（lane/bw14-script-host 未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席交付见彼 lane 勾行（01=37ec32a map_load_baseline/02=7fc6d76 map_stream_opt/03=bfde122 query_cache_opt/04=eb163d4 map_rerun_fixtures）。优化空间流式加载**。**验收** 报告峰值内存及加载速度。
-- [ ] **OPT-10-01-03 ；**跨席交付登记（lane/bw14-script-host 未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席交付见彼 lane 勾行（01=37ec32a map_load_baseline/02=7fc6d76 map_stream_opt/03=bfde122 query_cache_opt/04=eb163d4 map_rerun_fixtures）。优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。
-- [ ] **OPT-10-01-04 ；**跨席交付登记（lane/bw14-script-host 未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席交付见彼 lane 勾行（01=37ec32a map_load_baseline/02=7fc6d76 map_stream_opt/03=bfde122 query_cache_opt/04=eb163d4 map_rerun_fixtures）。复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
+- [ ] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。
+- [ ] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。
+- [ ] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。
+- [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
 
 ### OPT-11-01 三端固定镜头基线
 
@@ -6355,7 +6355,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-14-04-03 布置配置及样例资源**。**验收** 首次启动可定位。（commit 5da86a6）
   - 证据：`ci/install-layout.sh` + `docs/review/bw14-04-installable-artifact-layout.md`（b0a4d3e 起，5da86a6 完成）——`res/server/bw.xml` + `res/scripts/`（21 项样例资源镜像）随包布置（install-layout PASS：配置/资源/二进制/模块/`data/` 齐全）。**工具半**：装后 `process_defs -r <prefix>/res` 首启定位并加载安装资源树（install-cli-res PASS）。**服务器半**：`apps/server/src/main.rs`（5da86a6）按参考 `BIGWORLD_MAIN` 接入 `BWResource`/`BWConfig` 链，装后 `boundless-server <role>` 以 `BW_RES_PATH=<prefix>/res` 首启定位安装配置（install-res-server PASS：无「Could not find」/「No configuration section」，正常启动/停止 exit 0）；`role_lifecycle.rs` 首启定位/未定位双测试钉死观测差（定位静默、未定位记参考失败行）。
 - [ ] **BW-14-04-04 执行干净安装烟测**。**验收** 三端能启动和停止。
-  - 证据（部分，未勾）：本席 `ci/install-layout.sh` 全链复跑（988ff5f 修两处过时模块名后 13 行 PASS：装后 server start/stop 出 `BaseApp is running`+`has shut down.` exit 0、CLI/资源定位/build parity/导入/升级/卸载全绿；夹具 `docs/review/fixtures/opt-14-01-03/install-upgrade-rerun.tsv`、证据 `docs/review/opt-14-01-03-install-upgrade-rerun.md`）。Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
+  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
 - [x] **BW-14-04-05 执行升级与卸载**。**验收** 验证用户数据保留行为。（commit b0a4d3e）
   - 证据：`ci/install-layout.sh`（b0a4d3e）——归档只携带包属树（`bin lib res`），用户数据在 `data/`（**不在归档**）。装后种子 `data/db/user.db`，篡改包属文件 `res/server/bw.xml` 后**升级**解包：包属文件还原为打包字节、`data/db/user.db` 保留（install-upgrade PASS）；**卸载**删除 `bin/ lib/ res/`、`data/db/user.db` 保留（install-uninstall PASS）。self-test 绿色全链路 + 4 条红色臂（启动失败/CLI 失败/坏模块/缺定义资源树均按预期咬合）。
 
@@ -6380,7 +6380,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-15-01-06 校验路径大小写、编码和系统目录**。**验收** 代表性夹具可寻址。（commit aa6e2ee）
   - 证据：`crates/platform/src/path.rs`（aa6e2ee）——`correct_case_of_path`（参考 `WinFileSystem::correctCaseOfPath`（win_file_system.cpp:782）的 POSIX 对应：`realpath(3)` 在大小写不敏感卷上解析出盘上真实拼写、敏感卷上即恒等、缺失路径原样返回）；`real_path`（canonical 定点、symlink 解析、缺失报 `ENOENT`）；`join`（参考 `getAbsolutePath` 的 base+path（unix_file_system.cpp:466），补缺 `'/'`）；`home_dir`（`$HOME`）/`temp_dir`（`TMPDIR`→`TMP`→`TEMP`→`/tmp`）；编码 `path_bytes`/`path_from_bytes` 字节级往返（POSIX 路径是字节串非必 UTF-8，实测 `0xFF` 字节往返）+ lossy。Linux 实测 7 测：temp 系统目录夹具写读可寻址、HOME 绝对、join 三态（缺分隔/已带/空 base）、realpath 不定点+symlink+缺失三态、correct_case 缺失原样/存在=realpath、非 UTF-8 往返。**Windows `%USERPROFILE%`/`%TEMP%`/`GetFullPathNameW` 后端归 BW-15-03 Windows runner 平台移植**（本项验收为代表性夹具可寻址，Linux 已实测过：`path::tests::temp_dir_holds_an_addressable_fixture`，temp 系统目录夹具写读可寻址）。
 - [ ] **BW-15-01-07 校验网络地址与断网行为**。**验收** IPv4/IPv6 和失联状态可复测。
-  - 证据（部分，未勾）：IPv4 侧与失联侧**原语层已齐**——地址校验 `inet_aton`/`host_by_name`/`host_by_addr`（`socket.rs`，含点分十进制与主机名区分测试）；断网 `Endpoint::enable_error_queue`+`read_error_queue`（04d4133 时的 macOS 可编译系旧代实况；f2ef112 取 theirs 把 socket.rs 951→887 行连带丢光 sin_len/u8 族/msg_controllen/error-queue 四组 BSD 臂，5f0b706 恢复，见下），**失联可复测实测**：`endpoint.rs::the_error_queue_reports_a_refused_packet`（无监听端口发包→ICMP unreachable 入错误队列→`ECONNREFUSED`+offender 回读→队列排空）。**待决（用户拍板）**：IPv6。参考 BigWorld 的 `Address`/`Endpoint` 是 IPv4-only（`uint32 ip`+`sockaddr_in`，`socket.rs` 文档已注明"the reference only builds IPv4 addresses"）；若本移植要支持 IPv6 则属**参考外偏差**，需改 `Address` 为双族枚举并波及 `endpoint`/`packet_receiver`/`packet`（`sockaddr_in6`、`AF_INET6`），改动面大且与在飞文件重叠。
+  - 证据（部分，未勾）：IPv4 侧与失联侧**原语层已齐**——地址校验 `inet_aton`/`host_by_name`/`host_by_addr`（`socket.rs`，含点分十进制与主机名区分测试）；断网 `Endpoint::enable_error_queue`+`read_error_queue`（04d4133 起在 macOS 亦可编译，见下），**失联可复测实测**：`endpoint.rs::the_error_queue_reports_a_refused_packet`（无监听端口发包→ICMP unreachable 入错误队列→`ECONNREFUSED`+offender 回读→队列排空）。**待决（用户拍板）**：IPv6。参考 BigWorld 的 `Address`/`Endpoint` 是 IPv4-only（`uint32 ip`+`sockaddr_in`，`socket.rs` 文档已注明"the reference only builds IPv4 addresses"）；若本移植要支持 IPv6 则属**参考外偏差**，需改 `Address` 为双族枚举并波及 `endpoint`/`packet_receiver`/`packet`（`sockaddr_in6`、`AF_INET6`），改动面大且与在飞文件重叠。
 
 #### BW-15-02 Linux
 
@@ -6423,7 +6423,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 三个原生 runner 分别构建、跑协议/资源/Python/持久化测试和实际进程启动测试。持久化矩阵覆盖 MySQL、PostgreSQL、XML 主存储及 SQLite 二级库，三端 DBApp 均连接真实 PostgreSQL 实例验证登录、写档和重启加载。再组合三端客户端与服务端、替换独立服务进程，核对版本标识、结果和关服顺序。
 
 - [ ] **BW-15-05-01 配置三端原生 runner**。**验收** 每端独立构建和启动。
-  - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；`resources` 端 Windows 已清：`bwresource.rs` 的 `Metadata::uid`/`/proc/self` 探针早经 `fix: gate the proc self uid probe on unix` 门控、本轮 `file_system.rs` 的 `symlinks_follow_stat_semantics` 测试补 `#[cfg(unix)]`（`cargo check -p resources --target x86_64-pc-windows-gnu --all-targets` 0 error，Linux 232 测全绿）；Windows 端真 blocker 是 `mercury` 未门控的 `event_dispatcher`/`udp_channel`/`packet_receiver`/`platform::socket` import（E0433，属 bw02 席）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
+  - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；Windows 端构建被 `resources` 预存 unix-only 代码挡（`std::os::unix`/`Metadata::uid`，E0433/E0599，属 BW-15-03）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
 - [ ] **BW-15-05-02 在三端执行协议、资源与 Python 测试**。**验收** 各端分别留存结果。
 - [ ] **BW-15-05-03 配置 MySQL、XML 与 SQLite 测试矩阵**。**验收** 每种模式产生独立结果。
 - [ ] **BW-15-05-04 配置 PostgreSQL 真实后端矩阵**。**验收** 各端完成登录、写档和重启读档。
@@ -7476,10 +7476,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化空间流式装载、碰撞走查和导航缓存。比较峰值内存、场景冷启动和查询尾延迟，核对坐标与碰撞结果。
 
-- [ ] **OPT-10-01-01 ；**跨席交付登记（lane/bw14-script-host 未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席交付见彼 lane 勾行（01=37ec32a map_load_baseline/02=7fc6d76 map_stream_opt/03=bfde122 query_cache_opt/04=eb163d4 map_rerun_fixtures）。测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。
-- [ ] **OPT-10-01-02 ；**跨席交付登记（lane/bw14-script-host 未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席交付见彼 lane 勾行（01=37ec32a map_load_baseline/02=7fc6d76 map_stream_opt/03=bfde122 query_cache_opt/04=eb163d4 map_rerun_fixtures）。优化空间流式加载**。**验收** 报告峰值内存及加载速度。
-- [ ] **OPT-10-01-03 ；**跨席交付登记（lane/bw14-script-host 未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席交付见彼 lane 勾行（01=37ec32a map_load_baseline/02=7fc6d76 map_stream_opt/03=bfde122 query_cache_opt/04=eb163d4 map_rerun_fixtures）。优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。
-- [ ] **OPT-10-01-04 ；**跨席交付登记（lane/bw14-script-host 未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席交付见彼 lane 勾行（01=37ec32a map_load_baseline/02=7fc6d76 map_stream_opt/03=bfde122 query_cache_opt/04=eb163d4 map_rerun_fixtures）。复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
+- [ ] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。
+- [ ] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。
+- [ ] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。
+- [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
 
 ### OPT-11-01 三端固定镜头基线
 
@@ -7909,7 +7909,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-14-04-03 布置配置及样例资源**。**验收** 首次启动可定位。（commit 5da86a6）
   - 证据：`ci/install-layout.sh` + `docs/review/bw14-04-installable-artifact-layout.md`（b0a4d3e 起，5da86a6 完成）——`res/server/bw.xml` + `res/scripts/`（21 项样例资源镜像）随包布置（install-layout PASS：配置/资源/二进制/模块/`data/` 齐全）。**工具半**：装后 `process_defs -r <prefix>/res` 首启定位并加载安装资源树（install-cli-res PASS）。**服务器半**：`apps/server/src/main.rs`（5da86a6）按参考 `BIGWORLD_MAIN` 接入 `BWResource`/`BWConfig` 链，装后 `boundless-server <role>` 以 `BW_RES_PATH=<prefix>/res` 首启定位安装配置（install-res-server PASS：无「Could not find」/「No configuration section」，正常启动/停止 exit 0）；`role_lifecycle.rs` 首启定位/未定位双测试钉死观测差（定位静默、未定位记参考失败行）。
 - [ ] **BW-14-04-04 执行干净安装烟测**。**验收** 三端能启动和停止。
-  - 证据（部分，未勾）：本席 `ci/install-layout.sh` 全链复跑（988ff5f 修两处过时模块名后 13 行 PASS：装后 server start/stop 出 `BaseApp is running`+`has shut down.` exit 0、CLI/资源定位/build parity/导入/升级/卸载全绿；夹具 `docs/review/fixtures/opt-14-01-03/install-upgrade-rerun.tsv`、证据 `docs/review/opt-14-01-03-install-upgrade-rerun.md`）。Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
+  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
 - [x] **BW-14-04-05 执行升级与卸载**。**验收** 验证用户数据保留行为。（commit b0a4d3e）
   - 证据：`ci/install-layout.sh`（b0a4d3e）——归档只携带包属树（`bin lib res`），用户数据在 `data/`（**不在归档**）。装后种子 `data/db/user.db`，篡改包属文件 `res/server/bw.xml` 后**升级**解包：包属文件还原为打包字节、`data/db/user.db` 保留（install-upgrade PASS）；**卸载**删除 `bin/ lib/ res/`、`data/db/user.db` 保留（install-uninstall PASS）。self-test 绿色全链路 + 4 条红色臂（启动失败/CLI 失败/坏模块/缺定义资源树均按预期咬合）。
 
@@ -7934,7 +7934,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-15-01-06 校验路径大小写、编码和系统目录**。**验收** 代表性夹具可寻址。（commit aa6e2ee）
   - 证据：`crates/platform/src/path.rs`（aa6e2ee）——`correct_case_of_path`（参考 `WinFileSystem::correctCaseOfPath`（win_file_system.cpp:782）的 POSIX 对应：`realpath(3)` 在大小写不敏感卷上解析出盘上真实拼写、敏感卷上即恒等、缺失路径原样返回）；`real_path`（canonical 定点、symlink 解析、缺失报 `ENOENT`）；`join`（参考 `getAbsolutePath` 的 base+path（unix_file_system.cpp:466），补缺 `'/'`）；`home_dir`（`$HOME`）/`temp_dir`（`TMPDIR`→`TMP`→`TEMP`→`/tmp`）；编码 `path_bytes`/`path_from_bytes` 字节级往返（POSIX 路径是字节串非必 UTF-8，实测 `0xFF` 字节往返）+ lossy。Linux 实测 7 测：temp 系统目录夹具写读可寻址、HOME 绝对、join 三态（缺分隔/已带/空 base）、realpath 不定点+symlink+缺失三态、correct_case 缺失原样/存在=realpath、非 UTF-8 往返。**Windows `%USERPROFILE%`/`%TEMP%`/`GetFullPathNameW` 后端归 BW-15-03 Windows runner 平台移植**（本项验收为代表性夹具可寻址，Linux 已实测过：`path::tests::temp_dir_holds_an_addressable_fixture`，temp 系统目录夹具写读可寻址）。
 - [ ] **BW-15-01-07 校验网络地址与断网行为**。**验收** IPv4/IPv6 和失联状态可复测。
-  - 证据（部分，未勾）：IPv4 侧与失联侧**原语层已齐**——地址校验 `inet_aton`/`host_by_name`/`host_by_addr`（`socket.rs`，含点分十进制与主机名区分测试）；断网 `Endpoint::enable_error_queue`+`read_error_queue`（04d4133 时的 macOS 可编译系旧代实况；f2ef112 取 theirs 把 socket.rs 951→887 行连带丢光 sin_len/u8 族/msg_controllen/error-queue 四组 BSD 臂，5f0b706 恢复，见下），**失联可复测实测**：`endpoint.rs::the_error_queue_reports_a_refused_packet`（无监听端口发包→ICMP unreachable 入错误队列→`ECONNREFUSED`+offender 回读→队列排空）。**待决（用户拍板）**：IPv6。参考 BigWorld 的 `Address`/`Endpoint` 是 IPv4-only（`uint32 ip`+`sockaddr_in`，`socket.rs` 文档已注明"the reference only builds IPv4 addresses"）；若本移植要支持 IPv6 则属**参考外偏差**，需改 `Address` 为双族枚举并波及 `endpoint`/`packet_receiver`/`packet`（`sockaddr_in6`、`AF_INET6`），改动面大且与在飞文件重叠。
+  - 证据（部分，未勾）：IPv4 侧与失联侧**原语层已齐**——地址校验 `inet_aton`/`host_by_name`/`host_by_addr`（`socket.rs`，含点分十进制与主机名区分测试）；断网 `Endpoint::enable_error_queue`+`read_error_queue`（04d4133 起在 macOS 亦可编译，见下），**失联可复测实测**：`endpoint.rs::the_error_queue_reports_a_refused_packet`（无监听端口发包→ICMP unreachable 入错误队列→`ECONNREFUSED`+offender 回读→队列排空）。**待决（用户拍板）**：IPv6。参考 BigWorld 的 `Address`/`Endpoint` 是 IPv4-only（`uint32 ip`+`sockaddr_in`，`socket.rs` 文档已注明"the reference only builds IPv4 addresses"）；若本移植要支持 IPv6 则属**参考外偏差**，需改 `Address` 为双族枚举并波及 `endpoint`/`packet_receiver`/`packet`（`sockaddr_in6`、`AF_INET6`），改动面大且与在飞文件重叠。
 
 #### BW-15-02 Linux
 
@@ -7977,7 +7977,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 三个原生 runner 分别构建、跑协议/资源/Python/持久化测试和实际进程启动测试。持久化矩阵覆盖 MySQL、PostgreSQL、XML 主存储及 SQLite 二级库，三端 DBApp 均连接真实 PostgreSQL 实例验证登录、写档和重启加载。再组合三端客户端与服务端、替换独立服务进程，核对版本标识、结果和关服顺序。
 
 - [ ] **BW-15-05-01 配置三端原生 runner**。**验收** 每端独立构建和启动。
-  - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；`resources` 端 Windows 已清：`bwresource.rs` 的 `Metadata::uid`/`/proc/self` 探针早经 `fix: gate the proc self uid probe on unix` 门控、本轮 `file_system.rs` 的 `symlinks_follow_stat_semantics` 测试补 `#[cfg(unix)]`（`cargo check -p resources --target x86_64-pc-windows-gnu --all-targets` 0 error，Linux 232 测全绿）；Windows 端真 blocker 是 `mercury` 未门控的 `event_dispatcher`/`udp_channel`/`packet_receiver`/`platform::socket` import（E0433，属 bw02 席）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
+  - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；Windows 端构建被 `resources` 预存 unix-only 代码挡（`std::os::unix`/`Metadata::uid`，E0433/E0599，属 BW-15-03）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
 - [ ] **BW-15-05-02 在三端执行协议、资源与 Python 测试**。**验收** 各端分别留存结果。
 - [ ] **BW-15-05-03 配置 MySQL、XML 与 SQLite 测试矩阵**。**验收** 每种模式产生独立结果。
 - [ ] **BW-15-05-04 配置 PostgreSQL 真实后端矩阵**。**验收** 各端完成登录、写档和重启读档。
@@ -9030,10 +9030,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化空间流式装载、碰撞走查和导航缓存。比较峰值内存、场景冷启动和查询尾延迟，核对坐标与碰撞结果。
 
-- [ ] **OPT-10-01-01 ；**跨席交付登记（lane/bw14-script-host 未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席交付见彼 lane 勾行（01=37ec32a map_load_baseline/02=7fc6d76 map_stream_opt/03=bfde122 query_cache_opt/04=eb163d4 map_rerun_fixtures）。测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。
-- [ ] **OPT-10-01-02 ；**跨席交付登记（lane/bw14-script-host 未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席交付见彼 lane 勾行（01=37ec32a map_load_baseline/02=7fc6d76 map_stream_opt/03=bfde122 query_cache_opt/04=eb163d4 map_rerun_fixtures）。优化空间流式加载**。**验收** 报告峰值内存及加载速度。
-- [ ] **OPT-10-01-03 ；**跨席交付登记（lane/bw14-script-host 未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席交付见彼 lane 勾行（01=37ec32a map_load_baseline/02=7fc6d76 map_stream_opt/03=bfde122 query_cache_opt/04=eb163d4 map_rerun_fixtures）。优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。
-- [ ] **OPT-10-01-04 ；**跨席交付登记（lane/bw14-script-host 未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席交付见彼 lane 勾行（01=37ec32a map_load_baseline/02=7fc6d76 map_stream_opt/03=bfde122 query_cache_opt/04=eb163d4 map_rerun_fixtures）。复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
+- [ ] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。
+- [ ] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。
+- [ ] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。
+- [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
 
 ### OPT-11-01 三端固定镜头基线
 
@@ -9436,7 +9436,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-14-04-03 布置配置及样例资源**。**验收** 首次启动可定位。（commit 5da86a6）
   - 证据：`ci/install-layout.sh` + `docs/review/bw14-04-installable-artifact-layout.md`（b0a4d3e 起，5da86a6 完成）——`res/server/bw.xml` + `res/scripts/`（21 项样例资源镜像）随包布置（install-layout PASS：配置/资源/二进制/模块/`data/` 齐全）。**工具半**：装后 `process_defs -r <prefix>/res` 首启定位并加载安装资源树（install-cli-res PASS）。**服务器半**：`apps/server/src/main.rs`（5da86a6）按参考 `BIGWORLD_MAIN` 接入 `BWResource`/`BWConfig` 链，装后 `boundless-server <role>` 以 `BW_RES_PATH=<prefix>/res` 首启定位安装配置（install-res-server PASS：无「Could not find」/「No configuration section」，正常启动/停止 exit 0）；`role_lifecycle.rs` 首启定位/未定位双测试钉死观测差（定位静默、未定位记参考失败行）。
 - [ ] **BW-14-04-04 执行干净安装烟测**。**验收** 三端能启动和停止。
-  - 证据（部分，未勾）：本席 `ci/install-layout.sh` 全链复跑（988ff5f 修两处过时模块名后 13 行 PASS：装后 server start/stop 出 `BaseApp is running`+`has shut down.` exit 0、CLI/资源定位/build parity/导入/升级/卸载全绿；夹具 `docs/review/fixtures/opt-14-01-03/install-upgrade-rerun.tsv`、证据 `docs/review/opt-14-01-03-install-upgrade-rerun.md`）。Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
+  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
 - [x] **BW-14-04-05 执行升级与卸载**。**验收** 验证用户数据保留行为。（commit b0a4d3e）
   - 证据：`ci/install-layout.sh`（b0a4d3e）——归档只携带包属树（`bin lib res`），用户数据在 `data/`（**不在归档**）。装后种子 `data/db/user.db`，篡改包属文件 `res/server/bw.xml` 后**升级**解包：包属文件还原为打包字节、`data/db/user.db` 保留（install-upgrade PASS）；**卸载**删除 `bin/ lib/ res/`、`data/db/user.db` 保留（install-uninstall PASS）。self-test 绿色全链路 + 4 条红色臂（启动失败/CLI 失败/坏模块/缺定义资源树均按预期咬合）。
 
@@ -9461,7 +9461,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-15-01-06 校验路径大小写、编码和系统目录**。**验收** 代表性夹具可寻址。（commit aa6e2ee）
   - 证据：`crates/platform/src/path.rs`（aa6e2ee）——`correct_case_of_path`（参考 `WinFileSystem::correctCaseOfPath`（win_file_system.cpp:782）的 POSIX 对应：`realpath(3)` 在大小写不敏感卷上解析出盘上真实拼写、敏感卷上即恒等、缺失路径原样返回）；`real_path`（canonical 定点、symlink 解析、缺失报 `ENOENT`）；`join`（参考 `getAbsolutePath` 的 base+path（unix_file_system.cpp:466），补缺 `'/'`）；`home_dir`（`$HOME`）/`temp_dir`（`TMPDIR`→`TMP`→`TEMP`→`/tmp`）；编码 `path_bytes`/`path_from_bytes` 字节级往返（POSIX 路径是字节串非必 UTF-8，实测 `0xFF` 字节往返）+ lossy。Linux 实测 7 测：temp 系统目录夹具写读可寻址、HOME 绝对、join 三态（缺分隔/已带/空 base）、realpath 不定点+symlink+缺失三态、correct_case 缺失原样/存在=realpath、非 UTF-8 往返。**Windows `%USERPROFILE%`/`%TEMP%`/`GetFullPathNameW` 后端归 BW-15-03 Windows runner 平台移植**（本项验收为代表性夹具可寻址，Linux 已实测过：`path::tests::temp_dir_holds_an_addressable_fixture`，temp 系统目录夹具写读可寻址）。
 - [ ] **BW-15-01-07 校验网络地址与断网行为**。**验收** IPv4/IPv6 和失联状态可复测。
-  - 证据（部分，未勾）：IPv4 侧与失联侧**原语层已齐**——地址校验 `inet_aton`/`host_by_name`/`host_by_addr`（`socket.rs`，含点分十进制与主机名区分测试）；断网 `Endpoint::enable_error_queue`+`read_error_queue`（04d4133 时的 macOS 可编译系旧代实况；f2ef112 取 theirs 把 socket.rs 951→887 行连带丢光 sin_len/u8 族/msg_controllen/error-queue 四组 BSD 臂，5f0b706 恢复，见下），**失联可复测实测**：`endpoint.rs::the_error_queue_reports_a_refused_packet`（无监听端口发包→ICMP unreachable 入错误队列→`ECONNREFUSED`+offender 回读→队列排空）。**待决（用户拍板）**：IPv6。参考 BigWorld 的 `Address`/`Endpoint` 是 IPv4-only（`uint32 ip`+`sockaddr_in`，`socket.rs` 文档已注明"the reference only builds IPv4 addresses"）；若本移植要支持 IPv6 则属**参考外偏差**，需改 `Address` 为双族枚举并波及 `endpoint`/`packet_receiver`/`packet`（`sockaddr_in6`、`AF_INET6`），改动面大且与在飞文件重叠。
+  - 证据（部分，未勾）：IPv4 侧与失联侧**原语层已齐**——地址校验 `inet_aton`/`host_by_name`/`host_by_addr`（`socket.rs`，含点分十进制与主机名区分测试）；断网 `Endpoint::enable_error_queue`+`read_error_queue`（04d4133 起在 macOS 亦可编译，见下），**失联可复测实测**：`endpoint.rs::the_error_queue_reports_a_refused_packet`（无监听端口发包→ICMP unreachable 入错误队列→`ECONNREFUSED`+offender 回读→队列排空）。**待决（用户拍板）**：IPv6。参考 BigWorld 的 `Address`/`Endpoint` 是 IPv4-only（`uint32 ip`+`sockaddr_in`，`socket.rs` 文档已注明"the reference only builds IPv4 addresses"）；若本移植要支持 IPv6 则属**参考外偏差**，需改 `Address` 为双族枚举并波及 `endpoint`/`packet_receiver`/`packet`（`sockaddr_in6`、`AF_INET6`），改动面大且与在飞文件重叠。
 
 #### BW-15-02 Linux
 
@@ -9504,7 +9504,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 三个原生 runner 分别构建、跑协议/资源/Python/持久化测试和实际进程启动测试。持久化矩阵覆盖 MySQL、PostgreSQL、XML 主存储及 SQLite 二级库，三端 DBApp 均连接真实 PostgreSQL 实例验证登录、写档和重启加载。再组合三端客户端与服务端、替换独立服务进程，核对版本标识、结果和关服顺序。
 
 - [ ] **BW-15-05-01 配置三端原生 runner**。**验收** 每端独立构建和启动。
-  - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；`resources` 端 Windows 已清：`bwresource.rs` 的 `Metadata::uid`/`/proc/self` 探针早经 `fix: gate the proc self uid probe on unix` 门控、本轮 `file_system.rs` 的 `symlinks_follow_stat_semantics` 测试补 `#[cfg(unix)]`（`cargo check -p resources --target x86_64-pc-windows-gnu --all-targets` 0 error，Linux 232 测全绿）；Windows 端真 blocker 是 `mercury` 未门控的 `event_dispatcher`/`udp_channel`/`packet_receiver`/`platform::socket` import（E0433，属 bw02 席）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
+  - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；Windows 端构建被 `resources` 预存 unix-only 代码挡（`std::os::unix`/`Metadata::uid`，E0433/E0599，属 BW-15-03）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
 - [ ] **BW-15-05-02 在三端执行协议、资源与 Python 测试**。**验收** 各端分别留存结果。
 - [ ] **BW-15-05-03 配置 MySQL、XML 与 SQLite 测试矩阵**。**验收** 每种模式产生独立结果。
 - [ ] **BW-15-05-04 配置 PostgreSQL 真实后端矩阵**。**验收** 各端完成登录、写档和重启读档。
@@ -10557,10 +10557,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化空间流式装载、碰撞走查和导航缓存。比较峰值内存、场景冷启动和查询尾延迟，核对坐标与碰撞结果。
 
-- [ ] **OPT-10-01-01 ；**跨席交付登记（lane/bw14-script-host 未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席交付见彼 lane 勾行（01=37ec32a map_load_baseline/02=7fc6d76 map_stream_opt/03=bfde122 query_cache_opt/04=eb163d4 map_rerun_fixtures）。测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。
-- [ ] **OPT-10-01-02 ；**跨席交付登记（lane/bw14-script-host 未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席交付见彼 lane 勾行（01=37ec32a map_load_baseline/02=7fc6d76 map_stream_opt/03=bfde122 query_cache_opt/04=eb163d4 map_rerun_fixtures）。优化空间流式加载**。**验收** 报告峰值内存及加载速度。
-- [ ] **OPT-10-01-03 ；**跨席交付登记（lane/bw14-script-host 未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席交付见彼 lane 勾行（01=37ec32a map_load_baseline/02=7fc6d76 map_stream_opt/03=bfde122 query_cache_opt/04=eb163d4 map_rerun_fixtures）。优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。
-- [ ] **OPT-10-01-04 ；**跨席交付登记（lane/bw14-script-host 未并 main，行保持开待主席并入，本席不重做）**：bw14-script-host 席交付见彼 lane 勾行（01=37ec32a map_load_baseline/02=7fc6d76 map_stream_opt/03=bfde122 query_cache_opt/04=eb163d4 map_rerun_fixtures）。复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
+- [ ] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。
+- [ ] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。
+- [ ] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。
+- [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
 
 ### OPT-11-01 三端固定镜头基线
 
