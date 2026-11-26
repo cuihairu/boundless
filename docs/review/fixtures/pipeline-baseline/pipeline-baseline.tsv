@@ -1,0 +1,15 @@
+hash_ns_avg	28286
+cold_assets	48
+cold_ns_avg	88038
+cold_cache_misses	48
+cold_cache_writes	48
+warm_ns_avg	84576
+warm_cache_hits	48
+cold_to_warm_speedup	1.04
+editor_scan_ns_avg	4325
+editor_scan_callbacks	1
+editor_convert_ns_avg	3378
+editor_task_records	48
+editor_deps_ns_avg	39912
+editor_deps_per_task	3
+baseline_wall_ms	20.029

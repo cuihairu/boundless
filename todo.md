@@ -1657,6 +1657,7 @@
 - [x] **BW-13-02-04 移植 resourcechecker**。**验收** 同一坏资源得到对应诊断。**交付**（2026-11-25，8678b06 + 16eda65 已推 lane/bw15-platform）：`crates/asset-pipeline/src/resource_checker.rs` 移植 `tools/resourcechecker/visual_checker.*` 的 `VisualChecker`。**规则面**：`_bsp.` 命名直接放行且不载规则；规则自 `visual_rules.xml`（cacheRules=true 直开 / false 先 fileExists——两分支同落 openSection，合并为 `cache_rules || file_exists`）；缺规则记 `Unable to find visual_rules.xml file.`（构造期错误，check() 首行 `errors_.clear()` 与原版一致会清掉）；匹配 = 目录路径小写 find 包含 + `stable_sort`（path 长降序、filespec 长降序稳定）+ `PathMatchSpec` 可移植 glob（`*`/`?`/`[seq]`/`[!seq]`，首 `]` 字面量，`{}` 列表无用户未实现已注册）；rulesById + parent 链递归读（宏生 vector/string/int/float/bool + hardPoint 集合）；exportAs ∈ {normal, static, static with nodes} 否则 `Unknown value for exportAs [%s]\n` + 重置 normal。**检查面**：尺寸/三角数（`*indices` 子节 `IndexHeader::read` 计 `nIndices_/3`，负数 wrapping 成 u32）/层级深度（缺 node 节原版解引用空指针即 UB，移植记 0 已注册）/portal 电池（基座矩阵 row0=uAxis、row2=boundary normal、row1=normal×uAxis、平移=normal·d，点从平面空间映射回对象空间；<3 点/非平面（零法线跳过）/朝外（`d − centre·n > 0`，平面法线须指内）/snap 1/2196 容差/距离 1/1024 容差/offset 1/8192 close，printf %f 全 `{:.6}`）/重复节点名/硬点缺失与未知（HP_flash01 与 HP_flash 豁免；`len>3 && substr(0,3)=="HP_"` 照抄）/纹理名空格（renderSet→geometry→primitiveGroup→`material/textureormfm` find_last_of）。**接缝注册**：MessageBox/automatedTest 分支一律走错误记录；`PrimitiveFile::get` 先 `.processed` 后裸名；XML 内容嗅探拒绝（原版空 asBinary 强转 IndexHeader 是 UB）；`snap_vertices` 原版即死字段照抄并注册。**验收即测试**：`portals_are_forbidden_on_normal_visuals`（同一坏视觉在 rules=false 下得 `Must not have any portals`）等 15 测——好视觉全规则零错、too small/too big/三角上下限/层级/朝外/非平面/snap+距离/重复+硬点/纹理/坏 exportAs/缺文件逐项断言原版消息全文。**附带**：`datasection::read_vector3` 改走 openSection 路径行走（原版 readVector3 即 `openSection(tag)`，`boundingBox/min` 两跳；16eda65 附 `read_vector3_walks_slash_paths` 测）；门禁 asset-pipeline 177 + resources 228 测绿，clippy 仅余两既存 workspace unused-dep，fmt 清，llvm-cov resource_checker.rs 行 96.49%（crate 整体 85.60%，工具 crate 口径照旧）。**坑**：原版 portal 点存平面空间 (u,v,0) 经基座矩阵映射回对象空间，测试夹具必须给平面坐标再由 winding 定平面法线朝内（朝外即触发 facing 错误）；`BinSection::save_bytes` 输出含非 UTF-8 magic 字节，夹具写盘必须走原始字节而非 `from_utf8_lossy`（会替换 0xa1 致容器解析空）。
 - [x] **BW-13-02-05 回归 NavGen 入口**。**验收** 可调用 BW-10 的导航生成。**跨席复测勾**（main 交付为准，2026-11-26，本席）：main `79f47c4`（`crates/asset-pipeline/src/navmesh_processor.rs` 2738 行/55 测，LockedChunks 引用计数/ChunkProcessorManagerFace 锁块怪癖/NavmeshProcessor 逐 girth 顶检→flood→as_binary 追加/NavmeshCache 全端口）依赖面 `977f555`（waypoint-gen workflow.rs 914 行：readTGA/extendThroughUnboundPortals/determineEdgesAdjacentToOtherChunks/compileGirthsList/GirthWorkflow）+`d26cb55`（tga temp dir 隔离），本席 cherry-pick `3ddf7b8`+`b868516`+`b91f983`。**缝冲突自纠**（`e5670ac`）：本树 b99cb0e（lane-only，GenChunk/FloodPhysics 缝）与 main 同面（NavmeshProbe/DropPhysics 缝）物理撞名 to_vector3/determine_edges——取 main 版为准，删本树私有重复，navgen_map harness 补 NavmeshProbe/DropPhysics 适配 impl 改骑 workflow 缝，truth log `gen_navgen_map.log` 逐行复现未变（两版行为等价实证）。**复跑证**：waypoint-gen 88 测绿（含 navgen_map truth-log 对照+workflow tests）+asset-pipeline 439 lib+集成 0 failed，fmt/clippy scoped 净（blowfish workspace 预存在非代码）。b99cb0e 余下不撞名面（generate/streamline/calculate_set_membership/as_binary 等）保持开待主席与 main 侧择一。
 
+
 #### BW-13-03 WorldEditor
 
 复现地图打开/保存、Chunk/Portal/地形编辑、对象放置、选择和变换、属性编辑、撤销重做、资源浏览和空间发布，用同一地图跑编辑后往返测试。
@@ -1719,6 +1720,7 @@
 - [x] **BW-14-01-04 运行 Guard 和 Space 脚本**。**验收** 行为与基准相符。（commit 81618be）
   - 交付 `crates/server-runtime/src/script_host.rs`：Guard/Space 脚本经脚本宿主跑通引擎生命周期（81618be）。base/cell 两角色接线——四个 `BigWorld.Base` 盖章方法（`createInNewSpace`/`registerGlobally`/`destroyCellEntity`/`destroy`）、tp_init 槽构造（`Py_tp_init=60`，typeslots.h 实证）、`importEntityClass` 引用原文拒绝文本、cell 侧按名 `__init__`；重复注册路径照走 `destroyCellEntity`（get-pending 旁路，base.cpp:4038-4041），`inDestroy_` no-op 重入面，簿记/派发两段式重入契约；`PyCFunction_New` 存 `PyMethodDef` 指针故 defs 表 `Box::leak`（参照 static PY_METHOD 契约）。9 进程内测试 + 15 独立进程场景；llvm-cov 0.9.1 该文件 1240/1260 = 98.41%（子场景进程 profraw 合并计入）。补测抓到真 bug：派生检查文本 `BigWorld.` 重复限定。评审文档 `docs/review/bw14-01-04-script-host-wiring.md`。
   - **双交付 FLAG（2026-11-26）**：bw16-18 席 lane/bw16-18 `e14f900` `entity_runtime.rs` 1050 行（PyType_GenericAlloc 分配+Base 四方法 guard 链逐字+Entity/Base 只读属性+BaseRuntime trait 模型+7 场景，lcov 100% 693/693 max-merge）与本席 lane/bw14-script-host `81618be` `script_host.rs`（宿主 outbox/pending/global_bases 簿记+thread-local 三驱动+四盖章方法+tp_init 构造+import_entity_class+15 独立进程场景，98.41%）同项平行交付，**主席择一**；面重叠=Base 四方法 guard 链+构造派发，分歧=本席含 register/destroy/onGetCell/onLoseCell 出站簿记与 fixture Space bootstrap 全生命周期，彼含 Entity 只读属性+BaseRuntime trait 模型；另 main 侧 bw10-terrain 九次同步（e0f8d2b）的「行保持开」卡点注已被本席 `9e269e8` 勾行取代，合并时以勾行态为准。
+
   - 卡点（脚本宿主未接到服务角色）：Guard（cell+client 占位）与 Space（DefaultSpace bootstrap）的脚本 `scripts/cell/Guard.py`、`scripts/base/Space.py` 已随夹具跟踪（845831f）。pyscript **模块面**已合入——BW-03-03-01 模块清单/核对（b50a875）+ BW-03-03-02 数学对象/Provider + BW-03-03-03 定时器模块——但脚本宿主↔服务角色**接线**未落地：无 cell/base script app 把 `Guard.py`/`Space.py` 载入活解释器并驱动 `onCellEnter`/`onSpaceStart` 回调，该接线随 cell 运行时（BW-08）+ 服务端 script app（BW-03-03-04 资源访问后角色侧集成）落地，无宿主则本项不可运行。
 - [x] **BW-14-01-05 验证退出重登**。**验收** 读回此前角色位置及属性。（commit 70079db）
   - 本席零代码交付（同 05-06 先例）：bw08-ledger-tick 席 70079db + 台账 436bb0f 已交付并推 `lane/bw08-ledger-tick`（远端 tip 436bb0f 实测）。本席在临时工作树（`git worktree add /tmp/bw08tick-verify origin/lane/bw08-ledger-tick --detach`）真机复测：`cargo test -p server-runtime --test fantasydemo_logout_relogin --test fantasydemo_account_logon` → **5+2 测全绿 0 失败 0 跳过**。证据：`crates/server-runtime/src/base_write_db.rs`（70079db）——`Base::destroy`（base.cpp:1488）旗标决定 + `Base::writeToDB`（base.cpp:1991）归一化序（零旗标无事、DELETE 蕴含 LOG_OFF 排除 BASE_CELL_DATA、LOG_OFF 遇从未写库 base 拒「不进库的东西不必通知数据库登出」、非 cell 清 CELL_DATA、cell-data 三择、PENDING 以 0 写出）；`tests/fantasydemo_logout_relogin.rs` 2 例在夹具 db.xml 上跑通退出→重登全链（①首登后 Avatar+Account 两 base 各按 `WRITE_LOG_OFF|WRITE_BASE_CELL_DATA` 退出、put 回原值+check_in 释放、登出后两 logon 记录皆空、重登同账号 checkout 再 Granted、**Avatar 行逐值等于退出所写**；②DELETE|LOG_OFF 删行删记录+checkout 已删实体→NotFound）。门禁：db+server-runtime 1516 绿、server-runtime llvm-cov 按 (SF,行) max 去重 100.00%（42977/42977）、base_write_db.rs 121/121=100%。
@@ -1731,6 +1733,7 @@
 
 - [ ] **BW-14-02-01 运行 Python simple 示例**。**验收** 与新服务端完成登录。
   - 卡点复测（2026-11-26，bw14-script-host 席）：旧注「服务端登录链路未落地」**已过时**——登录链已落地并真机绿：BW-06-01-02 挑战协商（3244af7，main 祖先）+ BW-07-01 baseapp 装载/ID 分配 + BW-14-01-02/05 进程内登录链（`fantasydemo_login.rs` 5 测：既有账户走机/未知用户建档/错密码拒不碰行/新角色建档回指，`fantasydemo_logout_relogin.rs` 2 测：退出持久化重登读回，本席实测全绿）。**真余卡点两处**：①`apps/server` 仍最小入口（`main.rs` 仅 BWResource/BwConfig 初始化 + `app::run` 信号/关停面），无角色运行时把 loginapp/dbapp/baseapp 登录链接到真实 Mercury 端口（同 BW-15-02-01 卡点；BW-08-01-02 CellApp 创建与注册未勾）；②参考 simple 客户端是 **C++ 壳内嵌 Python**（`main.cpp`/`entity.cpp`/`py_server.cpp` 等，目录名「python」指 Python 脚本化实体而非纯 Python 程序），跑通它需移植该壳或等价客户端驱动，与①同属大面工程，随角色运行时落地。simple 自带 res 树实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对。
+
 - [x] **BW-14-02-02 运行原版 Android 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
   - 宿主缺口（未运行互通测试）：`docs/review/bw14-02-02-03-mobile-interop-host-gap.md`（402c28a）——参考 `examples/client_integration/c_plus_plus/android/`（JNI + `android.app.NativeActivity` + `android_native_app_glue` + `connection_model` 静态库 + `-llog -landroid -lEGL -lGLESv1_CM`，NDK `armeabi-v7a`/`APP_STL=gnustl_static`/`APP_PLATFORM=android-9`）需 Android NDK 工具链 + 真机/模拟器，本机 Linux 无 NDK/设备；即使宿主就绪，互通目标（新服务端登录）亦未落地（同 02-01 卡点）。协议结果未采集；两侧缺口均已登记。
 - [x] **BW-14-02-03 运行原版 iOS 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
@@ -2834,6 +2837,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 分配数：`6b6cc9c` 落 `crates/foundation/tests/alloc_counts.rs` + `crates/server-runtime/tests/alloc_counts.rs`——计数全局分配器 + thread-local 追踪旗标（旗标与计数全在调用线程，并发测试线程互不污染；全局计数器版首跑即暴露互踩：纯浮点夹具数出幻影分配），夹具与时序表逐形对应（`iter_batched` 出时间窗的 setup 同样出计数窗），每测断言双跑恒等故数字按工具链逐位可复现；11 行基线：add_1000_timers 1010 次/112,440 B（每计时器 ~1 次、firing pass 0 次）、process_1000_due 0/0、add_cancel_process_100 108/12,504、encode 29/26,563、decode 20/11,481、math 四面全 0/0、updatables call pass 0/0、register_deregister_100 114/12,424；`cargo test -p foundation` 228+9 绿、`-p server-runtime` 1303+2 绿、两 crate `--tests` clippy 净。
   - 加载峰值：bots 二进制（debug，main `70a4672`）在 `LOAD_CLIENTS=4` 信封下 `/usr/bin/time -v` 实测三场景 peak RSS——steady-move 3,164 KiB（bots_online 4）、login-hurricane 3,180 KiB（online_peak 4、4/4 admitted）、dense-aoi 3,148 KiB（bots 4、max_visible 3）；`ci/load.sh` 3/3 PASS 落 TSV；离线面按仿真时间跑完故此峰是生成器自身足迹，实拓扑逐期 RSS/CPU 采样（`ResourceTracker`，BW-17-03-04）在 `crates/load` 已测但尚未接进 driver 报告（归 bw17 席）。
 - [x] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。**跨席复测勾**（2026-11-26，本席）：bw19-docs 席 lane `6174b44`+勾 `f742b62`（噪声地板+交错 A/B 口径），main=`8e17603`（time_queue.rs process 循环预回调簿记+post 收尾两借窗，每点火 5-6 窗→2；tick.rs Updatables.handles 指针键 hasher 去种子探针；双二进制 10 轮交错 A/B 噪声地板 -3.4%，主张限逐 tick 派发探针、timer 腿只保借窗减半不主张提速；记录 docs/perf-baseline-2026-11-24.md OPT-01-01-02 节），本席 cherry-pick `f504370`。复跑证：foundation 232 lib+10 集成绿、server-runtime 1756 lib+集成全绿（含 tick 面），fmt/clippy scoped 净。
+
 - [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。`ebbde2b` 双面交付（main=`e478d90`）：
   - 资源缓存热路径零分配：`crates/resources/src/data_section_cache.rs` 链指针原是 `Option<String>` 路径拷贝（每次重链 2-6 次 String 分配）→ 槽位 arena（`Vec<CacheNode>` 整数双向链 + 侵入式自由链；`add` 一次性付两份 String——map key + 槽内 name 拷贝——稳态 relink 机器全零分配；section 在 entry 释放时 drop，与参照删节点同语义）。TDD 红先证旧实现逐操作计数（find 中段 6 次/36 B、尾段 5/30、purgeLRU 3/18、remove 中/尾 3/18、remove 头 2/12、head 命中/miss/原地重加 0），新实现 `crates/resources/tests/data_section_cache_alloc.rs` 全零断言 3 测绿，模块 llvm-cov 100.00%（380/380 行）；「复跑失效夹具」随 `cargo test -p resources` 222 全绿一并完成（multi_file_system 目录列举缓存失效 + data_section_cache 七测同套）。
   - BinaryStream 64 字节预留：`crates/foundation/src/stream.rs` 手写 `Default` = `Vec::with_capacity(64)`（参照 `MemoryOStream( int size = 64 )`，`lib/cstdmf/memory_stream.hpp`——参照默认构造即预留，`new()`/`from_u32_le` 同享；`from_slice` 读流包已有内存不预留）。红先证旧实现 61 字节小写 2 次分配，新实现 1 次/64 B；encode_mixed_payload 29→26 次（26,563→26,507 B）；`cargo test -p foundation` 228+10 绿（405 处 `BinaryStream::new()` 调用点无回归），clippy 净。
@@ -2848,6 +2852,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。（bw15 席 `bc1ee86`/`071bdc6`/`3e7c776`，lane/bw15-platform，main=`c733e5a`/`7dc6d12`/`3590227`：platform::socket 落 sendmmsg/recvmmsg 包装+SendScratch/RecvScratch 保留式暂存（Linux cfg）；crates/mercury/tests/batch_io.rs 三臂对照=批量/逐报/分配计数，批宽 64 收发系统调用各 63×摊派（3495→55）确定、每报摊派成本 p50 持平、稳态 0 alloc/报（现行路径 1.00/报）、回环吞吐同量级（窗深投递延迟主导，墙钟只记录不设带）；TSV docs/review/fixtures/network-baseline/batch-io.tsv，证据页 docs/review/opt-02-01-03-batch-and-copy.md；platform 64+mercury 377/7/5/1 全绿（本席 main 复测 455 绿））
 - [x] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。**跨席复测勾**（2026-11-26，本席）：bw15-platform 席 lane `fc181f5`/`19a9c42`/`29cc302`/`f438b7d`/`1b27379`，main=`261a2d0`/`25ee476`/`3675b18`/`62ea5d3`/`4b83ebb`+证据 `3fd6e3d`，本席 cherry-pick `738703d`/`dda66d9`/`fabe0a5`/`e8141cd`/`bc3fc07`/`61a534b`（+dev 边补 `message_logger` 两笔 build `4b48b81`/`c79d7be`）。面：el7_mixed_deploy.rs 五腿真机混部（`#[ignore]` 场景 EL7_MIXED_OUT 落 TSV）+四真互操作 bug 修复（machined 线格式对参考/记录头源字段宽/进程统计答全匹配面/workspace 边）。复跑证：server-runtime 1756 lib+集成全绿（mixed deploy 测试编译过、场景腿按设计 ignore 待 EL7 环境），fmt/clippy scoped 净；EL7 真机腿证据以 bw15 席 TSV 为准（docs/review/fixtures/network-baseline/el7-mixed-deploy.tsv）。
   - 登记（2026-11-26，本席）：bw15-platform 席 lane-only 交付（`fc181f5`/`19a9c42`/`29cc302`/`f438b7d`/`1b27379`，未进 main）：crates/server-runtime/tests/el7_mixed_deploy.rs 五腿真机混部（新版→原版 UDP pid/WholeMachine 查询、原版→新版 UDP logger 注册+birth/death、发现广播版本门两臂、新版→原版 TCP 注册帧化落 mldb、新版→原版 UDP 裸数据报落 mldb）+四个真互操作 bug 修复（contracts/machined.rs v51 pid u32+Listener/Signal extra 块殿后+ProcessMessage.port 网络序；message_logger 记录头 DebugMessageSource=4 字节裸枚举 38 vs 41 字节账；MachinedDaemon answer_query_all 逐匹配应答 bwmachined.cpp:1410-1452）。行保持开：本席不重做不勾，待 lane/bw15-platform 并 main 后本席 cherry-pick 跨席复测再勾。
+
 
 ### OPT-03-01 Python 桥接基线
 
@@ -2872,8 +2877,11 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
 - [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `5120dea`+`0fbfa8f`：crates/load/src/hotspot.rs run_hotspot_baseline 三窗口=allocation（fleet 经 feed_log_on_result 上线+整窗口 circle-walk，ResourceTracker 读 procfs 八次：utime/stime+VmRSS）、recovery（seeded 子集 mid-window drop，reconnect feed_logged_off(Some(true))，floor 2 tick=drop@d/relogin@d/reply@d+2 与 reconnect 同）、reclamation（drain 全 feed_logged_off(None) destroy，online 归零，采样延到尾部）；可复现面 vs 墙钟：online/recovery/drop 计划/sample schedule 固定 seed 全等断言，RSS/CPU 排除 PartialEq 仅经 resource_report_entries 落 LOAD_REPORT（带 metric def）；7 新 hotspot 测+smoke 门入 saved-kinds；覆盖 269/271=99.26%；ci/load.sh 7/7 PASS；记录 run=300/75 tick、4/4 recoveries、mean=max 2、load 最小在线占比 0.75、sampling 4.6s/8、peak RSS 3464 KiB、final 3464、reclaimed 0 KiB（小 fleet drain 回收 0=诚实值，故墙钟只记录不设带）；baseline 加 min 2.0 floor；证据页 docs/review/opt-05-01-01-load-hotspot-baseline.md）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收平行腿 `e028fbf`（cellappmgr_baseline.rs 三腿合成钟 harness 入 cellappmgr.rs）与本席 `5120dea`+`0fbfa8f`（load/src/hotspot.rs run_hotspot_baseline）同面异实现，待主席择一。
 - [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（本席 `a577c5c`：crates/server-runtime/src/balance_baseline.rs run_schedule_scenario 用真 CellAppMgr 跑固定 96 tick 双相位（热相 app0≈0.6 偏斜触发拆并、冷相全低触发 retire），每次 report 后 load_balance+meta_load_balance+tick；ScheduleLedger 记 cells_added/cells_removed/apps_retired/partitions_moved/reports；BalanceTuning 新 seam（load_smoothing_bias/estimated_initial_cell_load/safety_bound/safety_ratio/meta_load_balance_tolerance/lower_bound/limit_to_chunks，Default 全等参考常量，inform_of_load 保留旧行为、新增 inform_of_load_with 显式 bias；Space::partition_positions+BspNode::visit_partitions 供台账数线）；固定 seed 27_182_828 基线 partitions_moved=0 vs 候选 limit_to_chunks=false 移动 2 条（final loads/cells 两侧一致，差异在调度路径非分布）；5 新测（含双跑全等）；覆盖 balance_baseline.rs 171/171=100%；cargo test -p server-runtime 1693 lib+集成全绿；fmt/clippy 干净（仅既有 blowfish 未用依赖告警）；证据页 docs/review/opt-05-01-02-schedule-comparison.md）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收平行腿 `cd056fc`（cellappmgr_tuning.rs 三固定场景对比）与本席 `a577c5c`（balance_baseline.rs run_schedule_scenario）同面异实现，待主席择一。
 - [x] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。（本席 `fd21b51`：crates/server-runtime/src/lifecycle_scenario.rs run_lifecycle_scenario(seed=41) 组合真 MigrationRecovery（offload→target_lost→两通 Failed 缓冲→restore 转发→reconcile 五谓词全真）、controlled_shut_down_server+ShutdownState Request/Inform/Perform+CellAppMgr cell ack、TaskManager stop_all 排空 backup/flush-replay、ReplayDataCollector/Writer 真前缀签名 4 tick 落盘、read_replay_prefix 混部门（当前接受/异版拒绝，无混部 fleet runner 故以此面为界）；6 新测全绿且双跑 ledger 逐字段全等；覆盖 187/187=100%；cargo test -p server-runtime 1699 lib+集成全绿；fmt/clippy 干净（仅既有 blowfish 未用依赖告警）；证据页 docs/review/opt-05-01-03-lifecycle-rerun.md）
+  - 本席 lane-only 交付（`fd21b51`）待主席并入；main 侧行保持开。
 
 ### OPT-06-01 登录与资源下载基线
 
@@ -2893,6 +2901,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。4c19ee7（shared_data_baseline.rs+shared_data_tuning.rs 96 变更过真实双 mgr 链(set/del 四 scope+forward/relay 环 4 BaseApp+3 CellApp)：shipped 575 消息(base284/cell219/fwd24/relay48) vs 抑制 no-op 写 444(216/174/17/37)=省 131(−22.8%)，21 次 no-op 放大为全链腿消去(全局 set=5/转发 set=9/cell=3)；终态三权威图逐位相等(same_load 钉)；跨种子形状钉；9 测 baseline 98.58%+tuning 100%）
 - [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。2fbfcf8（takeover_rerun.rs 12 实体种子舰队过真实备份面后源亡接管 restore 12/12 属性全等；16 变更建双 mgr 权威图后按 count+pairs 恢复流形状落盘、全新 mgr 对经真实 recover_shared_data_from_stream 读回=四图逐位等(2/4/2/4 条目)；跨种子形状钉；4 测 99.65% 行 100% 区域，唯一缺行=属性不匹配假臂被断言正确性排除）
 
+
 ### OPT-08-01 密集 AOI 基线
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
@@ -2902,6 +2911,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。(2026-11-26 本席 lane/bw14-script-host 5e4181c:space_parallel.rs 复用 BW-08-05-01 decide_offload/collect_offload 实面,120 实体密场按 x=16m 分裂面两侧驻扎,AoI 基线同款 ±0.75m 步表真跨面;台账 crossings=2/offloads=2(逐 crossing 恰一次,落点=p_cell_at 所含侧)/stays=118,check_ms≈0.009-0.012 probe 打印不断言;分支规则 coordinate<position 把分界平面判给右子(x/z 双轴实证,骑面者归左必迁 OffloadTo(FAR));四 Stay 门(未创建/死通道/缺通道项=死/删除挂起)+disabled cell_should_offload 全 Stay;重跑台账恒等;4 测,lib 1754 全绿;review=docs/review/opt-08-01-03-space-parallel.md)
 - [x] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。(2026-11-26 本席 lane/bw14-script-host 616a885:aoi_rerun.rs 复跑密场景两遍逐 tick 审计,TickLedger 增有序 starts/stops/enters/leaves+整份 bundle 发送序;状态正确=视距触发器布点=窗谓词 (sub-range<x≤sub+range) 双轴、可见集=扫描锥真值(update gate 读控制器公开 tick 计数,run tick 用现位置/skip tick 恒等携带集)、start/stop 差分自洽(starts 只打未见 id/stops 只打持有 id/差分复现 visible_entities)、EnterAoI/LeaveAoI 消息=触发器跨越、witness AoI 映=500m 窗、bundle 逐实体序 EnterAoI→CreateEntity→EntityUpdate 更新不先于创建;迁移腿 destination+native 双世界 16 tick 全审,seed 静默 46→46、held 重报=0、终态 visible 42/range 布点/AoI 映三层全等 native;坑=client bundle 是客户端面向 AoI 态唯一重放源,tick 0 120 条 EnterAoI=120 跨越,二次重放会重复计数——两视图须对账不能叠加;2 测,lib 1756 全绿;review=docs/review/opt-08-01-04-aoi-rerun-state.md)
 
+
 ### OPT-09-01 分别采集 MySQL 与 PostgreSQL 基线
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
@@ -2910,6 +2920,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。9dda748（pool_merge_eval.rs 同一 48 行+48 读种子负载三种执行形状过真 PG：shipped 1 连接 96 语句 48 提交 vs unpooled 96 次连接(纯多付连接 ≈4×墙钟 1.8s vs 450ms) vs merged 单事务 48 写并 1 提交+ANY 单语句读(50 语句 1 提交 ≈6×吞吐 75ms vs 450ms，fsync 类落盘 48→1)；结构计数断言=后端无关，MySQL 半=语句形状恒等且 OPT-09-01-01 同形状 store.sh 真机绿(无 Rust mysql 驱动不采样墙钟如实声明)；墙钟只打印不断言(BW-17-02-08 门)；4 跑数字留档 docs/review）
 - [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。01d391c（archive_batch_eval.rs 同一 64 行种子负载三写形过真 PG：autocommit 64 语句 64 提交 ~540ms vs 事务批 66 语句 1 提交 ~165ms(≈3.3×,落盘 64→1) vs 单条多行 INSERT(按 schema 自身列构建) 1 语句 ~4-5ms(≈100×)；三形 rows_ok=64 逐行相等=改的是成本不是内容；归档整合=export_backup 12 表 193 行 ~30-50ms → restore_backup 空库 ~145ms → 目标库重导出逐记录相等(restored==dump)=恢复正确性；墙钟只打印不断言；db-postgres 135 测全绿）
 - [x] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。已交付 f09727b：crates/db-postgres/tests/rerun_recovery.rs 三腿（同种子 32 行事务复跑两库 export dump 逐记录相等=复跑即复现；rollback 腿脏读可见 staged 写+staged delete 读 None、rollback 后 dump == 事务前快照且覆盖/删除行原样回归；retry_query/query_with_reconnect/run_with_retry 各吃一次脚本化首尝试失败（DbError::Retry=store.rs:48 SQLSTATE 40P01/55P03 同款、LostConnection、classify(1045) fatal）后真连库读回该行，attempt/reconnect/on_retry 计数逐项钉死+complete 恰一次+无 reconnect 时损毁面原样上浮不重发；恢复腿 restore_backup 进空库后同工作负载走 update 面复跑、export == 源 dump）。计数/等值全 assert，墙钟仅打印不 assert（125.6/87.3ms、73.1/89.4ms、restore 36.0ms）。坑：put_entity 第三参是 create 非 overwrite——复跑踩已存在行须走 update 面(false)，首稿 create=true 全腿 AlreadyExists 被面契约当场揭穿；EntityStorageImage 仅 Memory 实现(storage.rs:884-901)，retry_transaction 图像回滚属内存后端，PG 侧对应物=事务/rollback 腿。docs/review/opt-09-01-04-rerun-recovery.md。门禁 db-postgres 138 绿/fmt/clippy 净。
+
 
 ### OPT-10-01 地图加载和查询基线
 
@@ -2929,6 +2940,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。(2026-11-26 lane/bw14-script-host 5535b86：crates/client/tests/render_stream_sched_opt.rs 基线固定镜头(640×480, 64 帧)走 shipped 帧调度面 FrameLoop::run_frame（Tick→UpdateAnimations→Draw 逐帧 canonical+hooks 按相序断言，64 帧×3 端），六个排程切图帧(8/16/24/32/40/48)走 shipped load_and_bind 把参考夹具图 37 候选按扫描序分六批流进活空间；单 tracked 区跨全程=逐帧 allocs 增量+live 轨迹连续；切图报告（结构断言）：切图帧恰落在排程帧、并集=probe 全集 6 chunk、逐切图帧 allocs 954/32/32/32/32/128 严格大于全部稳帧(≤9)——分配账即切图/长帧的结构识别；内存=总 1729 allocs/峰值 1281573/终 live 1280327（流进的空间骑在设备 1228848 基线上），复跑恒等；长帧报告（probe 只印不断言）：本调试 runner 墙钟尾被 OS 抖动主导（最慢帧是稳帧 allocs=8 达 27-76ms 非切图帧），逐帧 192 行+切图行+每端 top-5 落 docs/review/opt-11-01-03-render-stream-sched-opt.md；夹具发现=第六绑 chunk 是分隔块 001x000x/sep/00110000o（标识符是路径非格胞，格胞中心解析只盖四个 hex 外块）；收尾四外块 find_chunk_from_point 各自格胞中心归位；client 门禁 876 绿）
 - [x] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。(2026-11-26 lane/bw14-script-host 96d8f67：crates/client/tests/render_visual_rerun.rs 三端复跑 OPT-11-01-01 saved 基线固定镜头（640×480, 64 帧）：钉帧 1..=8+64 摘要逐帧对上 saved 记录（首走+复走双验）；容差=复走间钉帧逐像素 differing_pixels=0 断言位级相等（确定性面容差下限=位，不设预算）——连 OPT-11-01-02 批量候选面也同满足：64 帧逐帧答 walked 摘要+钉帧批量像素 vs shipped 背板差 0；内存账复跑=saved 数字（走查区内 2 allocs/峰值 1228848，帧仍不抬高）；截图面（ScreenCopy::capture→TGA，BW-11-04-07 通道）钉帧 1/8/64 逐帧捕获=18 字节头+1228800 帧体，三端逐帧字节相等+第二遍复跑字节恒等（视觉回归产物自身复现）；OPT-11-01 簇收官——基线/上传批次/流与调度/视觉回归四面互相咬合（saved 摘要钉三行共答）；client 门禁 878 绿）
 
+
 ### OPT-12-01 各观测通道开销
 
 降低日志、Watcher、Profiler 的观测成本。验证背压、关闭观测后的开销及新旧工具查询兼容。
@@ -2936,6 +2948,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。(661e12a)
 - [x] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。(9a74213)
 - [x] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。(f4fce4f)
+
 
 ### OPT-13-01 冷构建、增量与编辑器加载
 
@@ -2945,6 +2958,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。(663dc8c)
 - [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。(`827ed8e`)
 - [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。(2026-11-26 补勾（交付 b981ae7 已在树，勾行遗漏）：crates/asset-pipeline/tests/asset_hash_format.rs 四测复跑 4/4 绿——hash64 五向量钉原版 bw_hash64.cpp FNV-1a 含 LE-integer+combine 契约（combined 0x85562B3F62384861）；SpaceConverter 真 space 两次独立转换逐字节+摘要全等（213B/3 sections，原版读者树读回 models/box.model|models/spikes.model）；DependencyList 精确哈希 4 输入 1 输出（primary 0x3A31A0D27AFBDAAB/full 0x39F4CDF311678C81）；res_packer 夹具两跑逐字节全等（177B×2）+原版 EL7 产物 bw.packed 经本包读者树读回全等（tree_equal=true）；墙钟 ASSET-FMT 只印不断言；docs/review/opt-13-01-04-asset-hash-format.md 补档）
+
 
 ### OPT-14-01 发布包尺寸及首次运行
 
@@ -2961,7 +2975,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（7081674）
   - 双交付 FLAG（2026-11-26，本席）：bw15-platform 席 Linux 腿 `56c2673`（lane/bw15-platform），main=`f6107e8` 同名文件 crates/platform/tests/io_timer_baseline.rs（9 行 512 ops 负载+自有 TSV/证据页）与本席 `7081674`（13 probe+tests/baseline 目录+pending 语法钉）物理撞名待主席择一；main 台账席 d21cc1d 已将行重开待 Windows/macOS 腿（BW-15-05-01）——本席勾保持为交付记录，行终态随主席合并裁定。
 - [x] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。(2026-11-26 lane/bw14-script-host 2f77126：crates/client/tests/render_backend_baseline.rs 按图形后端登记表采集三问——新树唯一出货像素后端=Device 下的软件光栅器（参考侧 D3D9/OpenGL/cocos2d/Awesomium 四后端是 BW-15-06-01 档事实非移植，登记表 BACKENDS 留位后端落地即插行）；设备面（结构断言）：SoftwareDevice 640×480 adapter=0 307200px RGBA8、帧序 1..=64 单设备对象、status=Ok 全程、leaked()=0；驱动面（probe 只印不断言）：软件光栅的"驱动"=执行环境（CPU 型号/逻辑核/OS/内核）文本入报告；帧时（probe 只印不断言）：固定镜头 check_device→step→present 64 帧逐帧 FRAME-TIME+FRAME-TAIL 汇总入 RENDER_BACKEND_OUT 报告（本机 p50 15.6-18.8ms/p99 24.2-25.1ms，随宿主漂移如实记录不断言）；结构契约：逐相邻帧摘要必异+帧 1..=8/64 复现 OPT-11-01-01 saved 钉（后端记录与端基线同一光栅不漂移）+帧 1/7/31/64 纯帧序号复现+复跑恒等；提交目录 tests/baseline/render-backend-baseline.tsv 十列（platform/backend/device/driver/frames/min/median/p99/max/note），linux-x86_64=measured，macos-arm64/windows-x86_64=pending 行带 BW-15-04/BW-15-03 blocker 不编数字，语法检查拒 pending 带测量/未知后端 id/重复(platform,backend)/非数字帧时/测量平台缺任一出货后端行；client 门禁 861 绿+集成全绿）
+  - main 已收（台账席，2026-11-26）：本席 `2f77126`→main `25e40c7`（cherry-pick，取本席版非 bw15 腿），本席勾保持为交付记录。
 - [x] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。(2026-11-26 lane/bw14-script-host 3761c24：crates/platform/tests/platform_opt_parity.rs——树内平台针对性优化=platform::socket 的 Linux sendmmsg/recvmmsg 批对（OPT-02-01-03 交付面），检验法=同一套协议场景跑两臂比结果：泛化臂 sendto/recvfrom 逐数据报一系统调用 vs 批臂 sendmmsg/recvmmsg 一窗口一系统调用，同一 loopback UDP 对（两臂共骑同一发送套接字，源三元组才可比）；结构断言：256 数据报逐报字节恒等+序恒等（载荷内大端序号=自身下标）+源 port/address 网络序恒等+变长 16..=1200 字节抓聚合/拆裂+批臂系统调用形状 8 send+8 recv vs 泛化臂 256+256；边沿同答：空批发 0/空收请求读 0/静默非阻塞套接字两臂同答 errno=EAGAIN（包装器露 -1+errno 的 libc 约定，mercury 调用方本就 last_os_error 处理，sendmmsg 注释"-errno"措辞与实态不符已如实登记）/8 槽收 5 排队恰回 5 槽序字节恒等/单数据报批与 sendto 同契（recvfrom 报回发送方临时 port+loopback 源址）；套件自揭两发现：drained 错误形（-1+errno 非 -errno，行为被钉）与槽宽=批容量（4 槽收 5 排队回 4 未丢不请求者留队，独立 C repro 验内核 5 槽回 5）；platform 门禁 64 lib+io_timer 1+parity 2+signal_call_sites 1 全绿）
+  - main 已收（台账席，2026-11-26）：本席 `3761c24`→main `117a588`（cherry-pick，取本席版非 bw15 腿），本席勾保持为交付记录。
 
 ### OPT-16-01 采集依赖与增量构建基线
 
@@ -2971,6 +2987,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 8c37171(asset-pipeline/tests/split_evaluation.rs+fixtures/dep-graph/split-*) 已 cherry-pick 入本树 0ddb5e0 并复跑绿，asset-pipeline 门禁 384 lib+集成含 split_evaluation 2 测全绿)
 - [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 870ad04(asset-pipeline/tests/install_path_recheck.rs+fixtures/install-recheck/) 已 cherry-pick 入本树 5e99e3a 并复跑绿——the_load_and_install_paths_stay_compatible PASS+本树连带复跑 install-layout 全 PASS+package-baseline verify 3 平台语法净)
 
+
 ### OPT-23-01 关闭及开启采集的长稳基线
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
@@ -2978,6 +2995,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。(2026-11-26 跨席复测勾：他席 main 交付 38b99db(profiler/tests/long_stability_collection.rs+fixtures/long-stability/long-stability.tsv+docs/review/opt-23-01-01-long-stability-collection.md) 已 cherry-pick 入本树 5bb641c 并复跑绿，profiler 门禁 43 lib+集成全绿)
 - [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。(2026-11-26 跨席复测勾：他席 main 交付 2a26627(profiler/tests/buffer_export_evaluation.rs+fixtures/buffer-export/+docs/review/opt-23-01-02-buffer-export.md) 已 cherry-pick 入本树 98bec50 并复跑绿)
 - [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。(2026-11-26 跨席复测勾：他席 main 交付 0ee4b28(profiler/tests/collection_integrity_regression.rs+fixtures/collection-regression/+docs/review/opt-23-01-03-collection-integrity.md) 已 cherry-pick 入本树 28c1da9 并复跑绿)
+
 
 ### OPT-26-01 固定事件回放并采集查询基线
 
@@ -2990,6 +3008,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `bf335b5`（未进 main）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
 - [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `b34554a`（lane/opt-26-db），main=`1590095`，本席 cherry-pick `7a1867c`。面：sample_report_rerun.rs 3 测=从存储语料复算样本报表对照 TSV 基线逐项等+每项优化后复算仍等；证据页；复跑 3 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `b34554a`（未进 main）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+
 
 ## 5. 实施顺序与里程碑
 
@@ -3261,6 +3280,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-13-02-04 移植 resourcechecker**。**验收** 同一坏资源得到对应诊断。**交付**（2026-11-25，8678b06 + 16eda65 已推 lane/bw15-platform）：`crates/asset-pipeline/src/resource_checker.rs` 移植 `tools/resourcechecker/visual_checker.*` 的 `VisualChecker`。**规则面**：`_bsp.` 命名直接放行且不载规则；规则自 `visual_rules.xml`（cacheRules=true 直开 / false 先 fileExists——两分支同落 openSection，合并为 `cache_rules || file_exists`）；缺规则记 `Unable to find visual_rules.xml file.`（构造期错误，check() 首行 `errors_.clear()` 与原版一致会清掉）；匹配 = 目录路径小写 find 包含 + `stable_sort`（path 长降序、filespec 长降序稳定）+ `PathMatchSpec` 可移植 glob（`*`/`?`/`[seq]`/`[!seq]`，首 `]` 字面量，`{}` 列表无用户未实现已注册）；rulesById + parent 链递归读（宏生 vector/string/int/float/bool + hardPoint 集合）；exportAs ∈ {normal, static, static with nodes} 否则 `Unknown value for exportAs [%s]\n` + 重置 normal。**检查面**：尺寸/三角数（`*indices` 子节 `IndexHeader::read` 计 `nIndices_/3`，负数 wrapping 成 u32）/层级深度（缺 node 节原版解引用空指针即 UB，移植记 0 已注册）/portal 电池（基座矩阵 row0=uAxis、row2=boundary normal、row1=normal×uAxis、平移=normal·d，点从平面空间映射回对象空间；<3 点/非平面（零法线跳过）/朝外（`d − centre·n > 0`，平面法线须指内）/snap 1/2196 容差/距离 1/1024 容差/offset 1/8192 close，printf %f 全 `{:.6}`）/重复节点名/硬点缺失与未知（HP_flash01 与 HP_flash 豁免；`len>3 && substr(0,3)=="HP_"` 照抄）/纹理名空格（renderSet→geometry→primitiveGroup→`material/textureormfm` find_last_of）。**接缝注册**：MessageBox/automatedTest 分支一律走错误记录；`PrimitiveFile::get` 先 `.processed` 后裸名；XML 内容嗅探拒绝（原版空 asBinary 强转 IndexHeader 是 UB）；`snap_vertices` 原版即死字段照抄并注册。**验收即测试**：`portals_are_forbidden_on_normal_visuals`（同一坏视觉在 rules=false 下得 `Must not have any portals`）等 15 测——好视觉全规则零错、too small/too big/三角上下限/层级/朝外/非平面/snap+距离/重复+硬点/纹理/坏 exportAs/缺文件逐项断言原版消息全文。**附带**：`datasection::read_vector3` 改走 openSection 路径行走（原版 readVector3 即 `openSection(tag)`，`boundingBox/min` 两跳；16eda65 附 `read_vector3_walks_slash_paths` 测）；门禁 asset-pipeline 177 + resources 228 测绿，clippy 仅余两既存 workspace unused-dep，fmt 清，llvm-cov resource_checker.rs 行 96.49%（crate 整体 85.60%，工具 crate 口径照旧）。**坑**：原版 portal 点存平面空间 (u,v,0) 经基座矩阵映射回对象空间，测试夹具必须给平面坐标再由 winding 定平面法线朝内（朝外即触发 facing 错误）；`BinSection::save_bytes` 输出含非 UTF-8 magic 字节，夹具写盘必须走原始字节而非 `from_utf8_lossy`（会替换 0xa1 致容器解析空）。
 - [x] **BW-13-02-05 回归 NavGen 入口**。**验收** 可调用 BW-10 的导航生成。**跨席复测勾**（main 交付为准，2026-11-26，本席）：main `79f47c4`（`crates/asset-pipeline/src/navmesh_processor.rs` 2738 行/55 测，LockedChunks 引用计数/ChunkProcessorManagerFace 锁块怪癖/NavmeshProcessor 逐 girth 顶检→flood→as_binary 追加/NavmeshCache 全端口）依赖面 `977f555`（waypoint-gen workflow.rs 914 行：readTGA/extendThroughUnboundPortals/determineEdgesAdjacentToOtherChunks/compileGirthsList/GirthWorkflow）+`d26cb55`（tga temp dir 隔离），本席 cherry-pick `3ddf7b8`+`b868516`+`b91f983`。**缝冲突自纠**（`e5670ac`）：本树 b99cb0e（lane-only，GenChunk/FloodPhysics 缝）与 main 同面（NavmeshProbe/DropPhysics 缝）物理撞名 to_vector3/determine_edges——取 main 版为准，删本树私有重复，navgen_map harness 补 NavmeshProbe/DropPhysics 适配 impl 改骑 workflow 缝，truth log `gen_navgen_map.log` 逐行复现未变（两版行为等价实证）。**复跑证**：waypoint-gen 88 测绿（含 navgen_map truth-log 对照+workflow tests）+asset-pipeline 439 lib+集成 0 failed，fmt/clippy scoped 净（blowfish workspace 预存在非代码）。b99cb0e 余下不撞名面（generate/streamline/calculate_set_membership/as_binary 等）保持开待主席与 main 侧择一。
 
+
 #### BW-13-03 WorldEditor
 
 复现地图打开/保存、Chunk/Portal/地形编辑、对象放置、选择和变换、属性编辑、撤销重做、资源浏览和空间发布，用同一地图跑编辑后往返测试。
@@ -3323,6 +3343,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-14-01-04 运行 Guard 和 Space 脚本**。**验收** 行为与基准相符。（commit 81618be）
   - 交付 `crates/server-runtime/src/script_host.rs`：Guard/Space 脚本经脚本宿主跑通引擎生命周期（81618be）。base/cell 两角色接线——四个 `BigWorld.Base` 盖章方法（`createInNewSpace`/`registerGlobally`/`destroyCellEntity`/`destroy`）、tp_init 槽构造（`Py_tp_init=60`，typeslots.h 实证）、`importEntityClass` 引用原文拒绝文本、cell 侧按名 `__init__`；重复注册路径照走 `destroyCellEntity`（get-pending 旁路，base.cpp:4038-4041），`inDestroy_` no-op 重入面，簿记/派发两段式重入契约；`PyCFunction_New` 存 `PyMethodDef` 指针故 defs 表 `Box::leak`（参照 static PY_METHOD 契约）。9 进程内测试 + 15 独立进程场景；llvm-cov 0.9.1 该文件 1240/1260 = 98.41%（子场景进程 profraw 合并计入）。补测抓到真 bug：派生检查文本 `BigWorld.` 重复限定。评审文档 `docs/review/bw14-01-04-script-host-wiring.md`。
   - **双交付 FLAG（2026-11-26）**：bw16-18 席 lane/bw16-18 `e14f900` `entity_runtime.rs` 1050 行（PyType_GenericAlloc 分配+Base 四方法 guard 链逐字+Entity/Base 只读属性+BaseRuntime trait 模型+7 场景，lcov 100% 693/693 max-merge）与本席 lane/bw14-script-host `81618be` `script_host.rs`（宿主 outbox/pending/global_bases 簿记+thread-local 三驱动+四盖章方法+tp_init 构造+import_entity_class+15 独立进程场景，98.41%）同项平行交付，**主席择一**；面重叠=Base 四方法 guard 链+构造派发，分歧=本席含 register/destroy/onGetCell/onLoseCell 出站簿记与 fixture Space bootstrap 全生命周期，彼含 Entity 只读属性+BaseRuntime trait 模型；另 main 侧 bw10-terrain 九次同步（e0f8d2b）的「行保持开」卡点注已被本席 `9e269e8` 勾行取代，合并时以勾行态为准。
+
   - 卡点（脚本宿主未接到服务角色）：Guard（cell+client 占位）与 Space（DefaultSpace bootstrap）的脚本 `scripts/cell/Guard.py`、`scripts/base/Space.py` 已随夹具跟踪（845831f）。pyscript **模块面**已合入——BW-03-03-01 模块清单/核对（b50a875）+ BW-03-03-02 数学对象/Provider + BW-03-03-03 定时器模块——但脚本宿主↔服务角色**接线**未落地：无 cell/base script app 把 `Guard.py`/`Space.py` 载入活解释器并驱动 `onCellEnter`/`onSpaceStart` 回调，该接线随 cell 运行时（BW-08）+ 服务端 script app（BW-03-03-04 资源访问后角色侧集成）落地，无宿主则本项不可运行。
 - [x] **BW-14-01-05 验证退出重登**。**验收** 读回此前角色位置及属性。（commit 70079db）
   - 卡点（持久化读写链未落地）：重登读回 Avatar 属性需 dbapp loadCharacter/getCharacter（BW-09-01-05 未勾）；登录链路已合入（同 01-02 卡点，BW-06-01-02 + BW-07-01）。读回面即夹具 db.xml 的 `<Avatar>` 段（playerName/prop1/prop2/prop3/position/direction/spaceID/databaseID）；`Avatar.def` 把 position/yaw/pitch 声明为 `<Volatile>`（运行时态、不走属性持久化），故重登比对的是 db.xml 种值而非 volatile 值。
@@ -3335,6 +3356,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **BW-14-02-01 运行 Python simple 示例**。**验收** 与新服务端完成登录。
   - 卡点复测（2026-11-26，bw14-script-host 席）：旧注「服务端登录链路未落地」**已过时**——登录链已落地并真机绿：BW-06-01-02 挑战协商（3244af7，main 祖先）+ BW-07-01 baseapp 装载/ID 分配 + BW-14-01-02/05 进程内登录链（`fantasydemo_login.rs` 5 测：既有账户走机/未知用户建档/错密码拒不碰行/新角色建档回指，`fantasydemo_logout_relogin.rs` 2 测：退出持久化重登读回，本席实测全绿）。**真余卡点两处**：①`apps/server` 仍最小入口（`main.rs` 仅 BWResource/BwConfig 初始化 + `app::run` 信号/关停面），无角色运行时把 loginapp/dbapp/baseapp 登录链接到真实 Mercury 端口（同 BW-15-02-01 卡点；BW-08-01-02 CellApp 创建与注册未勾）；②参考 simple 客户端是 **C++ 壳内嵌 Python**（`main.cpp`/`entity.cpp`/`py_server.cpp` 等，目录名「python」指 Python 脚本化实体而非纯 Python 程序），跑通它需移植该壳或等价客户端驱动，与①同属大面工程，随角色运行时落地。simple 自带 res 树实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对。
+
 - [x] **BW-14-02-02 运行原版 Android 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
   - 宿主缺口（未运行互通测试）：`docs/review/bw14-02-02-03-mobile-interop-host-gap.md`（402c28a）——参考 `examples/client_integration/c_plus_plus/android/`（JNI + `android.app.NativeActivity` + `android_native_app_glue` + `connection_model` 静态库 + `-llog -landroid -lEGL -lGLESv1_CM`，NDK `armeabi-v7a`/`APP_STL=gnustl_static`/`APP_PLATFORM=android-9`）需 Android NDK 工具链 + 真机/模拟器，本机 Linux 无 NDK/设备；即使宿主就绪，互通目标（新服务端登录）亦未落地（同 02-01 卡点）。协议结果未采集；两侧缺口均已登记。
 - [x] **BW-14-02-03 运行原版 iOS 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
@@ -4438,6 +4460,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 分配数：`6b6cc9c` 落 `crates/foundation/tests/alloc_counts.rs` + `crates/server-runtime/tests/alloc_counts.rs`——计数全局分配器 + thread-local 追踪旗标（旗标与计数全在调用线程，并发测试线程互不污染；全局计数器版首跑即暴露互踩：纯浮点夹具数出幻影分配），夹具与时序表逐形对应（`iter_batched` 出时间窗的 setup 同样出计数窗），每测断言双跑恒等故数字按工具链逐位可复现；11 行基线：add_1000_timers 1010 次/112,440 B（每计时器 ~1 次、firing pass 0 次）、process_1000_due 0/0、add_cancel_process_100 108/12,504、encode 29/26,563、decode 20/11,481、math 四面全 0/0、updatables call pass 0/0、register_deregister_100 114/12,424；`cargo test -p foundation` 228+9 绿、`-p server-runtime` 1303+2 绿、两 crate `--tests` clippy 净。
   - 加载峰值：bots 二进制（debug，main `70a4672`）在 `LOAD_CLIENTS=4` 信封下 `/usr/bin/time -v` 实测三场景 peak RSS——steady-move 3,164 KiB（bots_online 4）、login-hurricane 3,180 KiB（online_peak 4、4/4 admitted）、dense-aoi 3,148 KiB（bots 4、max_visible 3）；`ci/load.sh` 3/3 PASS 落 TSV；离线面按仿真时间跑完故此峰是生成器自身足迹，实拓扑逐期 RSS/CPU 采样（`ResourceTracker`，BW-17-03-04）在 `crates/load` 已测但尚未接进 driver 报告（归 bw17 席）。
 - [x] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。**跨席复测勾**（2026-11-26，本席）：bw19-docs 席 lane `6174b44`+勾 `f742b62`（噪声地板+交错 A/B 口径），main=`8e17603`（time_queue.rs process 循环预回调簿记+post 收尾两借窗，每点火 5-6 窗→2；tick.rs Updatables.handles 指针键 hasher 去种子探针；双二进制 10 轮交错 A/B 噪声地板 -3.4%，主张限逐 tick 派发探针、timer 腿只保借窗减半不主张提速；记录 docs/perf-baseline-2026-11-24.md OPT-01-01-02 节），本席 cherry-pick `f504370`。复跑证：foundation 232 lib+10 集成绿、server-runtime 1756 lib+集成全绿（含 tick 面），fmt/clippy scoped 净。
+
 - [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。`ebbde2b` 双面交付（main=`e478d90`）：
   - 资源缓存热路径零分配：`crates/resources/src/data_section_cache.rs` 链指针原是 `Option<String>` 路径拷贝（每次重链 2-6 次 String 分配）→ 槽位 arena（`Vec<CacheNode>` 整数双向链 + 侵入式自由链；`add` 一次性付两份 String——map key + 槽内 name 拷贝——稳态 relink 机器全零分配；section 在 entry 释放时 drop，与参照删节点同语义）。TDD 红先证旧实现逐操作计数（find 中段 6 次/36 B、尾段 5/30、purgeLRU 3/18、remove 中/尾 3/18、remove 头 2/12、head 命中/miss/原地重加 0），新实现 `crates/resources/tests/data_section_cache_alloc.rs` 全零断言 3 测绿，模块 llvm-cov 100.00%（380/380 行）；「复跑失效夹具」随 `cargo test -p resources` 222 全绿一并完成（multi_file_system 目录列举缓存失效 + data_section_cache 七测同套）。
   - BinaryStream 64 字节预留：`crates/foundation/src/stream.rs` 手写 `Default` = `Vec::with_capacity(64)`（参照 `MemoryOStream( int size = 64 )`，`lib/cstdmf/memory_stream.hpp`——参照默认构造即预留，`new()`/`from_u32_le` 同享；`from_slice` 读流包已有内存不预留）。红先证旧实现 61 字节小写 2 次分配，新实现 1 次/64 B；encode_mixed_payload 29→26 次（26,563→26,507 B）；`cargo test -p foundation` 228+10 绿（405 处 `BinaryStream::new()` 调用点无回归），clippy 净。
@@ -4452,6 +4475,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。（bw15 席 `bc1ee86`/`071bdc6`/`3e7c776`，lane/bw15-platform，main=`c733e5a`/`7dc6d12`/`3590227`：platform::socket 落 sendmmsg/recvmmsg 包装+SendScratch/RecvScratch 保留式暂存（Linux cfg）；crates/mercury/tests/batch_io.rs 三臂对照=批量/逐报/分配计数，批宽 64 收发系统调用各 63×摊派（3495→55）确定、每报摊派成本 p50 持平、稳态 0 alloc/报（现行路径 1.00/报）、回环吞吐同量级（窗深投递延迟主导，墙钟只记录不设带）；TSV docs/review/fixtures/network-baseline/batch-io.tsv，证据页 docs/review/opt-02-01-03-batch-and-copy.md；platform 64+mercury 377/7/5/1 全绿（本席 main 复测 455 绿））
 - [x] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。**跨席复测勾**（2026-11-26，本席）：bw15-platform 席 lane `fc181f5`/`19a9c42`/`29cc302`/`f438b7d`/`1b27379`，main=`261a2d0`/`25ee476`/`3675b18`/`62ea5d3`/`4b83ebb`+证据 `3fd6e3d`，本席 cherry-pick `738703d`/`dda66d9`/`fabe0a5`/`e8141cd`/`bc3fc07`/`61a534b`（+dev 边补 `message_logger` 两笔 build `4b48b81`/`c79d7be`）。面：el7_mixed_deploy.rs 五腿真机混部（`#[ignore]` 场景 EL7_MIXED_OUT 落 TSV）+四真互操作 bug 修复（machined 线格式对参考/记录头源字段宽/进程统计答全匹配面/workspace 边）。复跑证：server-runtime 1756 lib+集成全绿（mixed deploy 测试编译过、场景腿按设计 ignore 待 EL7 环境），fmt/clippy scoped 净；EL7 真机腿证据以 bw15 席 TSV 为准（docs/review/fixtures/network-baseline/el7-mixed-deploy.tsv）。
   - 登记（2026-11-26，本席）：bw15-platform 席 lane-only 交付（`fc181f5`/`19a9c42`/`29cc302`/`f438b7d`/`1b27379`，未进 main）：crates/server-runtime/tests/el7_mixed_deploy.rs 五腿真机混部（新版→原版 UDP pid/WholeMachine 查询、原版→新版 UDP logger 注册+birth/death、发现广播版本门两臂、新版→原版 TCP 注册帧化落 mldb、新版→原版 UDP 裸数据报落 mldb）+四个真互操作 bug 修复（contracts/machined.rs v51 pid u32+Listener/Signal extra 块殿后+ProcessMessage.port 网络序；message_logger 记录头 DebugMessageSource=4 字节裸枚举 38 vs 41 字节账；MachinedDaemon answer_query_all 逐匹配应答 bwmachined.cpp:1410-1452）。行保持开：本席不重做不勾，待 lane/bw15-platform 并 main 后本席 cherry-pick 跨席复测再勾。
+
 
 ### OPT-03-01 Python 桥接基线
 
@@ -4476,8 +4500,11 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
 - [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `5120dea`+`0fbfa8f`：crates/load/src/hotspot.rs run_hotspot_baseline 三窗口=allocation（fleet 经 feed_log_on_result 上线+整窗口 circle-walk，ResourceTracker 读 procfs 八次：utime/stime+VmRSS）、recovery（seeded 子集 mid-window drop，reconnect feed_logged_off(Some(true))，floor 2 tick=drop@d/relogin@d/reply@d+2 与 reconnect 同）、reclamation（drain 全 feed_logged_off(None) destroy，online 归零，采样延到尾部）；可复现面 vs 墙钟：online/recovery/drop 计划/sample schedule 固定 seed 全等断言，RSS/CPU 排除 PartialEq 仅经 resource_report_entries 落 LOAD_REPORT（带 metric def）；7 新 hotspot 测+smoke 门入 saved-kinds；覆盖 269/271=99.26%；ci/load.sh 7/7 PASS；记录 run=300/75 tick、4/4 recoveries、mean=max 2、load 最小在线占比 0.75、sampling 4.6s/8、peak RSS 3464 KiB、final 3464、reclaimed 0 KiB（小 fleet drain 回收 0=诚实值，故墙钟只记录不设带）；baseline 加 min 2.0 floor；证据页 docs/review/opt-05-01-01-load-hotspot-baseline.md）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收平行腿 `e028fbf`（cellappmgr_baseline.rs 三腿合成钟 harness 入 cellappmgr.rs）与本席 `5120dea`+`0fbfa8f`（load/src/hotspot.rs run_hotspot_baseline）同面异实现，待主席择一。
 - [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（本席 `a577c5c`：crates/server-runtime/src/balance_baseline.rs run_schedule_scenario 用真 CellAppMgr 跑固定 96 tick 双相位（热相 app0≈0.6 偏斜触发拆并、冷相全低触发 retire），每次 report 后 load_balance+meta_load_balance+tick；ScheduleLedger 记 cells_added/cells_removed/apps_retired/partitions_moved/reports；BalanceTuning 新 seam（load_smoothing_bias/estimated_initial_cell_load/safety_bound/safety_ratio/meta_load_balance_tolerance/lower_bound/limit_to_chunks，Default 全等参考常量，inform_of_load 保留旧行为、新增 inform_of_load_with 显式 bias；Space::partition_positions+BspNode::visit_partitions 供台账数线）；固定 seed 27_182_828 基线 partitions_moved=0 vs 候选 limit_to_chunks=false 移动 2 条（final loads/cells 两侧一致，差异在调度路径非分布）；5 新测（含双跑全等）；覆盖 balance_baseline.rs 171/171=100%；cargo test -p server-runtime 1693 lib+集成全绿；fmt/clippy 干净（仅既有 blowfish 未用依赖告警）；证据页 docs/review/opt-05-01-02-schedule-comparison.md）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收平行腿 `cd056fc`（cellappmgr_tuning.rs 三固定场景对比）与本席 `a577c5c`（balance_baseline.rs run_schedule_scenario）同面异实现，待主席择一。
 - [x] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。（本席 `fd21b51`：crates/server-runtime/src/lifecycle_scenario.rs run_lifecycle_scenario(seed=41) 组合真 MigrationRecovery（offload→target_lost→两通 Failed 缓冲→restore 转发→reconcile 五谓词全真）、controlled_shut_down_server+ShutdownState Request/Inform/Perform+CellAppMgr cell ack、TaskManager stop_all 排空 backup/flush-replay、ReplayDataCollector/Writer 真前缀签名 4 tick 落盘、read_replay_prefix 混部门（当前接受/异版拒绝，无混部 fleet runner 故以此面为界）；6 新测全绿且双跑 ledger 逐字段全等；覆盖 187/187=100%；cargo test -p server-runtime 1699 lib+集成全绿；fmt/clippy 干净（仅既有 blowfish 未用依赖告警）；证据页 docs/review/opt-05-01-03-lifecycle-rerun.md）
+  - 本席 lane-only 交付（`fd21b51`）待主席并入；main 侧行保持开。
 
 ### OPT-06-01 登录与资源下载基线
 
@@ -4497,6 +4524,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。4c19ee7（shared_data_baseline.rs+shared_data_tuning.rs 96 变更过真实双 mgr 链(set/del 四 scope+forward/relay 环 4 BaseApp+3 CellApp)：shipped 575 消息(base284/cell219/fwd24/relay48) vs 抑制 no-op 写 444(216/174/17/37)=省 131(−22.8%)，21 次 no-op 放大为全链腿消去(全局 set=5/转发 set=9/cell=3)；终态三权威图逐位相等(same_load 钉)；跨种子形状钉；9 测 baseline 98.58%+tuning 100%）
 - [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。2fbfcf8（takeover_rerun.rs 12 实体种子舰队过真实备份面后源亡接管 restore 12/12 属性全等；16 变更建双 mgr 权威图后按 count+pairs 恢复流形状落盘、全新 mgr 对经真实 recover_shared_data_from_stream 读回=四图逐位等(2/4/2/4 条目)；跨种子形状钉；4 测 99.65% 行 100% 区域，唯一缺行=属性不匹配假臂被断言正确性排除）
 
+
 ### OPT-08-01 密集 AOI 基线
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
@@ -4506,6 +4534,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。(2026-11-26 本席 lane/bw14-script-host 5e4181c:space_parallel.rs 复用 BW-08-05-01 decide_offload/collect_offload 实面,120 实体密场按 x=16m 分裂面两侧驻扎,AoI 基线同款 ±0.75m 步表真跨面;台账 crossings=2/offloads=2(逐 crossing 恰一次,落点=p_cell_at 所含侧)/stays=118,check_ms≈0.009-0.012 probe 打印不断言;分支规则 coordinate<position 把分界平面判给右子(x/z 双轴实证,骑面者归左必迁 OffloadTo(FAR));四 Stay 门(未创建/死通道/缺通道项=死/删除挂起)+disabled cell_should_offload 全 Stay;重跑台账恒等;4 测,lib 1754 全绿;review=docs/review/opt-08-01-03-space-parallel.md)
 - [x] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。(2026-11-26 本席 lane/bw14-script-host 616a885:aoi_rerun.rs 复跑密场景两遍逐 tick 审计,TickLedger 增有序 starts/stops/enters/leaves+整份 bundle 发送序;状态正确=视距触发器布点=窗谓词 (sub-range<x≤sub+range) 双轴、可见集=扫描锥真值(update gate 读控制器公开 tick 计数,run tick 用现位置/skip tick 恒等携带集)、start/stop 差分自洽(starts 只打未见 id/stops 只打持有 id/差分复现 visible_entities)、EnterAoI/LeaveAoI 消息=触发器跨越、witness AoI 映=500m 窗、bundle 逐实体序 EnterAoI→CreateEntity→EntityUpdate 更新不先于创建;迁移腿 destination+native 双世界 16 tick 全审,seed 静默 46→46、held 重报=0、终态 visible 42/range 布点/AoI 映三层全等 native;坑=client bundle 是客户端面向 AoI 态唯一重放源,tick 0 120 条 EnterAoI=120 跨越,二次重放会重复计数——两视图须对账不能叠加;2 测,lib 1756 全绿;review=docs/review/opt-08-01-04-aoi-rerun-state.md)
 
+
 ### OPT-09-01 分别采集 MySQL 与 PostgreSQL 基线
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
@@ -4514,6 +4543,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。9dda748（pool_merge_eval.rs 同一 48 行+48 读种子负载三种执行形状过真 PG：shipped 1 连接 96 语句 48 提交 vs unpooled 96 次连接(纯多付连接 ≈4×墙钟 1.8s vs 450ms) vs merged 单事务 48 写并 1 提交+ANY 单语句读(50 语句 1 提交 ≈6×吞吐 75ms vs 450ms，fsync 类落盘 48→1)；结构计数断言=后端无关，MySQL 半=语句形状恒等且 OPT-09-01-01 同形状 store.sh 真机绿(无 Rust mysql 驱动不采样墙钟如实声明)；墙钟只打印不断言(BW-17-02-08 门)；4 跑数字留档 docs/review）
 - [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。01d391c（archive_batch_eval.rs 同一 64 行种子负载三写形过真 PG：autocommit 64 语句 64 提交 ~540ms vs 事务批 66 语句 1 提交 ~165ms(≈3.3×,落盘 64→1) vs 单条多行 INSERT(按 schema 自身列构建) 1 语句 ~4-5ms(≈100×)；三形 rows_ok=64 逐行相等=改的是成本不是内容；归档整合=export_backup 12 表 193 行 ~30-50ms → restore_backup 空库 ~145ms → 目标库重导出逐记录相等(restored==dump)=恢复正确性；墙钟只打印不断言；db-postgres 135 测全绿）
 - [x] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。已交付 f09727b：crates/db-postgres/tests/rerun_recovery.rs 三腿（同种子 32 行事务复跑两库 export dump 逐记录相等=复跑即复现；rollback 腿脏读可见 staged 写+staged delete 读 None、rollback 后 dump == 事务前快照且覆盖/删除行原样回归；retry_query/query_with_reconnect/run_with_retry 各吃一次脚本化首尝试失败（DbError::Retry=store.rs:48 SQLSTATE 40P01/55P03 同款、LostConnection、classify(1045) fatal）后真连库读回该行，attempt/reconnect/on_retry 计数逐项钉死+complete 恰一次+无 reconnect 时损毁面原样上浮不重发；恢复腿 restore_backup 进空库后同工作负载走 update 面复跑、export == 源 dump）。计数/等值全 assert，墙钟仅打印不 assert（125.6/87.3ms、73.1/89.4ms、restore 36.0ms）。坑：put_entity 第三参是 create 非 overwrite——复跑踩已存在行须走 update 面(false)，首稿 create=true 全腿 AlreadyExists 被面契约当场揭穿；EntityStorageImage 仅 Memory 实现(storage.rs:884-901)，retry_transaction 图像回滚属内存后端，PG 侧对应物=事务/rollback 腿。docs/review/opt-09-01-04-rerun-recovery.md。门禁 db-postgres 138 绿/fmt/clippy 净。
+
 
 ### OPT-10-01 地图加载和查询基线
 
@@ -4533,6 +4563,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。(2026-11-26 lane/bw14-script-host 5535b86：crates/client/tests/render_stream_sched_opt.rs 基线固定镜头(640×480, 64 帧)走 shipped 帧调度面 FrameLoop::run_frame（Tick→UpdateAnimations→Draw 逐帧 canonical+hooks 按相序断言，64 帧×3 端），六个排程切图帧(8/16/24/32/40/48)走 shipped load_and_bind 把参考夹具图 37 候选按扫描序分六批流进活空间；单 tracked 区跨全程=逐帧 allocs 增量+live 轨迹连续；切图报告（结构断言）：切图帧恰落在排程帧、并集=probe 全集 6 chunk、逐切图帧 allocs 954/32/32/32/32/128 严格大于全部稳帧(≤9)——分配账即切图/长帧的结构识别；内存=总 1729 allocs/峰值 1281573/终 live 1280327（流进的空间骑在设备 1228848 基线上），复跑恒等；长帧报告（probe 只印不断言）：本调试 runner 墙钟尾被 OS 抖动主导（最慢帧是稳帧 allocs=8 达 27-76ms 非切图帧），逐帧 192 行+切图行+每端 top-5 落 docs/review/opt-11-01-03-render-stream-sched-opt.md；夹具发现=第六绑 chunk 是分隔块 001x000x/sep/00110000o（标识符是路径非格胞，格胞中心解析只盖四个 hex 外块）；收尾四外块 find_chunk_from_point 各自格胞中心归位；client 门禁 876 绿）
 - [x] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。(2026-11-26 lane/bw14-script-host 96d8f67：crates/client/tests/render_visual_rerun.rs 三端复跑 OPT-11-01-01 saved 基线固定镜头（640×480, 64 帧）：钉帧 1..=8+64 摘要逐帧对上 saved 记录（首走+复走双验）；容差=复走间钉帧逐像素 differing_pixels=0 断言位级相等（确定性面容差下限=位，不设预算）——连 OPT-11-01-02 批量候选面也同满足：64 帧逐帧答 walked 摘要+钉帧批量像素 vs shipped 背板差 0；内存账复跑=saved 数字（走查区内 2 allocs/峰值 1228848，帧仍不抬高）；截图面（ScreenCopy::capture→TGA，BW-11-04-07 通道）钉帧 1/8/64 逐帧捕获=18 字节头+1228800 帧体，三端逐帧字节相等+第二遍复跑字节恒等（视觉回归产物自身复现）；OPT-11-01 簇收官——基线/上传批次/流与调度/视觉回归四面互相咬合（saved 摘要钉三行共答）；client 门禁 878 绿）
 
+
 ### OPT-12-01 各观测通道开销
 
 降低日志、Watcher、Profiler 的观测成本。验证背压、关闭观测后的开销及新旧工具查询兼容。
@@ -4540,6 +4571,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。(661e12a)
 - [x] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。(9a74213)
 - [x] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。(f4fce4f)
+
 
 ### OPT-13-01 冷构建、增量与编辑器加载
 
@@ -4549,6 +4581,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。(663dc8c)
 - [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。(`827ed8e`)
 - [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。(2026-11-26 补勾（交付 b981ae7 已在树，勾行遗漏）：crates/asset-pipeline/tests/asset_hash_format.rs 四测复跑 4/4 绿——hash64 五向量钉原版 bw_hash64.cpp FNV-1a 含 LE-integer+combine 契约（combined 0x85562B3F62384861）；SpaceConverter 真 space 两次独立转换逐字节+摘要全等（213B/3 sections，原版读者树读回 models/box.model|models/spikes.model）；DependencyList 精确哈希 4 输入 1 输出（primary 0x3A31A0D27AFBDAAB/full 0x39F4CDF311678C81）；res_packer 夹具两跑逐字节全等（177B×2）+原版 EL7 产物 bw.packed 经本包读者树读回全等（tree_equal=true）；墙钟 ASSET-FMT 只印不断言；docs/review/opt-13-01-04-asset-hash-format.md 补档）
+
 
 ### OPT-14-01 发布包尺寸及首次运行
 
@@ -4565,7 +4598,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（7081674）
   - 双交付 FLAG（2026-11-26，本席）：bw15-platform 席 Linux 腿 `56c2673`（lane/bw15-platform），main=`f6107e8` 同名文件 crates/platform/tests/io_timer_baseline.rs（9 行 512 ops 负载+自有 TSV/证据页）与本席 `7081674`（13 probe+tests/baseline 目录+pending 语法钉）物理撞名待主席择一；main 台账席 d21cc1d 已将行重开待 Windows/macOS 腿（BW-15-05-01）——本席勾保持为交付记录，行终态随主席合并裁定。
 - [x] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。(2026-11-26 lane/bw14-script-host 2f77126：crates/client/tests/render_backend_baseline.rs 按图形后端登记表采集三问——新树唯一出货像素后端=Device 下的软件光栅器（参考侧 D3D9/OpenGL/cocos2d/Awesomium 四后端是 BW-15-06-01 档事实非移植，登记表 BACKENDS 留位后端落地即插行）；设备面（结构断言）：SoftwareDevice 640×480 adapter=0 307200px RGBA8、帧序 1..=64 单设备对象、status=Ok 全程、leaked()=0；驱动面（probe 只印不断言）：软件光栅的"驱动"=执行环境（CPU 型号/逻辑核/OS/内核）文本入报告；帧时（probe 只印不断言）：固定镜头 check_device→step→present 64 帧逐帧 FRAME-TIME+FRAME-TAIL 汇总入 RENDER_BACKEND_OUT 报告（本机 p50 15.6-18.8ms/p99 24.2-25.1ms，随宿主漂移如实记录不断言）；结构契约：逐相邻帧摘要必异+帧 1..=8/64 复现 OPT-11-01-01 saved 钉（后端记录与端基线同一光栅不漂移）+帧 1/7/31/64 纯帧序号复现+复跑恒等；提交目录 tests/baseline/render-backend-baseline.tsv 十列（platform/backend/device/driver/frames/min/median/p99/max/note），linux-x86_64=measured，macos-arm64/windows-x86_64=pending 行带 BW-15-04/BW-15-03 blocker 不编数字，语法检查拒 pending 带测量/未知后端 id/重复(platform,backend)/非数字帧时/测量平台缺任一出货后端行；client 门禁 861 绿+集成全绿）
+  - main 已收（台账席，2026-11-26）：本席 `2f77126`→main `25e40c7`（cherry-pick，取本席版非 bw15 腿），本席勾保持为交付记录。
 - [x] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。(2026-11-26 lane/bw14-script-host 3761c24：crates/platform/tests/platform_opt_parity.rs——树内平台针对性优化=platform::socket 的 Linux sendmmsg/recvmmsg 批对（OPT-02-01-03 交付面），检验法=同一套协议场景跑两臂比结果：泛化臂 sendto/recvfrom 逐数据报一系统调用 vs 批臂 sendmmsg/recvmmsg 一窗口一系统调用，同一 loopback UDP 对（两臂共骑同一发送套接字，源三元组才可比）；结构断言：256 数据报逐报字节恒等+序恒等（载荷内大端序号=自身下标）+源 port/address 网络序恒等+变长 16..=1200 字节抓聚合/拆裂+批臂系统调用形状 8 send+8 recv vs 泛化臂 256+256；边沿同答：空批发 0/空收请求读 0/静默非阻塞套接字两臂同答 errno=EAGAIN（包装器露 -1+errno 的 libc 约定，mercury 调用方本就 last_os_error 处理，sendmmsg 注释"-errno"措辞与实态不符已如实登记）/8 槽收 5 排队恰回 5 槽序字节恒等/单数据报批与 sendto 同契（recvfrom 报回发送方临时 port+loopback 源址）；套件自揭两发现：drained 错误形（-1+errno 非 -errno，行为被钉）与槽宽=批容量（4 槽收 5 排队回 4 未丢不请求者留队，独立 C repro 验内核 5 槽回 5）；platform 门禁 64 lib+io_timer 1+parity 2+signal_call_sites 1 全绿）
+  - main 已收（台账席，2026-11-26）：本席 `3761c24`→main `117a588`（cherry-pick，取本席版非 bw15 腿），本席勾保持为交付记录。
 
 ### OPT-16-01 采集依赖与增量构建基线
 
@@ -4575,6 +4610,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 8c37171(asset-pipeline/tests/split_evaluation.rs+fixtures/dep-graph/split-*) 已 cherry-pick 入本树 0ddb5e0 并复跑绿，asset-pipeline 门禁 384 lib+集成含 split_evaluation 2 测全绿)
 - [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 870ad04(asset-pipeline/tests/install_path_recheck.rs+fixtures/install-recheck/) 已 cherry-pick 入本树 5e99e3a 并复跑绿——the_load_and_install_paths_stay_compatible PASS+本树连带复跑 install-layout 全 PASS+package-baseline verify 3 平台语法净)
 
+
 ### OPT-23-01 关闭及开启采集的长稳基线
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
@@ -4582,6 +4618,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。(2026-11-26 跨席复测勾：他席 main 交付 38b99db(profiler/tests/long_stability_collection.rs+fixtures/long-stability/long-stability.tsv+docs/review/opt-23-01-01-long-stability-collection.md) 已 cherry-pick 入本树 5bb641c 并复跑绿，profiler 门禁 43 lib+集成全绿)
 - [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。(2026-11-26 跨席复测勾：他席 main 交付 2a26627(profiler/tests/buffer_export_evaluation.rs+fixtures/buffer-export/+docs/review/opt-23-01-02-buffer-export.md) 已 cherry-pick 入本树 98bec50 并复跑绿)
 - [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。(2026-11-26 跨席复测勾：他席 main 交付 0ee4b28(profiler/tests/collection_integrity_regression.rs+fixtures/collection-regression/+docs/review/opt-23-01-03-collection-integrity.md) 已 cherry-pick 入本树 28c1da9 并复跑绿)
+
 
 ### OPT-26-01 固定事件回放并采集查询基线
 
@@ -4594,6 +4631,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `bf335b5`（未进 main）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
 - [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `b34554a`（lane/opt-26-db），main=`1590095`，本席 cherry-pick `7a1867c`。面：sample_report_rerun.rs 3 测=从存储语料复算样本报表对照 TSV 基线逐项等+每项优化后复算仍等；证据页；复跑 3 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `b34554a`（未进 main）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+
 
 ## 5. 实施顺序与里程碑
 
@@ -4826,6 +4864,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-13-02-04 移植 resourcechecker**。**验收** 同一坏资源得到对应诊断。**交付**（2026-11-25，8678b06 + 16eda65 已推 lane/bw15-platform）：`crates/asset-pipeline/src/resource_checker.rs` 移植 `tools/resourcechecker/visual_checker.*` 的 `VisualChecker`。**规则面**：`_bsp.` 命名直接放行且不载规则；规则自 `visual_rules.xml`（cacheRules=true 直开 / false 先 fileExists——两分支同落 openSection，合并为 `cache_rules || file_exists`）；缺规则记 `Unable to find visual_rules.xml file.`（构造期错误，check() 首行 `errors_.clear()` 与原版一致会清掉）；匹配 = 目录路径小写 find 包含 + `stable_sort`（path 长降序、filespec 长降序稳定）+ `PathMatchSpec` 可移植 glob（`*`/`?`/`[seq]`/`[!seq]`，首 `]` 字面量，`{}` 列表无用户未实现已注册）；rulesById + parent 链递归读（宏生 vector/string/int/float/bool + hardPoint 集合）；exportAs ∈ {normal, static, static with nodes} 否则 `Unknown value for exportAs [%s]\n` + 重置 normal。**检查面**：尺寸/三角数（`*indices` 子节 `IndexHeader::read` 计 `nIndices_/3`，负数 wrapping 成 u32）/层级深度（缺 node 节原版解引用空指针即 UB，移植记 0 已注册）/portal 电池（基座矩阵 row0=uAxis、row2=boundary normal、row1=normal×uAxis、平移=normal·d，点从平面空间映射回对象空间；<3 点/非平面（零法线跳过）/朝外（`d − centre·n > 0`，平面法线须指内）/snap 1/2196 容差/距离 1/1024 容差/offset 1/8192 close，printf %f 全 `{:.6}`）/重复节点名/硬点缺失与未知（HP_flash01 与 HP_flash 豁免；`len>3 && substr(0,3)=="HP_"` 照抄）/纹理名空格（renderSet→geometry→primitiveGroup→`material/textureormfm` find_last_of）。**接缝注册**：MessageBox/automatedTest 分支一律走错误记录；`PrimitiveFile::get` 先 `.processed` 后裸名；XML 内容嗅探拒绝（原版空 asBinary 强转 IndexHeader 是 UB）；`snap_vertices` 原版即死字段照抄并注册。**验收即测试**：`portals_are_forbidden_on_normal_visuals`（同一坏视觉在 rules=false 下得 `Must not have any portals`）等 15 测——好视觉全规则零错、too small/too big/三角上下限/层级/朝外/非平面/snap+距离/重复+硬点/纹理/坏 exportAs/缺文件逐项断言原版消息全文。**附带**：`datasection::read_vector3` 改走 openSection 路径行走（原版 readVector3 即 `openSection(tag)`，`boundingBox/min` 两跳；16eda65 附 `read_vector3_walks_slash_paths` 测）；门禁 asset-pipeline 177 + resources 228 测绿，clippy 仅余两既存 workspace unused-dep，fmt 清，llvm-cov resource_checker.rs 行 96.49%（crate 整体 85.60%，工具 crate 口径照旧）。**坑**：原版 portal 点存平面空间 (u,v,0) 经基座矩阵映射回对象空间，测试夹具必须给平面坐标再由 winding 定平面法线朝内（朝外即触发 facing 错误）；`BinSection::save_bytes` 输出含非 UTF-8 magic 字节，夹具写盘必须走原始字节而非 `from_utf8_lossy`（会替换 0xa1 致容器解析空）。
 - [x] **BW-13-02-05 回归 NavGen 入口**。**验收** 可调用 BW-10 的导航生成。**跨席复测勾**（main 交付为准，2026-11-26，本席）：main `79f47c4`（`crates/asset-pipeline/src/navmesh_processor.rs` 2738 行/55 测，LockedChunks 引用计数/ChunkProcessorManagerFace 锁块怪癖/NavmeshProcessor 逐 girth 顶检→flood→as_binary 追加/NavmeshCache 全端口）依赖面 `977f555`（waypoint-gen workflow.rs 914 行：readTGA/extendThroughUnboundPortals/determineEdgesAdjacentToOtherChunks/compileGirthsList/GirthWorkflow）+`d26cb55`（tga temp dir 隔离），本席 cherry-pick `3ddf7b8`+`b868516`+`b91f983`。**缝冲突自纠**（`e5670ac`）：本树 b99cb0e（lane-only，GenChunk/FloodPhysics 缝）与 main 同面（NavmeshProbe/DropPhysics 缝）物理撞名 to_vector3/determine_edges——取 main 版为准，删本树私有重复，navgen_map harness 补 NavmeshProbe/DropPhysics 适配 impl 改骑 workflow 缝，truth log `gen_navgen_map.log` 逐行复现未变（两版行为等价实证）。**复跑证**：waypoint-gen 88 测绿（含 navgen_map truth-log 对照+workflow tests）+asset-pipeline 439 lib+集成 0 failed，fmt/clippy scoped 净（blowfish workspace 预存在非代码）。b99cb0e 余下不撞名面（generate/streamline/calculate_set_membership/as_binary 等）保持开待主席与 main 侧择一。
 
+
 #### BW-13-03 WorldEditor
 
 复现地图打开/保存、Chunk/Portal/地形编辑、对象放置、选择和变换、属性编辑、撤销重做、资源浏览和空间发布，用同一地图跑编辑后往返测试。
@@ -4888,6 +4927,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-14-01-04 运行 Guard 和 Space 脚本**。**验收** 行为与基准相符。（commit 81618be）
   - 交付 `crates/server-runtime/src/script_host.rs`：Guard/Space 脚本经脚本宿主跑通引擎生命周期（81618be）。base/cell 两角色接线——四个 `BigWorld.Base` 盖章方法（`createInNewSpace`/`registerGlobally`/`destroyCellEntity`/`destroy`）、tp_init 槽构造（`Py_tp_init=60`，typeslots.h 实证）、`importEntityClass` 引用原文拒绝文本、cell 侧按名 `__init__`；重复注册路径照走 `destroyCellEntity`（get-pending 旁路，base.cpp:4038-4041），`inDestroy_` no-op 重入面，簿记/派发两段式重入契约；`PyCFunction_New` 存 `PyMethodDef` 指针故 defs 表 `Box::leak`（参照 static PY_METHOD 契约）。9 进程内测试 + 15 独立进程场景；llvm-cov 0.9.1 该文件 1240/1260 = 98.41%（子场景进程 profraw 合并计入）。补测抓到真 bug：派生检查文本 `BigWorld.` 重复限定。评审文档 `docs/review/bw14-01-04-script-host-wiring.md`。
   - **双交付 FLAG（2026-11-26）**：bw16-18 席 lane/bw16-18 `e14f900` `entity_runtime.rs` 1050 行（PyType_GenericAlloc 分配+Base 四方法 guard 链逐字+Entity/Base 只读属性+BaseRuntime trait 模型+7 场景，lcov 100% 693/693 max-merge）与本席 lane/bw14-script-host `81618be` `script_host.rs`（宿主 outbox/pending/global_bases 簿记+thread-local 三驱动+四盖章方法+tp_init 构造+import_entity_class+15 独立进程场景，98.41%）同项平行交付，**主席择一**；面重叠=Base 四方法 guard 链+构造派发，分歧=本席含 register/destroy/onGetCell/onLoseCell 出站簿记与 fixture Space bootstrap 全生命周期，彼含 Entity 只读属性+BaseRuntime trait 模型；另 main 侧 bw10-terrain 九次同步（e0f8d2b）的「行保持开」卡点注已被本席 `9e269e8` 勾行取代，合并时以勾行态为准。
+
   - 卡点（脚本宿主未接到服务角色）：Guard（cell+client 占位）与 Space（DefaultSpace bootstrap）的脚本 `scripts/cell/Guard.py`、`scripts/base/Space.py` 已随夹具跟踪（845831f）。pyscript **模块面**已合入——BW-03-03-01 模块清单/核对（b50a875）+ BW-03-03-02 数学对象/Provider + BW-03-03-03 定时器模块——但脚本宿主↔服务角色**接线**未落地：无 cell/base script app 把 `Guard.py`/`Space.py` 载入活解释器并驱动 `onCellEnter`/`onSpaceStart` 回调，该接线随 cell 运行时（BW-08）+ 服务端 script app（BW-03-03-04 资源访问后角色侧集成）落地，无宿主则本项不可运行。
 - [x] **BW-14-01-05 验证退出重登**。**验收** 读回此前角色位置及属性。（commit 70079db）
   - 卡点（持久化读写链未落地）：重登读回 Avatar 属性需 dbapp loadCharacter/getCharacter（BW-09-01-05 未勾）；登录链路已合入（同 01-02 卡点，BW-06-01-02 + BW-07-01）。读回面即夹具 db.xml 的 `<Avatar>` 段（playerName/prop1/prop2/prop3/position/direction/spaceID/databaseID）；`Avatar.def` 把 position/yaw/pitch 声明为 `<Volatile>`（运行时态、不走属性持久化），故重登比对的是 db.xml 种值而非 volatile 值。
@@ -4900,6 +4940,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **BW-14-02-01 运行 Python simple 示例**。**验收** 与新服务端完成登录。
   - 卡点复测（2026-11-26，bw14-script-host 席）：旧注「服务端登录链路未落地」**已过时**——登录链已落地并真机绿：BW-06-01-02 挑战协商（3244af7，main 祖先）+ BW-07-01 baseapp 装载/ID 分配 + BW-14-01-02/05 进程内登录链（`fantasydemo_login.rs` 5 测：既有账户走机/未知用户建档/错密码拒不碰行/新角色建档回指，`fantasydemo_logout_relogin.rs` 2 测：退出持久化重登读回，本席实测全绿）。**真余卡点两处**：①`apps/server` 仍最小入口（`main.rs` 仅 BWResource/BwConfig 初始化 + `app::run` 信号/关停面），无角色运行时把 loginapp/dbapp/baseapp 登录链接到真实 Mercury 端口（同 BW-15-02-01 卡点；BW-08-01-02 CellApp 创建与注册未勾）；②参考 simple 客户端是 **C++ 壳内嵌 Python**（`main.cpp`/`entity.cpp`/`py_server.cpp` 等，目录名「python」指 Python 脚本化实体而非纯 Python 程序），跑通它需移植该壳或等价客户端驱动，与①同属大面工程，随角色运行时落地。simple 自带 res 树实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对。
+
 - [x] **BW-14-02-02 运行原版 Android 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
   - 宿主缺口（未运行互通测试）：`docs/review/bw14-02-02-03-mobile-interop-host-gap.md`（402c28a）——参考 `examples/client_integration/c_plus_plus/android/`（JNI + `android.app.NativeActivity` + `android_native_app_glue` + `connection_model` 静态库 + `-llog -landroid -lEGL -lGLESv1_CM`，NDK `armeabi-v7a`/`APP_STL=gnustl_static`/`APP_PLATFORM=android-9`）需 Android NDK 工具链 + 真机/模拟器，本机 Linux 无 NDK/设备；即使宿主就绪，互通目标（新服务端登录）亦未落地（同 02-01 卡点）。协议结果未采集；两侧缺口均已登记。
 - [x] **BW-14-02-03 运行原版 iOS 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
@@ -6003,6 +6044,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 分配数：`6b6cc9c` 落 `crates/foundation/tests/alloc_counts.rs` + `crates/server-runtime/tests/alloc_counts.rs`——计数全局分配器 + thread-local 追踪旗标（旗标与计数全在调用线程，并发测试线程互不污染；全局计数器版首跑即暴露互踩：纯浮点夹具数出幻影分配），夹具与时序表逐形对应（`iter_batched` 出时间窗的 setup 同样出计数窗），每测断言双跑恒等故数字按工具链逐位可复现；11 行基线：add_1000_timers 1010 次/112,440 B（每计时器 ~1 次、firing pass 0 次）、process_1000_due 0/0、add_cancel_process_100 108/12,504、encode 29/26,563、decode 20/11,481、math 四面全 0/0、updatables call pass 0/0、register_deregister_100 114/12,424；`cargo test -p foundation` 228+9 绿、`-p server-runtime` 1303+2 绿、两 crate `--tests` clippy 净。
   - 加载峰值：bots 二进制（debug，main `70a4672`）在 `LOAD_CLIENTS=4` 信封下 `/usr/bin/time -v` 实测三场景 peak RSS——steady-move 3,164 KiB（bots_online 4）、login-hurricane 3,180 KiB（online_peak 4、4/4 admitted）、dense-aoi 3,148 KiB（bots 4、max_visible 3）；`ci/load.sh` 3/3 PASS 落 TSV；离线面按仿真时间跑完故此峰是生成器自身足迹，实拓扑逐期 RSS/CPU 采样（`ResourceTracker`，BW-17-03-04）在 `crates/load` 已测但尚未接进 driver 报告（归 bw17 席）。
 - [x] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。**跨席复测勾**（2026-11-26，本席）：bw19-docs 席 lane `6174b44`+勾 `f742b62`（噪声地板+交错 A/B 口径），main=`8e17603`（time_queue.rs process 循环预回调簿记+post 收尾两借窗，每点火 5-6 窗→2；tick.rs Updatables.handles 指针键 hasher 去种子探针；双二进制 10 轮交错 A/B 噪声地板 -3.4%，主张限逐 tick 派发探针、timer 腿只保借窗减半不主张提速；记录 docs/perf-baseline-2026-11-24.md OPT-01-01-02 节），本席 cherry-pick `f504370`。复跑证：foundation 232 lib+10 集成绿、server-runtime 1756 lib+集成全绿（含 tick 面），fmt/clippy scoped 净。
+
 - [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。`ebbde2b` 双面交付（main=`e478d90`）：
   - 资源缓存热路径零分配：`crates/resources/src/data_section_cache.rs` 链指针原是 `Option<String>` 路径拷贝（每次重链 2-6 次 String 分配）→ 槽位 arena（`Vec<CacheNode>` 整数双向链 + 侵入式自由链；`add` 一次性付两份 String——map key + 槽内 name 拷贝——稳态 relink 机器全零分配；section 在 entry 释放时 drop，与参照删节点同语义）。TDD 红先证旧实现逐操作计数（find 中段 6 次/36 B、尾段 5/30、purgeLRU 3/18、remove 中/尾 3/18、remove 头 2/12、head 命中/miss/原地重加 0），新实现 `crates/resources/tests/data_section_cache_alloc.rs` 全零断言 3 测绿，模块 llvm-cov 100.00%（380/380 行）；「复跑失效夹具」随 `cargo test -p resources` 222 全绿一并完成（multi_file_system 目录列举缓存失效 + data_section_cache 七测同套）。
   - BinaryStream 64 字节预留：`crates/foundation/src/stream.rs` 手写 `Default` = `Vec::with_capacity(64)`（参照 `MemoryOStream( int size = 64 )`，`lib/cstdmf/memory_stream.hpp`——参照默认构造即预留，`new()`/`from_u32_le` 同享；`from_slice` 读流包已有内存不预留）。红先证旧实现 61 字节小写 2 次分配，新实现 1 次/64 B；encode_mixed_payload 29→26 次（26,563→26,507 B）；`cargo test -p foundation` 228+10 绿（405 处 `BinaryStream::new()` 调用点无回归），clippy 净。
@@ -6017,6 +6059,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。（bw15 席 `bc1ee86`/`071bdc6`/`3e7c776`，lane/bw15-platform，main=`c733e5a`/`7dc6d12`/`3590227`：platform::socket 落 sendmmsg/recvmmsg 包装+SendScratch/RecvScratch 保留式暂存（Linux cfg）；crates/mercury/tests/batch_io.rs 三臂对照=批量/逐报/分配计数，批宽 64 收发系统调用各 63×摊派（3495→55）确定、每报摊派成本 p50 持平、稳态 0 alloc/报（现行路径 1.00/报）、回环吞吐同量级（窗深投递延迟主导，墙钟只记录不设带）；TSV docs/review/fixtures/network-baseline/batch-io.tsv，证据页 docs/review/opt-02-01-03-batch-and-copy.md；platform 64+mercury 377/7/5/1 全绿（本席 main 复测 455 绿））
 - [x] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。**跨席复测勾**（2026-11-26，本席）：bw15-platform 席 lane `fc181f5`/`19a9c42`/`29cc302`/`f438b7d`/`1b27379`，main=`261a2d0`/`25ee476`/`3675b18`/`62ea5d3`/`4b83ebb`+证据 `3fd6e3d`，本席 cherry-pick `738703d`/`dda66d9`/`fabe0a5`/`e8141cd`/`bc3fc07`/`61a534b`（+dev 边补 `message_logger` 两笔 build `4b48b81`/`c79d7be`）。面：el7_mixed_deploy.rs 五腿真机混部（`#[ignore]` 场景 EL7_MIXED_OUT 落 TSV）+四真互操作 bug 修复（machined 线格式对参考/记录头源字段宽/进程统计答全匹配面/workspace 边）。复跑证：server-runtime 1756 lib+集成全绿（mixed deploy 测试编译过、场景腿按设计 ignore 待 EL7 环境），fmt/clippy scoped 净；EL7 真机腿证据以 bw15 席 TSV 为准（docs/review/fixtures/network-baseline/el7-mixed-deploy.tsv）。
   - 登记（2026-11-26，本席）：bw15-platform 席 lane-only 交付（`fc181f5`/`19a9c42`/`29cc302`/`f438b7d`/`1b27379`，未进 main）：crates/server-runtime/tests/el7_mixed_deploy.rs 五腿真机混部（新版→原版 UDP pid/WholeMachine 查询、原版→新版 UDP logger 注册+birth/death、发现广播版本门两臂、新版→原版 TCP 注册帧化落 mldb、新版→原版 UDP 裸数据报落 mldb）+四个真互操作 bug 修复（contracts/machined.rs v51 pid u32+Listener/Signal extra 块殿后+ProcessMessage.port 网络序；message_logger 记录头 DebugMessageSource=4 字节裸枚举 38 vs 41 字节账；MachinedDaemon answer_query_all 逐匹配应答 bwmachined.cpp:1410-1452）。行保持开：本席不重做不勾，待 lane/bw15-platform 并 main 后本席 cherry-pick 跨席复测再勾。
+
 
 ### OPT-03-01 Python 桥接基线
 
@@ -6041,8 +6084,11 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
 - [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `5120dea`+`0fbfa8f`：crates/load/src/hotspot.rs run_hotspot_baseline 三窗口=allocation（fleet 经 feed_log_on_result 上线+整窗口 circle-walk，ResourceTracker 读 procfs 八次：utime/stime+VmRSS）、recovery（seeded 子集 mid-window drop，reconnect feed_logged_off(Some(true))，floor 2 tick=drop@d/relogin@d/reply@d+2 与 reconnect 同）、reclamation（drain 全 feed_logged_off(None) destroy，online 归零，采样延到尾部）；可复现面 vs 墙钟：online/recovery/drop 计划/sample schedule 固定 seed 全等断言，RSS/CPU 排除 PartialEq 仅经 resource_report_entries 落 LOAD_REPORT（带 metric def）；7 新 hotspot 测+smoke 门入 saved-kinds；覆盖 269/271=99.26%；ci/load.sh 7/7 PASS；记录 run=300/75 tick、4/4 recoveries、mean=max 2、load 最小在线占比 0.75、sampling 4.6s/8、peak RSS 3464 KiB、final 3464、reclaimed 0 KiB（小 fleet drain 回收 0=诚实值，故墙钟只记录不设带）；baseline 加 min 2.0 floor；证据页 docs/review/opt-05-01-01-load-hotspot-baseline.md）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收平行腿 `e028fbf`（cellappmgr_baseline.rs 三腿合成钟 harness 入 cellappmgr.rs）与本席 `5120dea`+`0fbfa8f`（load/src/hotspot.rs run_hotspot_baseline）同面异实现，待主席择一。
 - [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（本席 `a577c5c`：crates/server-runtime/src/balance_baseline.rs run_schedule_scenario 用真 CellAppMgr 跑固定 96 tick 双相位（热相 app0≈0.6 偏斜触发拆并、冷相全低触发 retire），每次 report 后 load_balance+meta_load_balance+tick；ScheduleLedger 记 cells_added/cells_removed/apps_retired/partitions_moved/reports；BalanceTuning 新 seam（load_smoothing_bias/estimated_initial_cell_load/safety_bound/safety_ratio/meta_load_balance_tolerance/lower_bound/limit_to_chunks，Default 全等参考常量，inform_of_load 保留旧行为、新增 inform_of_load_with 显式 bias；Space::partition_positions+BspNode::visit_partitions 供台账数线）；固定 seed 27_182_828 基线 partitions_moved=0 vs 候选 limit_to_chunks=false 移动 2 条（final loads/cells 两侧一致，差异在调度路径非分布）；5 新测（含双跑全等）；覆盖 balance_baseline.rs 171/171=100%；cargo test -p server-runtime 1693 lib+集成全绿；fmt/clippy 干净（仅既有 blowfish 未用依赖告警）；证据页 docs/review/opt-05-01-02-schedule-comparison.md）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收平行腿 `cd056fc`（cellappmgr_tuning.rs 三固定场景对比）与本席 `a577c5c`（balance_baseline.rs run_schedule_scenario）同面异实现，待主席择一。
 - [x] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。（本席 `fd21b51`：crates/server-runtime/src/lifecycle_scenario.rs run_lifecycle_scenario(seed=41) 组合真 MigrationRecovery（offload→target_lost→两通 Failed 缓冲→restore 转发→reconcile 五谓词全真）、controlled_shut_down_server+ShutdownState Request/Inform/Perform+CellAppMgr cell ack、TaskManager stop_all 排空 backup/flush-replay、ReplayDataCollector/Writer 真前缀签名 4 tick 落盘、read_replay_prefix 混部门（当前接受/异版拒绝，无混部 fleet runner 故以此面为界）；6 新测全绿且双跑 ledger 逐字段全等；覆盖 187/187=100%；cargo test -p server-runtime 1699 lib+集成全绿；fmt/clippy 干净（仅既有 blowfish 未用依赖告警）；证据页 docs/review/opt-05-01-03-lifecycle-rerun.md）
+  - 本席 lane-only 交付（`fd21b51`）待主席并入；main 侧行保持开。
 
 ### OPT-06-01 登录与资源下载基线
 
@@ -6062,6 +6108,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。4c19ee7（shared_data_baseline.rs+shared_data_tuning.rs 96 变更过真实双 mgr 链(set/del 四 scope+forward/relay 环 4 BaseApp+3 CellApp)：shipped 575 消息(base284/cell219/fwd24/relay48) vs 抑制 no-op 写 444(216/174/17/37)=省 131(−22.8%)，21 次 no-op 放大为全链腿消去(全局 set=5/转发 set=9/cell=3)；终态三权威图逐位相等(same_load 钉)；跨种子形状钉；9 测 baseline 98.58%+tuning 100%）
 - [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。2fbfcf8（takeover_rerun.rs 12 实体种子舰队过真实备份面后源亡接管 restore 12/12 属性全等；16 变更建双 mgr 权威图后按 count+pairs 恢复流形状落盘、全新 mgr 对经真实 recover_shared_data_from_stream 读回=四图逐位等(2/4/2/4 条目)；跨种子形状钉；4 测 99.65% 行 100% 区域，唯一缺行=属性不匹配假臂被断言正确性排除）
 
+
 ### OPT-08-01 密集 AOI 基线
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
@@ -6071,6 +6118,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。(2026-11-26 本席 lane/bw14-script-host 5e4181c:space_parallel.rs 复用 BW-08-05-01 decide_offload/collect_offload 实面,120 实体密场按 x=16m 分裂面两侧驻扎,AoI 基线同款 ±0.75m 步表真跨面;台账 crossings=2/offloads=2(逐 crossing 恰一次,落点=p_cell_at 所含侧)/stays=118,check_ms≈0.009-0.012 probe 打印不断言;分支规则 coordinate<position 把分界平面判给右子(x/z 双轴实证,骑面者归左必迁 OffloadTo(FAR));四 Stay 门(未创建/死通道/缺通道项=死/删除挂起)+disabled cell_should_offload 全 Stay;重跑台账恒等;4 测,lib 1754 全绿;review=docs/review/opt-08-01-03-space-parallel.md)
 - [x] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。(2026-11-26 本席 lane/bw14-script-host 616a885:aoi_rerun.rs 复跑密场景两遍逐 tick 审计,TickLedger 增有序 starts/stops/enters/leaves+整份 bundle 发送序;状态正确=视距触发器布点=窗谓词 (sub-range<x≤sub+range) 双轴、可见集=扫描锥真值(update gate 读控制器公开 tick 计数,run tick 用现位置/skip tick 恒等携带集)、start/stop 差分自洽(starts 只打未见 id/stops 只打持有 id/差分复现 visible_entities)、EnterAoI/LeaveAoI 消息=触发器跨越、witness AoI 映=500m 窗、bundle 逐实体序 EnterAoI→CreateEntity→EntityUpdate 更新不先于创建;迁移腿 destination+native 双世界 16 tick 全审,seed 静默 46→46、held 重报=0、终态 visible 42/range 布点/AoI 映三层全等 native;坑=client bundle 是客户端面向 AoI 态唯一重放源,tick 0 120 条 EnterAoI=120 跨越,二次重放会重复计数——两视图须对账不能叠加;2 测,lib 1756 全绿;review=docs/review/opt-08-01-04-aoi-rerun-state.md)
 
+
 ### OPT-09-01 分别采集 MySQL 与 PostgreSQL 基线
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
@@ -6079,6 +6127,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。9dda748（pool_merge_eval.rs 同一 48 行+48 读种子负载三种执行形状过真 PG：shipped 1 连接 96 语句 48 提交 vs unpooled 96 次连接(纯多付连接 ≈4×墙钟 1.8s vs 450ms) vs merged 单事务 48 写并 1 提交+ANY 单语句读(50 语句 1 提交 ≈6×吞吐 75ms vs 450ms，fsync 类落盘 48→1)；结构计数断言=后端无关，MySQL 半=语句形状恒等且 OPT-09-01-01 同形状 store.sh 真机绿(无 Rust mysql 驱动不采样墙钟如实声明)；墙钟只打印不断言(BW-17-02-08 门)；4 跑数字留档 docs/review）
 - [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。01d391c（archive_batch_eval.rs 同一 64 行种子负载三写形过真 PG：autocommit 64 语句 64 提交 ~540ms vs 事务批 66 语句 1 提交 ~165ms(≈3.3×,落盘 64→1) vs 单条多行 INSERT(按 schema 自身列构建) 1 语句 ~4-5ms(≈100×)；三形 rows_ok=64 逐行相等=改的是成本不是内容；归档整合=export_backup 12 表 193 行 ~30-50ms → restore_backup 空库 ~145ms → 目标库重导出逐记录相等(restored==dump)=恢复正确性；墙钟只打印不断言；db-postgres 135 测全绿）
 - [x] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。已交付 f09727b：crates/db-postgres/tests/rerun_recovery.rs 三腿（同种子 32 行事务复跑两库 export dump 逐记录相等=复跑即复现；rollback 腿脏读可见 staged 写+staged delete 读 None、rollback 后 dump == 事务前快照且覆盖/删除行原样回归；retry_query/query_with_reconnect/run_with_retry 各吃一次脚本化首尝试失败（DbError::Retry=store.rs:48 SQLSTATE 40P01/55P03 同款、LostConnection、classify(1045) fatal）后真连库读回该行，attempt/reconnect/on_retry 计数逐项钉死+complete 恰一次+无 reconnect 时损毁面原样上浮不重发；恢复腿 restore_backup 进空库后同工作负载走 update 面复跑、export == 源 dump）。计数/等值全 assert，墙钟仅打印不 assert（125.6/87.3ms、73.1/89.4ms、restore 36.0ms）。坑：put_entity 第三参是 create 非 overwrite——复跑踩已存在行须走 update 面(false)，首稿 create=true 全腿 AlreadyExists 被面契约当场揭穿；EntityStorageImage 仅 Memory 实现(storage.rs:884-901)，retry_transaction 图像回滚属内存后端，PG 侧对应物=事务/rollback 腿。docs/review/opt-09-01-04-rerun-recovery.md。门禁 db-postgres 138 绿/fmt/clippy 净。
+
 
 ### OPT-10-01 地图加载和查询基线
 
@@ -6098,6 +6147,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。(2026-11-26 lane/bw14-script-host 5535b86：crates/client/tests/render_stream_sched_opt.rs 基线固定镜头(640×480, 64 帧)走 shipped 帧调度面 FrameLoop::run_frame（Tick→UpdateAnimations→Draw 逐帧 canonical+hooks 按相序断言，64 帧×3 端），六个排程切图帧(8/16/24/32/40/48)走 shipped load_and_bind 把参考夹具图 37 候选按扫描序分六批流进活空间；单 tracked 区跨全程=逐帧 allocs 增量+live 轨迹连续；切图报告（结构断言）：切图帧恰落在排程帧、并集=probe 全集 6 chunk、逐切图帧 allocs 954/32/32/32/32/128 严格大于全部稳帧(≤9)——分配账即切图/长帧的结构识别；内存=总 1729 allocs/峰值 1281573/终 live 1280327（流进的空间骑在设备 1228848 基线上），复跑恒等；长帧报告（probe 只印不断言）：本调试 runner 墙钟尾被 OS 抖动主导（最慢帧是稳帧 allocs=8 达 27-76ms 非切图帧），逐帧 192 行+切图行+每端 top-5 落 docs/review/opt-11-01-03-render-stream-sched-opt.md；夹具发现=第六绑 chunk 是分隔块 001x000x/sep/00110000o（标识符是路径非格胞，格胞中心解析只盖四个 hex 外块）；收尾四外块 find_chunk_from_point 各自格胞中心归位；client 门禁 876 绿）
 - [x] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。(2026-11-26 lane/bw14-script-host 96d8f67：crates/client/tests/render_visual_rerun.rs 三端复跑 OPT-11-01-01 saved 基线固定镜头（640×480, 64 帧）：钉帧 1..=8+64 摘要逐帧对上 saved 记录（首走+复走双验）；容差=复走间钉帧逐像素 differing_pixels=0 断言位级相等（确定性面容差下限=位，不设预算）——连 OPT-11-01-02 批量候选面也同满足：64 帧逐帧答 walked 摘要+钉帧批量像素 vs shipped 背板差 0；内存账复跑=saved 数字（走查区内 2 allocs/峰值 1228848，帧仍不抬高）；截图面（ScreenCopy::capture→TGA，BW-11-04-07 通道）钉帧 1/8/64 逐帧捕获=18 字节头+1228800 帧体，三端逐帧字节相等+第二遍复跑字节恒等（视觉回归产物自身复现）；OPT-11-01 簇收官——基线/上传批次/流与调度/视觉回归四面互相咬合（saved 摘要钉三行共答）；client 门禁 878 绿）
 
+
 ### OPT-12-01 各观测通道开销
 
 降低日志、Watcher、Profiler 的观测成本。验证背压、关闭观测后的开销及新旧工具查询兼容。
@@ -6105,6 +6155,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。(661e12a)
 - [x] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。(9a74213)
 - [x] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。(f4fce4f)
+
 
 ### OPT-13-01 冷构建、增量与编辑器加载
 
@@ -6114,6 +6165,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。(663dc8c)
 - [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。(`827ed8e`)
 - [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。(2026-11-26 补勾（交付 b981ae7 已在树，勾行遗漏）：crates/asset-pipeline/tests/asset_hash_format.rs 四测复跑 4/4 绿——hash64 五向量钉原版 bw_hash64.cpp FNV-1a 含 LE-integer+combine 契约（combined 0x85562B3F62384861）；SpaceConverter 真 space 两次独立转换逐字节+摘要全等（213B/3 sections，原版读者树读回 models/box.model|models/spikes.model）；DependencyList 精确哈希 4 输入 1 输出（primary 0x3A31A0D27AFBDAAB/full 0x39F4CDF311678C81）；res_packer 夹具两跑逐字节全等（177B×2）+原版 EL7 产物 bw.packed 经本包读者树读回全等（tree_equal=true）；墙钟 ASSET-FMT 只印不断言；docs/review/opt-13-01-04-asset-hash-format.md 补档）
+
 
 ### OPT-14-01 发布包尺寸及首次运行
 
@@ -6130,7 +6182,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（7081674）
   - 双交付 FLAG（2026-11-26，本席）：bw15-platform 席 Linux 腿 `56c2673`（lane/bw15-platform），main=`f6107e8` 同名文件 crates/platform/tests/io_timer_baseline.rs（9 行 512 ops 负载+自有 TSV/证据页）与本席 `7081674`（13 probe+tests/baseline 目录+pending 语法钉）物理撞名待主席择一；main 台账席 d21cc1d 已将行重开待 Windows/macOS 腿（BW-15-05-01）——本席勾保持为交付记录，行终态随主席合并裁定。
 - [x] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。(2026-11-26 lane/bw14-script-host 2f77126：crates/client/tests/render_backend_baseline.rs 按图形后端登记表采集三问——新树唯一出货像素后端=Device 下的软件光栅器（参考侧 D3D9/OpenGL/cocos2d/Awesomium 四后端是 BW-15-06-01 档事实非移植，登记表 BACKENDS 留位后端落地即插行）；设备面（结构断言）：SoftwareDevice 640×480 adapter=0 307200px RGBA8、帧序 1..=64 单设备对象、status=Ok 全程、leaked()=0；驱动面（probe 只印不断言）：软件光栅的"驱动"=执行环境（CPU 型号/逻辑核/OS/内核）文本入报告；帧时（probe 只印不断言）：固定镜头 check_device→step→present 64 帧逐帧 FRAME-TIME+FRAME-TAIL 汇总入 RENDER_BACKEND_OUT 报告（本机 p50 15.6-18.8ms/p99 24.2-25.1ms，随宿主漂移如实记录不断言）；结构契约：逐相邻帧摘要必异+帧 1..=8/64 复现 OPT-11-01-01 saved 钉（后端记录与端基线同一光栅不漂移）+帧 1/7/31/64 纯帧序号复现+复跑恒等；提交目录 tests/baseline/render-backend-baseline.tsv 十列（platform/backend/device/driver/frames/min/median/p99/max/note），linux-x86_64=measured，macos-arm64/windows-x86_64=pending 行带 BW-15-04/BW-15-03 blocker 不编数字，语法检查拒 pending 带测量/未知后端 id/重复(platform,backend)/非数字帧时/测量平台缺任一出货后端行；client 门禁 861 绿+集成全绿）
+  - main 已收（台账席，2026-11-26）：本席 `2f77126`→main `25e40c7`（cherry-pick，取本席版非 bw15 腿），本席勾保持为交付记录。
 - [x] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。(2026-11-26 lane/bw14-script-host 3761c24：crates/platform/tests/platform_opt_parity.rs——树内平台针对性优化=platform::socket 的 Linux sendmmsg/recvmmsg 批对（OPT-02-01-03 交付面），检验法=同一套协议场景跑两臂比结果：泛化臂 sendto/recvfrom 逐数据报一系统调用 vs 批臂 sendmmsg/recvmmsg 一窗口一系统调用，同一 loopback UDP 对（两臂共骑同一发送套接字，源三元组才可比）；结构断言：256 数据报逐报字节恒等+序恒等（载荷内大端序号=自身下标）+源 port/address 网络序恒等+变长 16..=1200 字节抓聚合/拆裂+批臂系统调用形状 8 send+8 recv vs 泛化臂 256+256；边沿同答：空批发 0/空收请求读 0/静默非阻塞套接字两臂同答 errno=EAGAIN（包装器露 -1+errno 的 libc 约定，mercury 调用方本就 last_os_error 处理，sendmmsg 注释"-errno"措辞与实态不符已如实登记）/8 槽收 5 排队恰回 5 槽序字节恒等/单数据报批与 sendto 同契（recvfrom 报回发送方临时 port+loopback 源址）；套件自揭两发现：drained 错误形（-1+errno 非 -errno，行为被钉）与槽宽=批容量（4 槽收 5 排队回 4 未丢不请求者留队，独立 C repro 验内核 5 槽回 5）；platform 门禁 64 lib+io_timer 1+parity 2+signal_call_sites 1 全绿）
+  - main 已收（台账席，2026-11-26）：本席 `3761c24`→main `117a588`（cherry-pick，取本席版非 bw15 腿），本席勾保持为交付记录。
 
 ### OPT-16-01 采集依赖与增量构建基线
 
@@ -6140,6 +6194,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 8c37171(asset-pipeline/tests/split_evaluation.rs+fixtures/dep-graph/split-*) 已 cherry-pick 入本树 0ddb5e0 并复跑绿，asset-pipeline 门禁 384 lib+集成含 split_evaluation 2 测全绿)
 - [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 870ad04(asset-pipeline/tests/install_path_recheck.rs+fixtures/install-recheck/) 已 cherry-pick 入本树 5e99e3a 并复跑绿——the_load_and_install_paths_stay_compatible PASS+本树连带复跑 install-layout 全 PASS+package-baseline verify 3 平台语法净)
 
+
 ### OPT-23-01 关闭及开启采集的长稳基线
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
@@ -6147,6 +6202,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。(2026-11-26 跨席复测勾：他席 main 交付 38b99db(profiler/tests/long_stability_collection.rs+fixtures/long-stability/long-stability.tsv+docs/review/opt-23-01-01-long-stability-collection.md) 已 cherry-pick 入本树 5bb641c 并复跑绿，profiler 门禁 43 lib+集成全绿)
 - [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。(2026-11-26 跨席复测勾：他席 main 交付 2a26627(profiler/tests/buffer_export_evaluation.rs+fixtures/buffer-export/+docs/review/opt-23-01-02-buffer-export.md) 已 cherry-pick 入本树 98bec50 并复跑绿)
 - [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。(2026-11-26 跨席复测勾：他席 main 交付 0ee4b28(profiler/tests/collection_integrity_regression.rs+fixtures/collection-regression/+docs/review/opt-23-01-03-collection-integrity.md) 已 cherry-pick 入本树 28c1da9 并复跑绿)
+
 
 ### OPT-26-01 固定事件回放并采集查询基线
 
@@ -6159,6 +6215,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `bf335b5`（未进 main）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
 - [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `b34554a`（lane/opt-26-db），main=`1590095`，本席 cherry-pick `7a1867c`。面：sample_report_rerun.rs 3 测=从存储语料复算样本报表对照 TSV 基线逐项等+每项优化后复算仍等；证据页；复跑 3 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `b34554a`（未进 main）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+
 
 ## 5. 实施顺序与里程碑
 
@@ -6391,6 +6448,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-13-02-04 移植 resourcechecker**。**验收** 同一坏资源得到对应诊断。**交付**（2026-11-25，8678b06 + 16eda65 已推 lane/bw15-platform）：`crates/asset-pipeline/src/resource_checker.rs` 移植 `tools/resourcechecker/visual_checker.*` 的 `VisualChecker`。**规则面**：`_bsp.` 命名直接放行且不载规则；规则自 `visual_rules.xml`（cacheRules=true 直开 / false 先 fileExists——两分支同落 openSection，合并为 `cache_rules || file_exists`）；缺规则记 `Unable to find visual_rules.xml file.`（构造期错误，check() 首行 `errors_.clear()` 与原版一致会清掉）；匹配 = 目录路径小写 find 包含 + `stable_sort`（path 长降序、filespec 长降序稳定）+ `PathMatchSpec` 可移植 glob（`*`/`?`/`[seq]`/`[!seq]`，首 `]` 字面量，`{}` 列表无用户未实现已注册）；rulesById + parent 链递归读（宏生 vector/string/int/float/bool + hardPoint 集合）；exportAs ∈ {normal, static, static with nodes} 否则 `Unknown value for exportAs [%s]\n` + 重置 normal。**检查面**：尺寸/三角数（`*indices` 子节 `IndexHeader::read` 计 `nIndices_/3`，负数 wrapping 成 u32）/层级深度（缺 node 节原版解引用空指针即 UB，移植记 0 已注册）/portal 电池（基座矩阵 row0=uAxis、row2=boundary normal、row1=normal×uAxis、平移=normal·d，点从平面空间映射回对象空间；<3 点/非平面（零法线跳过）/朝外（`d − centre·n > 0`，平面法线须指内）/snap 1/2196 容差/距离 1/1024 容差/offset 1/8192 close，printf %f 全 `{:.6}`）/重复节点名/硬点缺失与未知（HP_flash01 与 HP_flash 豁免；`len>3 && substr(0,3)=="HP_"` 照抄）/纹理名空格（renderSet→geometry→primitiveGroup→`material/textureormfm` find_last_of）。**接缝注册**：MessageBox/automatedTest 分支一律走错误记录；`PrimitiveFile::get` 先 `.processed` 后裸名；XML 内容嗅探拒绝（原版空 asBinary 强转 IndexHeader 是 UB）；`snap_vertices` 原版即死字段照抄并注册。**验收即测试**：`portals_are_forbidden_on_normal_visuals`（同一坏视觉在 rules=false 下得 `Must not have any portals`）等 15 测——好视觉全规则零错、too small/too big/三角上下限/层级/朝外/非平面/snap+距离/重复+硬点/纹理/坏 exportAs/缺文件逐项断言原版消息全文。**附带**：`datasection::read_vector3` 改走 openSection 路径行走（原版 readVector3 即 `openSection(tag)`，`boundingBox/min` 两跳；16eda65 附 `read_vector3_walks_slash_paths` 测）；门禁 asset-pipeline 177 + resources 228 测绿，clippy 仅余两既存 workspace unused-dep，fmt 清，llvm-cov resource_checker.rs 行 96.49%（crate 整体 85.60%，工具 crate 口径照旧）。**坑**：原版 portal 点存平面空间 (u,v,0) 经基座矩阵映射回对象空间，测试夹具必须给平面坐标再由 winding 定平面法线朝内（朝外即触发 facing 错误）；`BinSection::save_bytes` 输出含非 UTF-8 magic 字节，夹具写盘必须走原始字节而非 `from_utf8_lossy`（会替换 0xa1 致容器解析空）。
 - [x] **BW-13-02-05 回归 NavGen 入口**。**验收** 可调用 BW-10 的导航生成。**跨席复测勾**（main 交付为准，2026-11-26，本席）：main `79f47c4`（`crates/asset-pipeline/src/navmesh_processor.rs` 2738 行/55 测，LockedChunks 引用计数/ChunkProcessorManagerFace 锁块怪癖/NavmeshProcessor 逐 girth 顶检→flood→as_binary 追加/NavmeshCache 全端口）依赖面 `977f555`（waypoint-gen workflow.rs 914 行：readTGA/extendThroughUnboundPortals/determineEdgesAdjacentToOtherChunks/compileGirthsList/GirthWorkflow）+`d26cb55`（tga temp dir 隔离），本席 cherry-pick `3ddf7b8`+`b868516`+`b91f983`。**缝冲突自纠**（`e5670ac`）：本树 b99cb0e（lane-only，GenChunk/FloodPhysics 缝）与 main 同面（NavmeshProbe/DropPhysics 缝）物理撞名 to_vector3/determine_edges——取 main 版为准，删本树私有重复，navgen_map harness 补 NavmeshProbe/DropPhysics 适配 impl 改骑 workflow 缝，truth log `gen_navgen_map.log` 逐行复现未变（两版行为等价实证）。**复跑证**：waypoint-gen 88 测绿（含 navgen_map truth-log 对照+workflow tests）+asset-pipeline 439 lib+集成 0 failed，fmt/clippy scoped 净（blowfish workspace 预存在非代码）。b99cb0e 余下不撞名面（generate/streamline/calculate_set_membership/as_binary 等）保持开待主席与 main 侧择一。
 
+
 #### BW-13-03 WorldEditor
 
 复现地图打开/保存、Chunk/Portal/地形编辑、对象放置、选择和变换、属性编辑、撤销重做、资源浏览和空间发布，用同一地图跑编辑后往返测试。
@@ -6453,6 +6511,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-14-01-04 运行 Guard 和 Space 脚本**。**验收** 行为与基准相符。（commit 81618be）
   - 交付 `crates/server-runtime/src/script_host.rs`：Guard/Space 脚本经脚本宿主跑通引擎生命周期（81618be）。base/cell 两角色接线——四个 `BigWorld.Base` 盖章方法（`createInNewSpace`/`registerGlobally`/`destroyCellEntity`/`destroy`）、tp_init 槽构造（`Py_tp_init=60`，typeslots.h 实证）、`importEntityClass` 引用原文拒绝文本、cell 侧按名 `__init__`；重复注册路径照走 `destroyCellEntity`（get-pending 旁路，base.cpp:4038-4041），`inDestroy_` no-op 重入面，簿记/派发两段式重入契约；`PyCFunction_New` 存 `PyMethodDef` 指针故 defs 表 `Box::leak`（参照 static PY_METHOD 契约）。9 进程内测试 + 15 独立进程场景；llvm-cov 0.9.1 该文件 1240/1260 = 98.41%（子场景进程 profraw 合并计入）。补测抓到真 bug：派生检查文本 `BigWorld.` 重复限定。评审文档 `docs/review/bw14-01-04-script-host-wiring.md`。
   - **双交付 FLAG（2026-11-26）**：bw16-18 席 lane/bw16-18 `e14f900` `entity_runtime.rs` 1050 行（PyType_GenericAlloc 分配+Base 四方法 guard 链逐字+Entity/Base 只读属性+BaseRuntime trait 模型+7 场景，lcov 100% 693/693 max-merge）与本席 lane/bw14-script-host `81618be` `script_host.rs`（宿主 outbox/pending/global_bases 簿记+thread-local 三驱动+四盖章方法+tp_init 构造+import_entity_class+15 独立进程场景，98.41%）同项平行交付，**主席择一**；面重叠=Base 四方法 guard 链+构造派发，分歧=本席含 register/destroy/onGetCell/onLoseCell 出站簿记与 fixture Space bootstrap 全生命周期，彼含 Entity 只读属性+BaseRuntime trait 模型；另 main 侧 bw10-terrain 九次同步（e0f8d2b）的「行保持开」卡点注已被本席 `9e269e8` 勾行取代，合并时以勾行态为准。
+
   - 卡点（脚本宿主未接到服务角色）：Guard（cell+client 占位）与 Space（DefaultSpace bootstrap）的脚本 `scripts/cell/Guard.py`、`scripts/base/Space.py` 已随夹具跟踪（845831f）。pyscript **模块面**已合入——BW-03-03-01 模块清单/核对（b50a875）+ BW-03-03-02 数学对象/Provider + BW-03-03-03 定时器模块——但脚本宿主↔服务角色**接线**未落地：无 cell/base script app 把 `Guard.py`/`Space.py` 载入活解释器并驱动 `onCellEnter`/`onSpaceStart` 回调，该接线随 cell 运行时（BW-08）+ 服务端 script app（BW-03-03-04 资源访问后角色侧集成）落地，无宿主则本项不可运行。
 - [x] **BW-14-01-05 验证退出重登**。**验收** 读回此前角色位置及属性。（commit 70079db）
   - 卡点（持久化读写链未落地）：重登读回 Avatar 属性需 dbapp loadCharacter/getCharacter（BW-09-01-05 未勾）；登录链路已合入（同 01-02 卡点，BW-06-01-02 + BW-07-01）。读回面即夹具 db.xml 的 `<Avatar>` 段（playerName/prop1/prop2/prop3/position/direction/spaceID/databaseID）；`Avatar.def` 把 position/yaw/pitch 声明为 `<Volatile>`（运行时态、不走属性持久化），故重登比对的是 db.xml 种值而非 volatile 值。
@@ -6465,6 +6524,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **BW-14-02-01 运行 Python simple 示例**。**验收** 与新服务端完成登录。
   - 卡点复测（2026-11-26，bw14-script-host 席）：旧注「服务端登录链路未落地」**已过时**——登录链已落地并真机绿：BW-06-01-02 挑战协商（3244af7，main 祖先）+ BW-07-01 baseapp 装载/ID 分配 + BW-14-01-02/05 进程内登录链（`fantasydemo_login.rs` 5 测：既有账户走机/未知用户建档/错密码拒不碰行/新角色建档回指，`fantasydemo_logout_relogin.rs` 2 测：退出持久化重登读回，本席实测全绿）。**真余卡点两处**：①`apps/server` 仍最小入口（`main.rs` 仅 BWResource/BwConfig 初始化 + `app::run` 信号/关停面），无角色运行时把 loginapp/dbapp/baseapp 登录链接到真实 Mercury 端口（同 BW-15-02-01 卡点；BW-08-01-02 CellApp 创建与注册未勾）；②参考 simple 客户端是 **C++ 壳内嵌 Python**（`main.cpp`/`entity.cpp`/`py_server.cpp` 等，目录名「python」指 Python 脚本化实体而非纯 Python 程序），跑通它需移植该壳或等价客户端驱动，与①同属大面工程，随角色运行时落地。simple 自带 res 树实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对。
+
 - [x] **BW-14-02-02 运行原版 Android 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
   - 宿主缺口（未运行互通测试）：`docs/review/bw14-02-02-03-mobile-interop-host-gap.md`（402c28a）——参考 `examples/client_integration/c_plus_plus/android/`（JNI + `android.app.NativeActivity` + `android_native_app_glue` + `connection_model` 静态库 + `-llog -landroid -lEGL -lGLESv1_CM`，NDK `armeabi-v7a`/`APP_STL=gnustl_static`/`APP_PLATFORM=android-9`）需 Android NDK 工具链 + 真机/模拟器，本机 Linux 无 NDK/设备；即使宿主就绪，互通目标（新服务端登录）亦未落地（同 02-01 卡点）。协议结果未采集；两侧缺口均已登记。
 - [x] **BW-14-02-03 运行原版 iOS 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
@@ -7568,6 +7628,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 分配数：`6b6cc9c` 落 `crates/foundation/tests/alloc_counts.rs` + `crates/server-runtime/tests/alloc_counts.rs`——计数全局分配器 + thread-local 追踪旗标（旗标与计数全在调用线程，并发测试线程互不污染；全局计数器版首跑即暴露互踩：纯浮点夹具数出幻影分配），夹具与时序表逐形对应（`iter_batched` 出时间窗的 setup 同样出计数窗），每测断言双跑恒等故数字按工具链逐位可复现；11 行基线：add_1000_timers 1010 次/112,440 B（每计时器 ~1 次、firing pass 0 次）、process_1000_due 0/0、add_cancel_process_100 108/12,504、encode 29/26,563、decode 20/11,481、math 四面全 0/0、updatables call pass 0/0、register_deregister_100 114/12,424；`cargo test -p foundation` 228+9 绿、`-p server-runtime` 1303+2 绿、两 crate `--tests` clippy 净。
   - 加载峰值：bots 二进制（debug，main `70a4672`）在 `LOAD_CLIENTS=4` 信封下 `/usr/bin/time -v` 实测三场景 peak RSS——steady-move 3,164 KiB（bots_online 4）、login-hurricane 3,180 KiB（online_peak 4、4/4 admitted）、dense-aoi 3,148 KiB（bots 4、max_visible 3）；`ci/load.sh` 3/3 PASS 落 TSV；离线面按仿真时间跑完故此峰是生成器自身足迹，实拓扑逐期 RSS/CPU 采样（`ResourceTracker`，BW-17-03-04）在 `crates/load` 已测但尚未接进 driver 报告（归 bw17 席）。
 - [x] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。**跨席复测勾**（2026-11-26，本席）：bw19-docs 席 lane `6174b44`+勾 `f742b62`（噪声地板+交错 A/B 口径），main=`8e17603`（time_queue.rs process 循环预回调簿记+post 收尾两借窗，每点火 5-6 窗→2；tick.rs Updatables.handles 指针键 hasher 去种子探针；双二进制 10 轮交错 A/B 噪声地板 -3.4%，主张限逐 tick 派发探针、timer 腿只保借窗减半不主张提速；记录 docs/perf-baseline-2026-11-24.md OPT-01-01-02 节），本席 cherry-pick `f504370`。复跑证：foundation 232 lib+10 集成绿、server-runtime 1756 lib+集成全绿（含 tick 面），fmt/clippy scoped 净。
+
 - [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。`ebbde2b` 双面交付（main=`e478d90`）：
   - 资源缓存热路径零分配：`crates/resources/src/data_section_cache.rs` 链指针原是 `Option<String>` 路径拷贝（每次重链 2-6 次 String 分配）→ 槽位 arena（`Vec<CacheNode>` 整数双向链 + 侵入式自由链；`add` 一次性付两份 String——map key + 槽内 name 拷贝——稳态 relink 机器全零分配；section 在 entry 释放时 drop，与参照删节点同语义）。TDD 红先证旧实现逐操作计数（find 中段 6 次/36 B、尾段 5/30、purgeLRU 3/18、remove 中/尾 3/18、remove 头 2/12、head 命中/miss/原地重加 0），新实现 `crates/resources/tests/data_section_cache_alloc.rs` 全零断言 3 测绿，模块 llvm-cov 100.00%（380/380 行）；「复跑失效夹具」随 `cargo test -p resources` 222 全绿一并完成（multi_file_system 目录列举缓存失效 + data_section_cache 七测同套）。
   - BinaryStream 64 字节预留：`crates/foundation/src/stream.rs` 手写 `Default` = `Vec::with_capacity(64)`（参照 `MemoryOStream( int size = 64 )`，`lib/cstdmf/memory_stream.hpp`——参照默认构造即预留，`new()`/`from_u32_le` 同享；`from_slice` 读流包已有内存不预留）。红先证旧实现 61 字节小写 2 次分配，新实现 1 次/64 B；encode_mixed_payload 29→26 次（26,563→26,507 B）；`cargo test -p foundation` 228+10 绿（405 处 `BinaryStream::new()` 调用点无回归），clippy 净。
@@ -7582,6 +7643,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。（bw15 席 `bc1ee86`/`071bdc6`/`3e7c776`，lane/bw15-platform，main=`c733e5a`/`7dc6d12`/`3590227`：platform::socket 落 sendmmsg/recvmmsg 包装+SendScratch/RecvScratch 保留式暂存（Linux cfg）；crates/mercury/tests/batch_io.rs 三臂对照=批量/逐报/分配计数，批宽 64 收发系统调用各 63×摊派（3495→55）确定、每报摊派成本 p50 持平、稳态 0 alloc/报（现行路径 1.00/报）、回环吞吐同量级（窗深投递延迟主导，墙钟只记录不设带）；TSV docs/review/fixtures/network-baseline/batch-io.tsv，证据页 docs/review/opt-02-01-03-batch-and-copy.md；platform 64+mercury 377/7/5/1 全绿（本席 main 复测 455 绿））
 - [x] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。**跨席复测勾**（2026-11-26，本席）：bw15-platform 席 lane `fc181f5`/`19a9c42`/`29cc302`/`f438b7d`/`1b27379`，main=`261a2d0`/`25ee476`/`3675b18`/`62ea5d3`/`4b83ebb`+证据 `3fd6e3d`，本席 cherry-pick `738703d`/`dda66d9`/`fabe0a5`/`e8141cd`/`bc3fc07`/`61a534b`（+dev 边补 `message_logger` 两笔 build `4b48b81`/`c79d7be`）。面：el7_mixed_deploy.rs 五腿真机混部（`#[ignore]` 场景 EL7_MIXED_OUT 落 TSV）+四真互操作 bug 修复（machined 线格式对参考/记录头源字段宽/进程统计答全匹配面/workspace 边）。复跑证：server-runtime 1756 lib+集成全绿（mixed deploy 测试编译过、场景腿按设计 ignore 待 EL7 环境），fmt/clippy scoped 净；EL7 真机腿证据以 bw15 席 TSV 为准（docs/review/fixtures/network-baseline/el7-mixed-deploy.tsv）。
   - 登记（2026-11-26，本席）：bw15-platform 席 lane-only 交付（`fc181f5`/`19a9c42`/`29cc302`/`f438b7d`/`1b27379`，未进 main）：crates/server-runtime/tests/el7_mixed_deploy.rs 五腿真机混部（新版→原版 UDP pid/WholeMachine 查询、原版→新版 UDP logger 注册+birth/death、发现广播版本门两臂、新版→原版 TCP 注册帧化落 mldb、新版→原版 UDP 裸数据报落 mldb）+四个真互操作 bug 修复（contracts/machined.rs v51 pid u32+Listener/Signal extra 块殿后+ProcessMessage.port 网络序；message_logger 记录头 DebugMessageSource=4 字节裸枚举 38 vs 41 字节账；MachinedDaemon answer_query_all 逐匹配应答 bwmachined.cpp:1410-1452）。行保持开：本席不重做不勾，待 lane/bw15-platform 并 main 后本席 cherry-pick 跨席复测再勾。
+
 
 ### OPT-03-01 Python 桥接基线
 
@@ -7606,8 +7668,11 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
 - [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `5120dea`+`0fbfa8f`：crates/load/src/hotspot.rs run_hotspot_baseline 三窗口=allocation（fleet 经 feed_log_on_result 上线+整窗口 circle-walk，ResourceTracker 读 procfs 八次：utime/stime+VmRSS）、recovery（seeded 子集 mid-window drop，reconnect feed_logged_off(Some(true))，floor 2 tick=drop@d/relogin@d/reply@d+2 与 reconnect 同）、reclamation（drain 全 feed_logged_off(None) destroy，online 归零，采样延到尾部）；可复现面 vs 墙钟：online/recovery/drop 计划/sample schedule 固定 seed 全等断言，RSS/CPU 排除 PartialEq 仅经 resource_report_entries 落 LOAD_REPORT（带 metric def）；7 新 hotspot 测+smoke 门入 saved-kinds；覆盖 269/271=99.26%；ci/load.sh 7/7 PASS；记录 run=300/75 tick、4/4 recoveries、mean=max 2、load 最小在线占比 0.75、sampling 4.6s/8、peak RSS 3464 KiB、final 3464、reclaimed 0 KiB（小 fleet drain 回收 0=诚实值，故墙钟只记录不设带）；baseline 加 min 2.0 floor；证据页 docs/review/opt-05-01-01-load-hotspot-baseline.md）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收平行腿 `e028fbf`（cellappmgr_baseline.rs 三腿合成钟 harness 入 cellappmgr.rs）与本席 `5120dea`+`0fbfa8f`（load/src/hotspot.rs run_hotspot_baseline）同面异实现，待主席择一。
 - [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（本席 `a577c5c`：crates/server-runtime/src/balance_baseline.rs run_schedule_scenario 用真 CellAppMgr 跑固定 96 tick 双相位（热相 app0≈0.6 偏斜触发拆并、冷相全低触发 retire），每次 report 后 load_balance+meta_load_balance+tick；ScheduleLedger 记 cells_added/cells_removed/apps_retired/partitions_moved/reports；BalanceTuning 新 seam（load_smoothing_bias/estimated_initial_cell_load/safety_bound/safety_ratio/meta_load_balance_tolerance/lower_bound/limit_to_chunks，Default 全等参考常量，inform_of_load 保留旧行为、新增 inform_of_load_with 显式 bias；Space::partition_positions+BspNode::visit_partitions 供台账数线）；固定 seed 27_182_828 基线 partitions_moved=0 vs 候选 limit_to_chunks=false 移动 2 条（final loads/cells 两侧一致，差异在调度路径非分布）；5 新测（含双跑全等）；覆盖 balance_baseline.rs 171/171=100%；cargo test -p server-runtime 1693 lib+集成全绿；fmt/clippy 干净（仅既有 blowfish 未用依赖告警）；证据页 docs/review/opt-05-01-02-schedule-comparison.md）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收平行腿 `cd056fc`（cellappmgr_tuning.rs 三固定场景对比）与本席 `a577c5c`（balance_baseline.rs run_schedule_scenario）同面异实现，待主席择一。
 - [x] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。（本席 `fd21b51`：crates/server-runtime/src/lifecycle_scenario.rs run_lifecycle_scenario(seed=41) 组合真 MigrationRecovery（offload→target_lost→两通 Failed 缓冲→restore 转发→reconcile 五谓词全真）、controlled_shut_down_server+ShutdownState Request/Inform/Perform+CellAppMgr cell ack、TaskManager stop_all 排空 backup/flush-replay、ReplayDataCollector/Writer 真前缀签名 4 tick 落盘、read_replay_prefix 混部门（当前接受/异版拒绝，无混部 fleet runner 故以此面为界）；6 新测全绿且双跑 ledger 逐字段全等；覆盖 187/187=100%；cargo test -p server-runtime 1699 lib+集成全绿；fmt/clippy 干净（仅既有 blowfish 未用依赖告警）；证据页 docs/review/opt-05-01-03-lifecycle-rerun.md）
+  - 本席 lane-only 交付（`fd21b51`）待主席并入；main 侧行保持开。
 
 ### OPT-06-01 登录与资源下载基线
 
@@ -7627,6 +7692,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。4c19ee7（shared_data_baseline.rs+shared_data_tuning.rs 96 变更过真实双 mgr 链(set/del 四 scope+forward/relay 环 4 BaseApp+3 CellApp)：shipped 575 消息(base284/cell219/fwd24/relay48) vs 抑制 no-op 写 444(216/174/17/37)=省 131(−22.8%)，21 次 no-op 放大为全链腿消去(全局 set=5/转发 set=9/cell=3)；终态三权威图逐位相等(same_load 钉)；跨种子形状钉；9 测 baseline 98.58%+tuning 100%）
 - [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。2fbfcf8（takeover_rerun.rs 12 实体种子舰队过真实备份面后源亡接管 restore 12/12 属性全等；16 变更建双 mgr 权威图后按 count+pairs 恢复流形状落盘、全新 mgr 对经真实 recover_shared_data_from_stream 读回=四图逐位等(2/4/2/4 条目)；跨种子形状钉；4 测 99.65% 行 100% 区域，唯一缺行=属性不匹配假臂被断言正确性排除）
 
+
 ### OPT-08-01 密集 AOI 基线
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
@@ -7636,6 +7702,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。(2026-11-26 本席 lane/bw14-script-host 5e4181c:space_parallel.rs 复用 BW-08-05-01 decide_offload/collect_offload 实面,120 实体密场按 x=16m 分裂面两侧驻扎,AoI 基线同款 ±0.75m 步表真跨面;台账 crossings=2/offloads=2(逐 crossing 恰一次,落点=p_cell_at 所含侧)/stays=118,check_ms≈0.009-0.012 probe 打印不断言;分支规则 coordinate<position 把分界平面判给右子(x/z 双轴实证,骑面者归左必迁 OffloadTo(FAR));四 Stay 门(未创建/死通道/缺通道项=死/删除挂起)+disabled cell_should_offload 全 Stay;重跑台账恒等;4 测,lib 1754 全绿;review=docs/review/opt-08-01-03-space-parallel.md)
 - [x] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。(2026-11-26 本席 lane/bw14-script-host 616a885:aoi_rerun.rs 复跑密场景两遍逐 tick 审计,TickLedger 增有序 starts/stops/enters/leaves+整份 bundle 发送序;状态正确=视距触发器布点=窗谓词 (sub-range<x≤sub+range) 双轴、可见集=扫描锥真值(update gate 读控制器公开 tick 计数,run tick 用现位置/skip tick 恒等携带集)、start/stop 差分自洽(starts 只打未见 id/stops 只打持有 id/差分复现 visible_entities)、EnterAoI/LeaveAoI 消息=触发器跨越、witness AoI 映=500m 窗、bundle 逐实体序 EnterAoI→CreateEntity→EntityUpdate 更新不先于创建;迁移腿 destination+native 双世界 16 tick 全审,seed 静默 46→46、held 重报=0、终态 visible 42/range 布点/AoI 映三层全等 native;坑=client bundle 是客户端面向 AoI 态唯一重放源,tick 0 120 条 EnterAoI=120 跨越,二次重放会重复计数——两视图须对账不能叠加;2 测,lib 1756 全绿;review=docs/review/opt-08-01-04-aoi-rerun-state.md)
 
+
 ### OPT-09-01 分别采集 MySQL 与 PostgreSQL 基线
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
@@ -7644,6 +7711,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。9dda748（pool_merge_eval.rs 同一 48 行+48 读种子负载三种执行形状过真 PG：shipped 1 连接 96 语句 48 提交 vs unpooled 96 次连接(纯多付连接 ≈4×墙钟 1.8s vs 450ms) vs merged 单事务 48 写并 1 提交+ANY 单语句读(50 语句 1 提交 ≈6×吞吐 75ms vs 450ms，fsync 类落盘 48→1)；结构计数断言=后端无关，MySQL 半=语句形状恒等且 OPT-09-01-01 同形状 store.sh 真机绿(无 Rust mysql 驱动不采样墙钟如实声明)；墙钟只打印不断言(BW-17-02-08 门)；4 跑数字留档 docs/review）
 - [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。01d391c（archive_batch_eval.rs 同一 64 行种子负载三写形过真 PG：autocommit 64 语句 64 提交 ~540ms vs 事务批 66 语句 1 提交 ~165ms(≈3.3×,落盘 64→1) vs 单条多行 INSERT(按 schema 自身列构建) 1 语句 ~4-5ms(≈100×)；三形 rows_ok=64 逐行相等=改的是成本不是内容；归档整合=export_backup 12 表 193 行 ~30-50ms → restore_backup 空库 ~145ms → 目标库重导出逐记录相等(restored==dump)=恢复正确性；墙钟只打印不断言；db-postgres 135 测全绿）
 - [x] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。已交付 f09727b：crates/db-postgres/tests/rerun_recovery.rs 三腿（同种子 32 行事务复跑两库 export dump 逐记录相等=复跑即复现；rollback 腿脏读可见 staged 写+staged delete 读 None、rollback 后 dump == 事务前快照且覆盖/删除行原样回归；retry_query/query_with_reconnect/run_with_retry 各吃一次脚本化首尝试失败（DbError::Retry=store.rs:48 SQLSTATE 40P01/55P03 同款、LostConnection、classify(1045) fatal）后真连库读回该行，attempt/reconnect/on_retry 计数逐项钉死+complete 恰一次+无 reconnect 时损毁面原样上浮不重发；恢复腿 restore_backup 进空库后同工作负载走 update 面复跑、export == 源 dump）。计数/等值全 assert，墙钟仅打印不 assert（125.6/87.3ms、73.1/89.4ms、restore 36.0ms）。坑：put_entity 第三参是 create 非 overwrite——复跑踩已存在行须走 update 面(false)，首稿 create=true 全腿 AlreadyExists 被面契约当场揭穿；EntityStorageImage 仅 Memory 实现(storage.rs:884-901)，retry_transaction 图像回滚属内存后端，PG 侧对应物=事务/rollback 腿。docs/review/opt-09-01-04-rerun-recovery.md。门禁 db-postgres 138 绿/fmt/clippy 净。
+
 
 ### OPT-10-01 地图加载和查询基线
 
@@ -7663,6 +7731,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。(2026-11-26 lane/bw14-script-host 5535b86：crates/client/tests/render_stream_sched_opt.rs 基线固定镜头(640×480, 64 帧)走 shipped 帧调度面 FrameLoop::run_frame（Tick→UpdateAnimations→Draw 逐帧 canonical+hooks 按相序断言，64 帧×3 端），六个排程切图帧(8/16/24/32/40/48)走 shipped load_and_bind 把参考夹具图 37 候选按扫描序分六批流进活空间；单 tracked 区跨全程=逐帧 allocs 增量+live 轨迹连续；切图报告（结构断言）：切图帧恰落在排程帧、并集=probe 全集 6 chunk、逐切图帧 allocs 954/32/32/32/32/128 严格大于全部稳帧(≤9)——分配账即切图/长帧的结构识别；内存=总 1729 allocs/峰值 1281573/终 live 1280327（流进的空间骑在设备 1228848 基线上），复跑恒等；长帧报告（probe 只印不断言）：本调试 runner 墙钟尾被 OS 抖动主导（最慢帧是稳帧 allocs=8 达 27-76ms 非切图帧），逐帧 192 行+切图行+每端 top-5 落 docs/review/opt-11-01-03-render-stream-sched-opt.md；夹具发现=第六绑 chunk 是分隔块 001x000x/sep/00110000o（标识符是路径非格胞，格胞中心解析只盖四个 hex 外块）；收尾四外块 find_chunk_from_point 各自格胞中心归位；client 门禁 876 绿）
 - [x] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。(2026-11-26 lane/bw14-script-host 96d8f67：crates/client/tests/render_visual_rerun.rs 三端复跑 OPT-11-01-01 saved 基线固定镜头（640×480, 64 帧）：钉帧 1..=8+64 摘要逐帧对上 saved 记录（首走+复走双验）；容差=复走间钉帧逐像素 differing_pixels=0 断言位级相等（确定性面容差下限=位，不设预算）——连 OPT-11-01-02 批量候选面也同满足：64 帧逐帧答 walked 摘要+钉帧批量像素 vs shipped 背板差 0；内存账复跑=saved 数字（走查区内 2 allocs/峰值 1228848，帧仍不抬高）；截图面（ScreenCopy::capture→TGA，BW-11-04-07 通道）钉帧 1/8/64 逐帧捕获=18 字节头+1228800 帧体，三端逐帧字节相等+第二遍复跑字节恒等（视觉回归产物自身复现）；OPT-11-01 簇收官——基线/上传批次/流与调度/视觉回归四面互相咬合（saved 摘要钉三行共答）；client 门禁 878 绿）
 
+
 ### OPT-12-01 各观测通道开销
 
 降低日志、Watcher、Profiler 的观测成本。验证背压、关闭观测后的开销及新旧工具查询兼容。
@@ -7670,6 +7739,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。(661e12a)
 - [x] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。(9a74213)
 - [x] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。(f4fce4f)
+
 
 ### OPT-13-01 冷构建、增量与编辑器加载
 
@@ -7679,6 +7749,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。(663dc8c)
 - [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。(`827ed8e`)
 - [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。(2026-11-26 补勾（交付 b981ae7 已在树，勾行遗漏）：crates/asset-pipeline/tests/asset_hash_format.rs 四测复跑 4/4 绿——hash64 五向量钉原版 bw_hash64.cpp FNV-1a 含 LE-integer+combine 契约（combined 0x85562B3F62384861）；SpaceConverter 真 space 两次独立转换逐字节+摘要全等（213B/3 sections，原版读者树读回 models/box.model|models/spikes.model）；DependencyList 精确哈希 4 输入 1 输出（primary 0x3A31A0D27AFBDAAB/full 0x39F4CDF311678C81）；res_packer 夹具两跑逐字节全等（177B×2）+原版 EL7 产物 bw.packed 经本包读者树读回全等（tree_equal=true）；墙钟 ASSET-FMT 只印不断言；docs/review/opt-13-01-04-asset-hash-format.md 补档）
+
 
 ### OPT-14-01 发布包尺寸及首次运行
 
@@ -7695,7 +7766,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（7081674）
   - 双交付 FLAG（2026-11-26，本席）：bw15-platform 席 Linux 腿 `56c2673`（lane/bw15-platform），main=`f6107e8` 同名文件 crates/platform/tests/io_timer_baseline.rs（9 行 512 ops 负载+自有 TSV/证据页）与本席 `7081674`（13 probe+tests/baseline 目录+pending 语法钉）物理撞名待主席择一；main 台账席 d21cc1d 已将行重开待 Windows/macOS 腿（BW-15-05-01）——本席勾保持为交付记录，行终态随主席合并裁定。
 - [x] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。(2026-11-26 lane/bw14-script-host 2f77126：crates/client/tests/render_backend_baseline.rs 按图形后端登记表采集三问——新树唯一出货像素后端=Device 下的软件光栅器（参考侧 D3D9/OpenGL/cocos2d/Awesomium 四后端是 BW-15-06-01 档事实非移植，登记表 BACKENDS 留位后端落地即插行）；设备面（结构断言）：SoftwareDevice 640×480 adapter=0 307200px RGBA8、帧序 1..=64 单设备对象、status=Ok 全程、leaked()=0；驱动面（probe 只印不断言）：软件光栅的"驱动"=执行环境（CPU 型号/逻辑核/OS/内核）文本入报告；帧时（probe 只印不断言）：固定镜头 check_device→step→present 64 帧逐帧 FRAME-TIME+FRAME-TAIL 汇总入 RENDER_BACKEND_OUT 报告（本机 p50 15.6-18.8ms/p99 24.2-25.1ms，随宿主漂移如实记录不断言）；结构契约：逐相邻帧摘要必异+帧 1..=8/64 复现 OPT-11-01-01 saved 钉（后端记录与端基线同一光栅不漂移）+帧 1/7/31/64 纯帧序号复现+复跑恒等；提交目录 tests/baseline/render-backend-baseline.tsv 十列（platform/backend/device/driver/frames/min/median/p99/max/note），linux-x86_64=measured，macos-arm64/windows-x86_64=pending 行带 BW-15-04/BW-15-03 blocker 不编数字，语法检查拒 pending 带测量/未知后端 id/重复(platform,backend)/非数字帧时/测量平台缺任一出货后端行；client 门禁 861 绿+集成全绿）
+  - main 已收（台账席，2026-11-26）：本席 `2f77126`→main `25e40c7`（cherry-pick，取本席版非 bw15 腿），本席勾保持为交付记录。
 - [x] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。(2026-11-26 lane/bw14-script-host 3761c24：crates/platform/tests/platform_opt_parity.rs——树内平台针对性优化=platform::socket 的 Linux sendmmsg/recvmmsg 批对（OPT-02-01-03 交付面），检验法=同一套协议场景跑两臂比结果：泛化臂 sendto/recvfrom 逐数据报一系统调用 vs 批臂 sendmmsg/recvmmsg 一窗口一系统调用，同一 loopback UDP 对（两臂共骑同一发送套接字，源三元组才可比）；结构断言：256 数据报逐报字节恒等+序恒等（载荷内大端序号=自身下标）+源 port/address 网络序恒等+变长 16..=1200 字节抓聚合/拆裂+批臂系统调用形状 8 send+8 recv vs 泛化臂 256+256；边沿同答：空批发 0/空收请求读 0/静默非阻塞套接字两臂同答 errno=EAGAIN（包装器露 -1+errno 的 libc 约定，mercury 调用方本就 last_os_error 处理，sendmmsg 注释"-errno"措辞与实态不符已如实登记）/8 槽收 5 排队恰回 5 槽序字节恒等/单数据报批与 sendto 同契（recvfrom 报回发送方临时 port+loopback 源址）；套件自揭两发现：drained 错误形（-1+errno 非 -errno，行为被钉）与槽宽=批容量（4 槽收 5 排队回 4 未丢不请求者留队，独立 C repro 验内核 5 槽回 5）；platform 门禁 64 lib+io_timer 1+parity 2+signal_call_sites 1 全绿）
+  - main 已收（台账席，2026-11-26）：本席 `3761c24`→main `117a588`（cherry-pick，取本席版非 bw15 腿），本席勾保持为交付记录。
 
 ### OPT-16-01 采集依赖与增量构建基线
 
@@ -7705,6 +7778,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 8c37171(asset-pipeline/tests/split_evaluation.rs+fixtures/dep-graph/split-*) 已 cherry-pick 入本树 0ddb5e0 并复跑绿，asset-pipeline 门禁 384 lib+集成含 split_evaluation 2 测全绿)
 - [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 870ad04(asset-pipeline/tests/install_path_recheck.rs+fixtures/install-recheck/) 已 cherry-pick 入本树 5e99e3a 并复跑绿——the_load_and_install_paths_stay_compatible PASS+本树连带复跑 install-layout 全 PASS+package-baseline verify 3 平台语法净)
 
+
 ### OPT-23-01 关闭及开启采集的长稳基线
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
@@ -7712,6 +7786,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。(2026-11-26 跨席复测勾：他席 main 交付 38b99db(profiler/tests/long_stability_collection.rs+fixtures/long-stability/long-stability.tsv+docs/review/opt-23-01-01-long-stability-collection.md) 已 cherry-pick 入本树 5bb641c 并复跑绿，profiler 门禁 43 lib+集成全绿)
 - [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。(2026-11-26 跨席复测勾：他席 main 交付 2a26627(profiler/tests/buffer_export_evaluation.rs+fixtures/buffer-export/+docs/review/opt-23-01-02-buffer-export.md) 已 cherry-pick 入本树 98bec50 并复跑绿)
 - [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。(2026-11-26 跨席复测勾：他席 main 交付 0ee4b28(profiler/tests/collection_integrity_regression.rs+fixtures/collection-regression/+docs/review/opt-23-01-03-collection-integrity.md) 已 cherry-pick 入本树 28c1da9 并复跑绿)
+
 
 ### OPT-26-01 固定事件回放并采集查询基线
 
@@ -7724,6 +7799,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `bf335b5`（未进 main）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
 - [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `b34554a`（lane/opt-26-db），main=`1590095`，本席 cherry-pick `7a1867c`。面：sample_report_rerun.rs 3 测=从存储语料复算样本报表对照 TSV 基线逐项等+每项优化后复算仍等；证据页；复跑 3 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `b34554a`（未进 main）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+
 
 ## 5. 实施顺序与里程碑
 
@@ -7995,6 +8071,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-13-02-04 移植 resourcechecker**。**验收** 同一坏资源得到对应诊断。**交付**（2026-11-25，8678b06 + 16eda65 已推 lane/bw15-platform）：`crates/asset-pipeline/src/resource_checker.rs` 移植 `tools/resourcechecker/visual_checker.*` 的 `VisualChecker`。**规则面**：`_bsp.` 命名直接放行且不载规则；规则自 `visual_rules.xml`（cacheRules=true 直开 / false 先 fileExists——两分支同落 openSection，合并为 `cache_rules || file_exists`）；缺规则记 `Unable to find visual_rules.xml file.`（构造期错误，check() 首行 `errors_.clear()` 与原版一致会清掉）；匹配 = 目录路径小写 find 包含 + `stable_sort`（path 长降序、filespec 长降序稳定）+ `PathMatchSpec` 可移植 glob（`*`/`?`/`[seq]`/`[!seq]`，首 `]` 字面量，`{}` 列表无用户未实现已注册）；rulesById + parent 链递归读（宏生 vector/string/int/float/bool + hardPoint 集合）；exportAs ∈ {normal, static, static with nodes} 否则 `Unknown value for exportAs [%s]\n` + 重置 normal。**检查面**：尺寸/三角数（`*indices` 子节 `IndexHeader::read` 计 `nIndices_/3`，负数 wrapping 成 u32）/层级深度（缺 node 节原版解引用空指针即 UB，移植记 0 已注册）/portal 电池（基座矩阵 row0=uAxis、row2=boundary normal、row1=normal×uAxis、平移=normal·d，点从平面空间映射回对象空间；<3 点/非平面（零法线跳过）/朝外（`d − centre·n > 0`，平面法线须指内）/snap 1/2196 容差/距离 1/1024 容差/offset 1/8192 close，printf %f 全 `{:.6}`）/重复节点名/硬点缺失与未知（HP_flash01 与 HP_flash 豁免；`len>3 && substr(0,3)=="HP_"` 照抄）/纹理名空格（renderSet→geometry→primitiveGroup→`material/textureormfm` find_last_of）。**接缝注册**：MessageBox/automatedTest 分支一律走错误记录；`PrimitiveFile::get` 先 `.processed` 后裸名；XML 内容嗅探拒绝（原版空 asBinary 强转 IndexHeader 是 UB）；`snap_vertices` 原版即死字段照抄并注册。**验收即测试**：`portals_are_forbidden_on_normal_visuals`（同一坏视觉在 rules=false 下得 `Must not have any portals`）等 15 测——好视觉全规则零错、too small/too big/三角上下限/层级/朝外/非平面/snap+距离/重复+硬点/纹理/坏 exportAs/缺文件逐项断言原版消息全文。**附带**：`datasection::read_vector3` 改走 openSection 路径行走（原版 readVector3 即 `openSection(tag)`，`boundingBox/min` 两跳；16eda65 附 `read_vector3_walks_slash_paths` 测）；门禁 asset-pipeline 177 + resources 228 测绿，clippy 仅余两既存 workspace unused-dep，fmt 清，llvm-cov resource_checker.rs 行 96.49%（crate 整体 85.60%，工具 crate 口径照旧）。**坑**：原版 portal 点存平面空间 (u,v,0) 经基座矩阵映射回对象空间，测试夹具必须给平面坐标再由 winding 定平面法线朝内（朝外即触发 facing 错误）；`BinSection::save_bytes` 输出含非 UTF-8 magic 字节，夹具写盘必须走原始字节而非 `from_utf8_lossy`（会替换 0xa1 致容器解析空）。
 - [x] **BW-13-02-05 回归 NavGen 入口**。**验收** 可调用 BW-10 的导航生成。**跨席复测勾**（main 交付为准，2026-11-26，本席）：main `79f47c4`（`crates/asset-pipeline/src/navmesh_processor.rs` 2738 行/55 测，LockedChunks 引用计数/ChunkProcessorManagerFace 锁块怪癖/NavmeshProcessor 逐 girth 顶检→flood→as_binary 追加/NavmeshCache 全端口）依赖面 `977f555`（waypoint-gen workflow.rs 914 行：readTGA/extendThroughUnboundPortals/determineEdgesAdjacentToOtherChunks/compileGirthsList/GirthWorkflow）+`d26cb55`（tga temp dir 隔离），本席 cherry-pick `3ddf7b8`+`b868516`+`b91f983`。**缝冲突自纠**（`e5670ac`）：本树 b99cb0e（lane-only，GenChunk/FloodPhysics 缝）与 main 同面（NavmeshProbe/DropPhysics 缝）物理撞名 to_vector3/determine_edges——取 main 版为准，删本树私有重复，navgen_map harness 补 NavmeshProbe/DropPhysics 适配 impl 改骑 workflow 缝，truth log `gen_navgen_map.log` 逐行复现未变（两版行为等价实证）。**复跑证**：waypoint-gen 88 测绿（含 navgen_map truth-log 对照+workflow tests）+asset-pipeline 439 lib+集成 0 failed，fmt/clippy scoped 净（blowfish workspace 预存在非代码）。b99cb0e 余下不撞名面（generate/streamline/calculate_set_membership/as_binary 等）保持开待主席与 main 侧择一。
 
+
 #### BW-13-03 WorldEditor
 
 复现地图打开/保存、Chunk/Portal/地形编辑、对象放置、选择和变换、属性编辑、撤销重做、资源浏览和空间发布，用同一地图跑编辑后往返测试。
@@ -8057,6 +8134,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-14-01-04 运行 Guard 和 Space 脚本**。**验收** 行为与基准相符。（commit 81618be）
   - 交付 `crates/server-runtime/src/script_host.rs`：Guard/Space 脚本经脚本宿主跑通引擎生命周期（81618be）。base/cell 两角色接线——四个 `BigWorld.Base` 盖章方法（`createInNewSpace`/`registerGlobally`/`destroyCellEntity`/`destroy`）、tp_init 槽构造（`Py_tp_init=60`，typeslots.h 实证）、`importEntityClass` 引用原文拒绝文本、cell 侧按名 `__init__`；重复注册路径照走 `destroyCellEntity`（get-pending 旁路，base.cpp:4038-4041），`inDestroy_` no-op 重入面，簿记/派发两段式重入契约；`PyCFunction_New` 存 `PyMethodDef` 指针故 defs 表 `Box::leak`（参照 static PY_METHOD 契约）。9 进程内测试 + 15 独立进程场景；llvm-cov 0.9.1 该文件 1240/1260 = 98.41%（子场景进程 profraw 合并计入）。补测抓到真 bug：派生检查文本 `BigWorld.` 重复限定。评审文档 `docs/review/bw14-01-04-script-host-wiring.md`。
   - **双交付 FLAG（2026-11-26）**：bw16-18 席 lane/bw16-18 `e14f900` `entity_runtime.rs` 1050 行（PyType_GenericAlloc 分配+Base 四方法 guard 链逐字+Entity/Base 只读属性+BaseRuntime trait 模型+7 场景，lcov 100% 693/693 max-merge）与本席 lane/bw14-script-host `81618be` `script_host.rs`（宿主 outbox/pending/global_bases 簿记+thread-local 三驱动+四盖章方法+tp_init 构造+import_entity_class+15 独立进程场景，98.41%）同项平行交付，**主席择一**；面重叠=Base 四方法 guard 链+构造派发，分歧=本席含 register/destroy/onGetCell/onLoseCell 出站簿记与 fixture Space bootstrap 全生命周期，彼含 Entity 只读属性+BaseRuntime trait 模型；另 main 侧 bw10-terrain 九次同步（e0f8d2b）的「行保持开」卡点注已被本席 `9e269e8` 勾行取代，合并时以勾行态为准。
+
   - 卡点（脚本宿主未接到服务角色）：Guard（cell+client 占位）与 Space（DefaultSpace bootstrap）的脚本 `scripts/cell/Guard.py`、`scripts/base/Space.py` 已随夹具跟踪（845831f）。pyscript **模块面**已合入——BW-03-03-01 模块清单/核对（b50a875）+ BW-03-03-02 数学对象/Provider + BW-03-03-03 定时器模块——但脚本宿主↔服务角色**接线**未落地：无 cell/base script app 把 `Guard.py`/`Space.py` 载入活解释器并驱动 `onCellEnter`/`onSpaceStart` 回调，该接线随 cell 运行时（BW-08）+ 服务端 script app（BW-03-03-04 资源访问后角色侧集成）落地，无宿主则本项不可运行。
 - [x] **BW-14-01-05 验证退出重登**。**验收** 读回此前角色位置及属性。（commit 70079db）
   - 卡点（持久化读写链未落地）：重登读回 Avatar 属性需 dbapp loadCharacter/getCharacter（BW-09-01-05 未勾）；登录链路已合入（同 01-02 卡点，BW-06-01-02 + BW-07-01）。读回面即夹具 db.xml 的 `<Avatar>` 段（playerName/prop1/prop2/prop3/position/direction/spaceID/databaseID）；`Avatar.def` 把 position/yaw/pitch 声明为 `<Volatile>`（运行时态、不走属性持久化），故重登比对的是 db.xml 种值而非 volatile 值。
@@ -8069,6 +8147,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **BW-14-02-01 运行 Python simple 示例**。**验收** 与新服务端完成登录。
   - 卡点复测（2026-11-26，bw14-script-host 席）：旧注「服务端登录链路未落地」**已过时**——登录链已落地并真机绿：BW-06-01-02 挑战协商（3244af7，main 祖先）+ BW-07-01 baseapp 装载/ID 分配 + BW-14-01-02/05 进程内登录链（`fantasydemo_login.rs` 5 测：既有账户走机/未知用户建档/错密码拒不碰行/新角色建档回指，`fantasydemo_logout_relogin.rs` 2 测：退出持久化重登读回，本席实测全绿）。**真余卡点两处**：①`apps/server` 仍最小入口（`main.rs` 仅 BWResource/BwConfig 初始化 + `app::run` 信号/关停面），无角色运行时把 loginapp/dbapp/baseapp 登录链接到真实 Mercury 端口（同 BW-15-02-01 卡点；BW-08-01-02 CellApp 创建与注册未勾）；②参考 simple 客户端是 **C++ 壳内嵌 Python**（`main.cpp`/`entity.cpp`/`py_server.cpp` 等，目录名「python」指 Python 脚本化实体而非纯 Python 程序），跑通它需移植该壳或等价客户端驱动，与①同属大面工程，随角色运行时落地。simple 自带 res 树实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对。
+
 - [x] **BW-14-02-02 运行原版 Android 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
   - 宿主缺口（未运行互通测试）：`docs/review/bw14-02-02-03-mobile-interop-host-gap.md`（402c28a）——参考 `examples/client_integration/c_plus_plus/android/`（JNI + `android.app.NativeActivity` + `android_native_app_glue` + `connection_model` 静态库 + `-llog -landroid -lEGL -lGLESv1_CM`，NDK `armeabi-v7a`/`APP_STL=gnustl_static`/`APP_PLATFORM=android-9`）需 Android NDK 工具链 + 真机/模拟器，本机 Linux 无 NDK/设备；即使宿主就绪，互通目标（新服务端登录）亦未落地（同 02-01 卡点）。协议结果未采集；两侧缺口均已登记。
 - [x] **BW-14-02-03 运行原版 iOS 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
@@ -9172,6 +9251,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 分配数：`6b6cc9c` 落 `crates/foundation/tests/alloc_counts.rs` + `crates/server-runtime/tests/alloc_counts.rs`——计数全局分配器 + thread-local 追踪旗标（旗标与计数全在调用线程，并发测试线程互不污染；全局计数器版首跑即暴露互踩：纯浮点夹具数出幻影分配），夹具与时序表逐形对应（`iter_batched` 出时间窗的 setup 同样出计数窗），每测断言双跑恒等故数字按工具链逐位可复现；11 行基线：add_1000_timers 1010 次/112,440 B（每计时器 ~1 次、firing pass 0 次）、process_1000_due 0/0、add_cancel_process_100 108/12,504、encode 29/26,563、decode 20/11,481、math 四面全 0/0、updatables call pass 0/0、register_deregister_100 114/12,424；`cargo test -p foundation` 228+9 绿、`-p server-runtime` 1303+2 绿、两 crate `--tests` clippy 净。
   - 加载峰值：bots 二进制（debug，main `70a4672`）在 `LOAD_CLIENTS=4` 信封下 `/usr/bin/time -v` 实测三场景 peak RSS——steady-move 3,164 KiB（bots_online 4）、login-hurricane 3,180 KiB（online_peak 4、4/4 admitted）、dense-aoi 3,148 KiB（bots 4、max_visible 3）；`ci/load.sh` 3/3 PASS 落 TSV；离线面按仿真时间跑完故此峰是生成器自身足迹，实拓扑逐期 RSS/CPU 采样（`ResourceTracker`，BW-17-03-04）在 `crates/load` 已测但尚未接进 driver 报告（归 bw17 席）。
 - [x] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。**跨席复测勾**（2026-11-26，本席）：bw19-docs 席 lane `6174b44`+勾 `f742b62`（噪声地板+交错 A/B 口径），main=`8e17603`（time_queue.rs process 循环预回调簿记+post 收尾两借窗，每点火 5-6 窗→2；tick.rs Updatables.handles 指针键 hasher 去种子探针；双二进制 10 轮交错 A/B 噪声地板 -3.4%，主张限逐 tick 派发探针、timer 腿只保借窗减半不主张提速；记录 docs/perf-baseline-2026-11-24.md OPT-01-01-02 节），本席 cherry-pick `f504370`。复跑证：foundation 232 lib+10 集成绿、server-runtime 1756 lib+集成全绿（含 tick 面），fmt/clippy scoped 净。
+
 - [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。`ebbde2b` 双面交付（main=`e478d90`）：
   - 资源缓存热路径零分配：`crates/resources/src/data_section_cache.rs` 链指针原是 `Option<String>` 路径拷贝（每次重链 2-6 次 String 分配）→ 槽位 arena（`Vec<CacheNode>` 整数双向链 + 侵入式自由链；`add` 一次性付两份 String——map key + 槽内 name 拷贝——稳态 relink 机器全零分配；section 在 entry 释放时 drop，与参照删节点同语义）。TDD 红先证旧实现逐操作计数（find 中段 6 次/36 B、尾段 5/30、purgeLRU 3/18、remove 中/尾 3/18、remove 头 2/12、head 命中/miss/原地重加 0），新实现 `crates/resources/tests/data_section_cache_alloc.rs` 全零断言 3 测绿，模块 llvm-cov 100.00%（380/380 行）；「复跑失效夹具」随 `cargo test -p resources` 222 全绿一并完成（multi_file_system 目录列举缓存失效 + data_section_cache 七测同套）。
   - BinaryStream 64 字节预留：`crates/foundation/src/stream.rs` 手写 `Default` = `Vec::with_capacity(64)`（参照 `MemoryOStream( int size = 64 )`，`lib/cstdmf/memory_stream.hpp`——参照默认构造即预留，`new()`/`from_u32_le` 同享；`from_slice` 读流包已有内存不预留）。红先证旧实现 61 字节小写 2 次分配，新实现 1 次/64 B；encode_mixed_payload 29→26 次（26,563→26,507 B）；`cargo test -p foundation` 228+10 绿（405 处 `BinaryStream::new()` 调用点无回归），clippy 净。
@@ -9186,6 +9266,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。（bw15 席 `bc1ee86`/`071bdc6`/`3e7c776`，lane/bw15-platform，main=`c733e5a`/`7dc6d12`/`3590227`：platform::socket 落 sendmmsg/recvmmsg 包装+SendScratch/RecvScratch 保留式暂存（Linux cfg）；crates/mercury/tests/batch_io.rs 三臂对照=批量/逐报/分配计数，批宽 64 收发系统调用各 63×摊派（3495→55）确定、每报摊派成本 p50 持平、稳态 0 alloc/报（现行路径 1.00/报）、回环吞吐同量级（窗深投递延迟主导，墙钟只记录不设带）；TSV docs/review/fixtures/network-baseline/batch-io.tsv，证据页 docs/review/opt-02-01-03-batch-and-copy.md；platform 64+mercury 377/7/5/1 全绿（本席 main 复测 455 绿））
 - [x] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。**跨席复测勾**（2026-11-26，本席）：bw15-platform 席 lane `fc181f5`/`19a9c42`/`29cc302`/`f438b7d`/`1b27379`，main=`261a2d0`/`25ee476`/`3675b18`/`62ea5d3`/`4b83ebb`+证据 `3fd6e3d`，本席 cherry-pick `738703d`/`dda66d9`/`fabe0a5`/`e8141cd`/`bc3fc07`/`61a534b`（+dev 边补 `message_logger` 两笔 build `4b48b81`/`c79d7be`）。面：el7_mixed_deploy.rs 五腿真机混部（`#[ignore]` 场景 EL7_MIXED_OUT 落 TSV）+四真互操作 bug 修复（machined 线格式对参考/记录头源字段宽/进程统计答全匹配面/workspace 边）。复跑证：server-runtime 1756 lib+集成全绿（mixed deploy 测试编译过、场景腿按设计 ignore 待 EL7 环境），fmt/clippy scoped 净；EL7 真机腿证据以 bw15 席 TSV 为准（docs/review/fixtures/network-baseline/el7-mixed-deploy.tsv）。
   - 登记（2026-11-26，本席）：bw15-platform 席 lane-only 交付（`fc181f5`/`19a9c42`/`29cc302`/`f438b7d`/`1b27379`，未进 main）：crates/server-runtime/tests/el7_mixed_deploy.rs 五腿真机混部（新版→原版 UDP pid/WholeMachine 查询、原版→新版 UDP logger 注册+birth/death、发现广播版本门两臂、新版→原版 TCP 注册帧化落 mldb、新版→原版 UDP 裸数据报落 mldb）+四个真互操作 bug 修复（contracts/machined.rs v51 pid u32+Listener/Signal extra 块殿后+ProcessMessage.port 网络序；message_logger 记录头 DebugMessageSource=4 字节裸枚举 38 vs 41 字节账；MachinedDaemon answer_query_all 逐匹配应答 bwmachined.cpp:1410-1452）。行保持开：本席不重做不勾，待 lane/bw15-platform 并 main 后本席 cherry-pick 跨席复测再勾。
+
 
 ### OPT-03-01 Python 桥接基线
 
@@ -9210,8 +9291,11 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
 - [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `5120dea`+`0fbfa8f`：crates/load/src/hotspot.rs run_hotspot_baseline 三窗口=allocation（fleet 经 feed_log_on_result 上线+整窗口 circle-walk，ResourceTracker 读 procfs 八次：utime/stime+VmRSS）、recovery（seeded 子集 mid-window drop，reconnect feed_logged_off(Some(true))，floor 2 tick=drop@d/relogin@d/reply@d+2 与 reconnect 同）、reclamation（drain 全 feed_logged_off(None) destroy，online 归零，采样延到尾部）；可复现面 vs 墙钟：online/recovery/drop 计划/sample schedule 固定 seed 全等断言，RSS/CPU 排除 PartialEq 仅经 resource_report_entries 落 LOAD_REPORT（带 metric def）；7 新 hotspot 测+smoke 门入 saved-kinds；覆盖 269/271=99.26%；ci/load.sh 7/7 PASS；记录 run=300/75 tick、4/4 recoveries、mean=max 2、load 最小在线占比 0.75、sampling 4.6s/8、peak RSS 3464 KiB、final 3464、reclaimed 0 KiB（小 fleet drain 回收 0=诚实值，故墙钟只记录不设带）；baseline 加 min 2.0 floor；证据页 docs/review/opt-05-01-01-load-hotspot-baseline.md）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收平行腿 `e028fbf`（cellappmgr_baseline.rs 三腿合成钟 harness 入 cellappmgr.rs）与本席 `5120dea`+`0fbfa8f`（load/src/hotspot.rs run_hotspot_baseline）同面异实现，待主席择一。
 - [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（本席 `a577c5c`：crates/server-runtime/src/balance_baseline.rs run_schedule_scenario 用真 CellAppMgr 跑固定 96 tick 双相位（热相 app0≈0.6 偏斜触发拆并、冷相全低触发 retire），每次 report 后 load_balance+meta_load_balance+tick；ScheduleLedger 记 cells_added/cells_removed/apps_retired/partitions_moved/reports；BalanceTuning 新 seam（load_smoothing_bias/estimated_initial_cell_load/safety_bound/safety_ratio/meta_load_balance_tolerance/lower_bound/limit_to_chunks，Default 全等参考常量，inform_of_load 保留旧行为、新增 inform_of_load_with 显式 bias；Space::partition_positions+BspNode::visit_partitions 供台账数线）；固定 seed 27_182_828 基线 partitions_moved=0 vs 候选 limit_to_chunks=false 移动 2 条（final loads/cells 两侧一致，差异在调度路径非分布）；5 新测（含双跑全等）；覆盖 balance_baseline.rs 171/171=100%；cargo test -p server-runtime 1693 lib+集成全绿；fmt/clippy 干净（仅既有 blowfish 未用依赖告警）；证据页 docs/review/opt-05-01-02-schedule-comparison.md）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收平行腿 `cd056fc`（cellappmgr_tuning.rs 三固定场景对比）与本席 `a577c5c`（balance_baseline.rs run_schedule_scenario）同面异实现，待主席择一。
 - [x] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。（本席 `fd21b51`：crates/server-runtime/src/lifecycle_scenario.rs run_lifecycle_scenario(seed=41) 组合真 MigrationRecovery（offload→target_lost→两通 Failed 缓冲→restore 转发→reconcile 五谓词全真）、controlled_shut_down_server+ShutdownState Request/Inform/Perform+CellAppMgr cell ack、TaskManager stop_all 排空 backup/flush-replay、ReplayDataCollector/Writer 真前缀签名 4 tick 落盘、read_replay_prefix 混部门（当前接受/异版拒绝，无混部 fleet runner 故以此面为界）；6 新测全绿且双跑 ledger 逐字段全等；覆盖 187/187=100%；cargo test -p server-runtime 1699 lib+集成全绿；fmt/clippy 干净（仅既有 blowfish 未用依赖告警）；证据页 docs/review/opt-05-01-03-lifecycle-rerun.md）
+  - 本席 lane-only 交付（`fd21b51`）待主席并入；main 侧行保持开。
 
 ### OPT-06-01 登录与资源下载基线
 
@@ -9231,6 +9315,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。4c19ee7（shared_data_baseline.rs+shared_data_tuning.rs 96 变更过真实双 mgr 链(set/del 四 scope+forward/relay 环 4 BaseApp+3 CellApp)：shipped 575 消息(base284/cell219/fwd24/relay48) vs 抑制 no-op 写 444(216/174/17/37)=省 131(−22.8%)，21 次 no-op 放大为全链腿消去(全局 set=5/转发 set=9/cell=3)；终态三权威图逐位相等(same_load 钉)；跨种子形状钉；9 测 baseline 98.58%+tuning 100%）
 - [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。2fbfcf8（takeover_rerun.rs 12 实体种子舰队过真实备份面后源亡接管 restore 12/12 属性全等；16 变更建双 mgr 权威图后按 count+pairs 恢复流形状落盘、全新 mgr 对经真实 recover_shared_data_from_stream 读回=四图逐位等(2/4/2/4 条目)；跨种子形状钉；4 测 99.65% 行 100% 区域，唯一缺行=属性不匹配假臂被断言正确性排除）
 
+
 ### OPT-08-01 密集 AOI 基线
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
@@ -9240,6 +9325,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。(2026-11-26 本席 lane/bw14-script-host 5e4181c:space_parallel.rs 复用 BW-08-05-01 decide_offload/collect_offload 实面,120 实体密场按 x=16m 分裂面两侧驻扎,AoI 基线同款 ±0.75m 步表真跨面;台账 crossings=2/offloads=2(逐 crossing 恰一次,落点=p_cell_at 所含侧)/stays=118,check_ms≈0.009-0.012 probe 打印不断言;分支规则 coordinate<position 把分界平面判给右子(x/z 双轴实证,骑面者归左必迁 OffloadTo(FAR));四 Stay 门(未创建/死通道/缺通道项=死/删除挂起)+disabled cell_should_offload 全 Stay;重跑台账恒等;4 测,lib 1754 全绿;review=docs/review/opt-08-01-03-space-parallel.md)
 - [x] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。(2026-11-26 本席 lane/bw14-script-host 616a885:aoi_rerun.rs 复跑密场景两遍逐 tick 审计,TickLedger 增有序 starts/stops/enters/leaves+整份 bundle 发送序;状态正确=视距触发器布点=窗谓词 (sub-range<x≤sub+range) 双轴、可见集=扫描锥真值(update gate 读控制器公开 tick 计数,run tick 用现位置/skip tick 恒等携带集)、start/stop 差分自洽(starts 只打未见 id/stops 只打持有 id/差分复现 visible_entities)、EnterAoI/LeaveAoI 消息=触发器跨越、witness AoI 映=500m 窗、bundle 逐实体序 EnterAoI→CreateEntity→EntityUpdate 更新不先于创建;迁移腿 destination+native 双世界 16 tick 全审,seed 静默 46→46、held 重报=0、终态 visible 42/range 布点/AoI 映三层全等 native;坑=client bundle 是客户端面向 AoI 态唯一重放源,tick 0 120 条 EnterAoI=120 跨越,二次重放会重复计数——两视图须对账不能叠加;2 测,lib 1756 全绿;review=docs/review/opt-08-01-04-aoi-rerun-state.md)
 
+
 ### OPT-09-01 分别采集 MySQL 与 PostgreSQL 基线
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
@@ -9248,6 +9334,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。9dda748（pool_merge_eval.rs 同一 48 行+48 读种子负载三种执行形状过真 PG：shipped 1 连接 96 语句 48 提交 vs unpooled 96 次连接(纯多付连接 ≈4×墙钟 1.8s vs 450ms) vs merged 单事务 48 写并 1 提交+ANY 单语句读(50 语句 1 提交 ≈6×吞吐 75ms vs 450ms，fsync 类落盘 48→1)；结构计数断言=后端无关，MySQL 半=语句形状恒等且 OPT-09-01-01 同形状 store.sh 真机绿(无 Rust mysql 驱动不采样墙钟如实声明)；墙钟只打印不断言(BW-17-02-08 门)；4 跑数字留档 docs/review）
 - [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。01d391c（archive_batch_eval.rs 同一 64 行种子负载三写形过真 PG：autocommit 64 语句 64 提交 ~540ms vs 事务批 66 语句 1 提交 ~165ms(≈3.3×,落盘 64→1) vs 单条多行 INSERT(按 schema 自身列构建) 1 语句 ~4-5ms(≈100×)；三形 rows_ok=64 逐行相等=改的是成本不是内容；归档整合=export_backup 12 表 193 行 ~30-50ms → restore_backup 空库 ~145ms → 目标库重导出逐记录相等(restored==dump)=恢复正确性；墙钟只打印不断言；db-postgres 135 测全绿）
 - [x] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。已交付 f09727b：crates/db-postgres/tests/rerun_recovery.rs 三腿（同种子 32 行事务复跑两库 export dump 逐记录相等=复跑即复现；rollback 腿脏读可见 staged 写+staged delete 读 None、rollback 后 dump == 事务前快照且覆盖/删除行原样回归；retry_query/query_with_reconnect/run_with_retry 各吃一次脚本化首尝试失败（DbError::Retry=store.rs:48 SQLSTATE 40P01/55P03 同款、LostConnection、classify(1045) fatal）后真连库读回该行，attempt/reconnect/on_retry 计数逐项钉死+complete 恰一次+无 reconnect 时损毁面原样上浮不重发；恢复腿 restore_backup 进空库后同工作负载走 update 面复跑、export == 源 dump）。计数/等值全 assert，墙钟仅打印不 assert（125.6/87.3ms、73.1/89.4ms、restore 36.0ms）。坑：put_entity 第三参是 create 非 overwrite——复跑踩已存在行须走 update 面(false)，首稿 create=true 全腿 AlreadyExists 被面契约当场揭穿；EntityStorageImage 仅 Memory 实现(storage.rs:884-901)，retry_transaction 图像回滚属内存后端，PG 侧对应物=事务/rollback 腿。docs/review/opt-09-01-04-rerun-recovery.md。门禁 db-postgres 138 绿/fmt/clippy 净。
+
 
 ### OPT-10-01 地图加载和查询基线
 
@@ -9267,6 +9354,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。(2026-11-26 lane/bw14-script-host 5535b86：crates/client/tests/render_stream_sched_opt.rs 基线固定镜头(640×480, 64 帧)走 shipped 帧调度面 FrameLoop::run_frame（Tick→UpdateAnimations→Draw 逐帧 canonical+hooks 按相序断言，64 帧×3 端），六个排程切图帧(8/16/24/32/40/48)走 shipped load_and_bind 把参考夹具图 37 候选按扫描序分六批流进活空间；单 tracked 区跨全程=逐帧 allocs 增量+live 轨迹连续；切图报告（结构断言）：切图帧恰落在排程帧、并集=probe 全集 6 chunk、逐切图帧 allocs 954/32/32/32/32/128 严格大于全部稳帧(≤9)——分配账即切图/长帧的结构识别；内存=总 1729 allocs/峰值 1281573/终 live 1280327（流进的空间骑在设备 1228848 基线上），复跑恒等；长帧报告（probe 只印不断言）：本调试 runner 墙钟尾被 OS 抖动主导（最慢帧是稳帧 allocs=8 达 27-76ms 非切图帧），逐帧 192 行+切图行+每端 top-5 落 docs/review/opt-11-01-03-render-stream-sched-opt.md；夹具发现=第六绑 chunk 是分隔块 001x000x/sep/00110000o（标识符是路径非格胞，格胞中心解析只盖四个 hex 外块）；收尾四外块 find_chunk_from_point 各自格胞中心归位；client 门禁 876 绿）
 - [x] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。(2026-11-26 lane/bw14-script-host 96d8f67：crates/client/tests/render_visual_rerun.rs 三端复跑 OPT-11-01-01 saved 基线固定镜头（640×480, 64 帧）：钉帧 1..=8+64 摘要逐帧对上 saved 记录（首走+复走双验）；容差=复走间钉帧逐像素 differing_pixels=0 断言位级相等（确定性面容差下限=位，不设预算）——连 OPT-11-01-02 批量候选面也同满足：64 帧逐帧答 walked 摘要+钉帧批量像素 vs shipped 背板差 0；内存账复跑=saved 数字（走查区内 2 allocs/峰值 1228848，帧仍不抬高）；截图面（ScreenCopy::capture→TGA，BW-11-04-07 通道）钉帧 1/8/64 逐帧捕获=18 字节头+1228800 帧体，三端逐帧字节相等+第二遍复跑字节恒等（视觉回归产物自身复现）；OPT-11-01 簇收官——基线/上传批次/流与调度/视觉回归四面互相咬合（saved 摘要钉三行共答）；client 门禁 878 绿）
 
+
 ### OPT-12-01 各观测通道开销
 
 降低日志、Watcher、Profiler 的观测成本。验证背压、关闭观测后的开销及新旧工具查询兼容。
@@ -9274,6 +9362,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。(661e12a)
 - [x] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。(9a74213)
 - [x] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。(f4fce4f)
+
 
 ### OPT-13-01 冷构建、增量与编辑器加载
 
@@ -9283,6 +9372,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。(663dc8c)
 - [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。(`827ed8e`)
 - [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。(2026-11-26 补勾（交付 b981ae7 已在树，勾行遗漏）：crates/asset-pipeline/tests/asset_hash_format.rs 四测复跑 4/4 绿——hash64 五向量钉原版 bw_hash64.cpp FNV-1a 含 LE-integer+combine 契约（combined 0x85562B3F62384861）；SpaceConverter 真 space 两次独立转换逐字节+摘要全等（213B/3 sections，原版读者树读回 models/box.model|models/spikes.model）；DependencyList 精确哈希 4 输入 1 输出（primary 0x3A31A0D27AFBDAAB/full 0x39F4CDF311678C81）；res_packer 夹具两跑逐字节全等（177B×2）+原版 EL7 产物 bw.packed 经本包读者树读回全等（tree_equal=true）；墙钟 ASSET-FMT 只印不断言；docs/review/opt-13-01-04-asset-hash-format.md 补档）
+
 
 ### OPT-14-01 发布包尺寸及首次运行
 
@@ -9299,7 +9389,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（7081674）
   - 双交付 FLAG（2026-11-26，本席）：bw15-platform 席 Linux 腿 `56c2673`（lane/bw15-platform），main=`f6107e8` 同名文件 crates/platform/tests/io_timer_baseline.rs（9 行 512 ops 负载+自有 TSV/证据页）与本席 `7081674`（13 probe+tests/baseline 目录+pending 语法钉）物理撞名待主席择一；main 台账席 d21cc1d 已将行重开待 Windows/macOS 腿（BW-15-05-01）——本席勾保持为交付记录，行终态随主席合并裁定。
 - [x] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。(2026-11-26 lane/bw14-script-host 2f77126：crates/client/tests/render_backend_baseline.rs 按图形后端登记表采集三问——新树唯一出货像素后端=Device 下的软件光栅器（参考侧 D3D9/OpenGL/cocos2d/Awesomium 四后端是 BW-15-06-01 档事实非移植，登记表 BACKENDS 留位后端落地即插行）；设备面（结构断言）：SoftwareDevice 640×480 adapter=0 307200px RGBA8、帧序 1..=64 单设备对象、status=Ok 全程、leaked()=0；驱动面（probe 只印不断言）：软件光栅的"驱动"=执行环境（CPU 型号/逻辑核/OS/内核）文本入报告；帧时（probe 只印不断言）：固定镜头 check_device→step→present 64 帧逐帧 FRAME-TIME+FRAME-TAIL 汇总入 RENDER_BACKEND_OUT 报告（本机 p50 15.6-18.8ms/p99 24.2-25.1ms，随宿主漂移如实记录不断言）；结构契约：逐相邻帧摘要必异+帧 1..=8/64 复现 OPT-11-01-01 saved 钉（后端记录与端基线同一光栅不漂移）+帧 1/7/31/64 纯帧序号复现+复跑恒等；提交目录 tests/baseline/render-backend-baseline.tsv 十列（platform/backend/device/driver/frames/min/median/p99/max/note），linux-x86_64=measured，macos-arm64/windows-x86_64=pending 行带 BW-15-04/BW-15-03 blocker 不编数字，语法检查拒 pending 带测量/未知后端 id/重复(platform,backend)/非数字帧时/测量平台缺任一出货后端行；client 门禁 861 绿+集成全绿）
+  - main 已收（台账席，2026-11-26）：本席 `2f77126`→main `25e40c7`（cherry-pick，取本席版非 bw15 腿），本席勾保持为交付记录。
 - [x] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。(2026-11-26 lane/bw14-script-host 3761c24：crates/platform/tests/platform_opt_parity.rs——树内平台针对性优化=platform::socket 的 Linux sendmmsg/recvmmsg 批对（OPT-02-01-03 交付面），检验法=同一套协议场景跑两臂比结果：泛化臂 sendto/recvfrom 逐数据报一系统调用 vs 批臂 sendmmsg/recvmmsg 一窗口一系统调用，同一 loopback UDP 对（两臂共骑同一发送套接字，源三元组才可比）；结构断言：256 数据报逐报字节恒等+序恒等（载荷内大端序号=自身下标）+源 port/address 网络序恒等+变长 16..=1200 字节抓聚合/拆裂+批臂系统调用形状 8 send+8 recv vs 泛化臂 256+256；边沿同答：空批发 0/空收请求读 0/静默非阻塞套接字两臂同答 errno=EAGAIN（包装器露 -1+errno 的 libc 约定，mercury 调用方本就 last_os_error 处理，sendmmsg 注释"-errno"措辞与实态不符已如实登记）/8 槽收 5 排队恰回 5 槽序字节恒等/单数据报批与 sendto 同契（recvfrom 报回发送方临时 port+loopback 源址）；套件自揭两发现：drained 错误形（-1+errno 非 -errno，行为被钉）与槽宽=批容量（4 槽收 5 排队回 4 未丢不请求者留队，独立 C repro 验内核 5 槽回 5）；platform 门禁 64 lib+io_timer 1+parity 2+signal_call_sites 1 全绿）
+  - main 已收（台账席，2026-11-26）：本席 `3761c24`→main `117a588`（cherry-pick，取本席版非 bw15 腿），本席勾保持为交付记录。
 
 ### OPT-16-01 采集依赖与增量构建基线
 
@@ -9309,6 +9401,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 8c37171(asset-pipeline/tests/split_evaluation.rs+fixtures/dep-graph/split-*) 已 cherry-pick 入本树 0ddb5e0 并复跑绿，asset-pipeline 门禁 384 lib+集成含 split_evaluation 2 测全绿)
 - [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 870ad04(asset-pipeline/tests/install_path_recheck.rs+fixtures/install-recheck/) 已 cherry-pick 入本树 5e99e3a 并复跑绿——the_load_and_install_paths_stay_compatible PASS+本树连带复跑 install-layout 全 PASS+package-baseline verify 3 平台语法净)
 
+
 ### OPT-23-01 关闭及开启采集的长稳基线
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
@@ -9316,6 +9409,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。(2026-11-26 跨席复测勾：他席 main 交付 38b99db(profiler/tests/long_stability_collection.rs+fixtures/long-stability/long-stability.tsv+docs/review/opt-23-01-01-long-stability-collection.md) 已 cherry-pick 入本树 5bb641c 并复跑绿，profiler 门禁 43 lib+集成全绿)
 - [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。(2026-11-26 跨席复测勾：他席 main 交付 2a26627(profiler/tests/buffer_export_evaluation.rs+fixtures/buffer-export/+docs/review/opt-23-01-02-buffer-export.md) 已 cherry-pick 入本树 98bec50 并复跑绿)
 - [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。(2026-11-26 跨席复测勾：他席 main 交付 0ee4b28(profiler/tests/collection_integrity_regression.rs+fixtures/collection-regression/+docs/review/opt-23-01-03-collection-integrity.md) 已 cherry-pick 入本树 28c1da9 并复跑绿)
+
 
 ### OPT-26-01 固定事件回放并采集查询基线
 
@@ -9328,6 +9422,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `bf335b5`（未进 main）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
 - [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `b34554a`（lane/opt-26-db），main=`1590095`，本席 cherry-pick `7a1867c`。面：sample_report_rerun.rs 3 测=从存储语料复算样本报表对照 TSV 基线逐项等+每项优化后复算仍等；证据页；复跑 3 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `b34554a`（未进 main）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+
 
 ## 5. 实施顺序与里程碑
 
@@ -9560,6 +9655,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-13-02-04 移植 resourcechecker**。**验收** 同一坏资源得到对应诊断。**交付**（2026-11-25，8678b06 + 16eda65 已推 lane/bw15-platform）：`crates/asset-pipeline/src/resource_checker.rs` 移植 `tools/resourcechecker/visual_checker.*` 的 `VisualChecker`。**规则面**：`_bsp.` 命名直接放行且不载规则；规则自 `visual_rules.xml`（cacheRules=true 直开 / false 先 fileExists——两分支同落 openSection，合并为 `cache_rules || file_exists`）；缺规则记 `Unable to find visual_rules.xml file.`（构造期错误，check() 首行 `errors_.clear()` 与原版一致会清掉）；匹配 = 目录路径小写 find 包含 + `stable_sort`（path 长降序、filespec 长降序稳定）+ `PathMatchSpec` 可移植 glob（`*`/`?`/`[seq]`/`[!seq]`，首 `]` 字面量，`{}` 列表无用户未实现已注册）；rulesById + parent 链递归读（宏生 vector/string/int/float/bool + hardPoint 集合）；exportAs ∈ {normal, static, static with nodes} 否则 `Unknown value for exportAs [%s]\n` + 重置 normal。**检查面**：尺寸/三角数（`*indices` 子节 `IndexHeader::read` 计 `nIndices_/3`，负数 wrapping 成 u32）/层级深度（缺 node 节原版解引用空指针即 UB，移植记 0 已注册）/portal 电池（基座矩阵 row0=uAxis、row2=boundary normal、row1=normal×uAxis、平移=normal·d，点从平面空间映射回对象空间；<3 点/非平面（零法线跳过）/朝外（`d − centre·n > 0`，平面法线须指内）/snap 1/2196 容差/距离 1/1024 容差/offset 1/8192 close，printf %f 全 `{:.6}`）/重复节点名/硬点缺失与未知（HP_flash01 与 HP_flash 豁免；`len>3 && substr(0,3)=="HP_"` 照抄）/纹理名空格（renderSet→geometry→primitiveGroup→`material/textureormfm` find_last_of）。**接缝注册**：MessageBox/automatedTest 分支一律走错误记录；`PrimitiveFile::get` 先 `.processed` 后裸名；XML 内容嗅探拒绝（原版空 asBinary 强转 IndexHeader 是 UB）；`snap_vertices` 原版即死字段照抄并注册。**验收即测试**：`portals_are_forbidden_on_normal_visuals`（同一坏视觉在 rules=false 下得 `Must not have any portals`）等 15 测——好视觉全规则零错、too small/too big/三角上下限/层级/朝外/非平面/snap+距离/重复+硬点/纹理/坏 exportAs/缺文件逐项断言原版消息全文。**附带**：`datasection::read_vector3` 改走 openSection 路径行走（原版 readVector3 即 `openSection(tag)`，`boundingBox/min` 两跳；16eda65 附 `read_vector3_walks_slash_paths` 测）；门禁 asset-pipeline 177 + resources 228 测绿，clippy 仅余两既存 workspace unused-dep，fmt 清，llvm-cov resource_checker.rs 行 96.49%（crate 整体 85.60%，工具 crate 口径照旧）。**坑**：原版 portal 点存平面空间 (u,v,0) 经基座矩阵映射回对象空间，测试夹具必须给平面坐标再由 winding 定平面法线朝内（朝外即触发 facing 错误）；`BinSection::save_bytes` 输出含非 UTF-8 magic 字节，夹具写盘必须走原始字节而非 `from_utf8_lossy`（会替换 0xa1 致容器解析空）。
 - [x] **BW-13-02-05 回归 NavGen 入口**。**验收** 可调用 BW-10 的导航生成。**跨席复测勾**（main 交付为准，2026-11-26，本席）：main `79f47c4`（`crates/asset-pipeline/src/navmesh_processor.rs` 2738 行/55 测，LockedChunks 引用计数/ChunkProcessorManagerFace 锁块怪癖/NavmeshProcessor 逐 girth 顶检→flood→as_binary 追加/NavmeshCache 全端口）依赖面 `977f555`（waypoint-gen workflow.rs 914 行：readTGA/extendThroughUnboundPortals/determineEdgesAdjacentToOtherChunks/compileGirthsList/GirthWorkflow）+`d26cb55`（tga temp dir 隔离），本席 cherry-pick `3ddf7b8`+`b868516`+`b91f983`。**缝冲突自纠**（`e5670ac`）：本树 b99cb0e（lane-only，GenChunk/FloodPhysics 缝）与 main 同面（NavmeshProbe/DropPhysics 缝）物理撞名 to_vector3/determine_edges——取 main 版为准，删本树私有重复，navgen_map harness 补 NavmeshProbe/DropPhysics 适配 impl 改骑 workflow 缝，truth log `gen_navgen_map.log` 逐行复现未变（两版行为等价实证）。**复跑证**：waypoint-gen 88 测绿（含 navgen_map truth-log 对照+workflow tests）+asset-pipeline 439 lib+集成 0 failed，fmt/clippy scoped 净（blowfish workspace 预存在非代码）。b99cb0e 余下不撞名面（generate/streamline/calculate_set_membership/as_binary 等）保持开待主席与 main 侧择一。
 
+
 #### BW-13-03 WorldEditor
 
 复现地图打开/保存、Chunk/Portal/地形编辑、对象放置、选择和变换、属性编辑、撤销重做、资源浏览和空间发布，用同一地图跑编辑后往返测试。
@@ -9622,6 +9718,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-14-01-04 运行 Guard 和 Space 脚本**。**验收** 行为与基准相符。（commit 81618be）
   - 交付 `crates/server-runtime/src/script_host.rs`：Guard/Space 脚本经脚本宿主跑通引擎生命周期（81618be）。base/cell 两角色接线——四个 `BigWorld.Base` 盖章方法（`createInNewSpace`/`registerGlobally`/`destroyCellEntity`/`destroy`）、tp_init 槽构造（`Py_tp_init=60`，typeslots.h 实证）、`importEntityClass` 引用原文拒绝文本、cell 侧按名 `__init__`；重复注册路径照走 `destroyCellEntity`（get-pending 旁路，base.cpp:4038-4041），`inDestroy_` no-op 重入面，簿记/派发两段式重入契约；`PyCFunction_New` 存 `PyMethodDef` 指针故 defs 表 `Box::leak`（参照 static PY_METHOD 契约）。9 进程内测试 + 15 独立进程场景；llvm-cov 0.9.1 该文件 1240/1260 = 98.41%（子场景进程 profraw 合并计入）。补测抓到真 bug：派生检查文本 `BigWorld.` 重复限定。评审文档 `docs/review/bw14-01-04-script-host-wiring.md`。
   - **双交付 FLAG（2026-11-26）**：bw16-18 席 lane/bw16-18 `e14f900` `entity_runtime.rs` 1050 行（PyType_GenericAlloc 分配+Base 四方法 guard 链逐字+Entity/Base 只读属性+BaseRuntime trait 模型+7 场景，lcov 100% 693/693 max-merge）与本席 lane/bw14-script-host `81618be` `script_host.rs`（宿主 outbox/pending/global_bases 簿记+thread-local 三驱动+四盖章方法+tp_init 构造+import_entity_class+15 独立进程场景，98.41%）同项平行交付，**主席择一**；面重叠=Base 四方法 guard 链+构造派发，分歧=本席含 register/destroy/onGetCell/onLoseCell 出站簿记与 fixture Space bootstrap 全生命周期，彼含 Entity 只读属性+BaseRuntime trait 模型；另 main 侧 bw10-terrain 九次同步（e0f8d2b）的「行保持开」卡点注已被本席 `9e269e8` 勾行取代，合并时以勾行态为准。
+
   - 卡点（脚本宿主未接到服务角色）：Guard（cell+client 占位）与 Space（DefaultSpace bootstrap）的脚本 `scripts/cell/Guard.py`、`scripts/base/Space.py` 已随夹具跟踪（845831f）。pyscript **模块面**已合入——BW-03-03-01 模块清单/核对（b50a875）+ BW-03-03-02 数学对象/Provider + BW-03-03-03 定时器模块——但脚本宿主↔服务角色**接线**未落地：无 cell/base script app 把 `Guard.py`/`Space.py` 载入活解释器并驱动 `onCellEnter`/`onSpaceStart` 回调，该接线随 cell 运行时（BW-08）+ 服务端 script app（BW-03-03-04 资源访问后角色侧集成）落地，无宿主则本项不可运行。
 - [x] **BW-14-01-05 验证退出重登**。**验收** 读回此前角色位置及属性。（commit 70079db）
   - 卡点（持久化读写链未落地）：重登读回 Avatar 属性需 dbapp loadCharacter/getCharacter（BW-09-01-05 未勾）；登录链路已合入（同 01-02 卡点，BW-06-01-02 + BW-07-01）。读回面即夹具 db.xml 的 `<Avatar>` 段（playerName/prop1/prop2/prop3/position/direction/spaceID/databaseID）；`Avatar.def` 把 position/yaw/pitch 声明为 `<Volatile>`（运行时态、不走属性持久化），故重登比对的是 db.xml 种值而非 volatile 值。
@@ -9634,6 +9731,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **BW-14-02-01 运行 Python simple 示例**。**验收** 与新服务端完成登录。
   - 卡点复测（2026-11-26，bw14-script-host 席）：旧注「服务端登录链路未落地」**已过时**——登录链已落地并真机绿：BW-06-01-02 挑战协商（3244af7，main 祖先）+ BW-07-01 baseapp 装载/ID 分配 + BW-14-01-02/05 进程内登录链（`fantasydemo_login.rs` 5 测：既有账户走机/未知用户建档/错密码拒不碰行/新角色建档回指，`fantasydemo_logout_relogin.rs` 2 测：退出持久化重登读回，本席实测全绿）。**真余卡点两处**：①`apps/server` 仍最小入口（`main.rs` 仅 BWResource/BwConfig 初始化 + `app::run` 信号/关停面），无角色运行时把 loginapp/dbapp/baseapp 登录链接到真实 Mercury 端口（同 BW-15-02-01 卡点；BW-08-01-02 CellApp 创建与注册未勾）；②参考 simple 客户端是 **C++ 壳内嵌 Python**（`main.cpp`/`entity.cpp`/`py_server.cpp` 等，目录名「python」指 Python 脚本化实体而非纯 Python 程序），跑通它需移植该壳或等价客户端驱动，与①同属大面工程，随角色运行时落地。simple 自带 res 树实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对。
+
 - [x] **BW-14-02-02 运行原版 Android 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
   - 宿主缺口（未运行互通测试）：`docs/review/bw14-02-02-03-mobile-interop-host-gap.md`（402c28a）——参考 `examples/client_integration/c_plus_plus/android/`（JNI + `android.app.NativeActivity` + `android_native_app_glue` + `connection_model` 静态库 + `-llog -landroid -lEGL -lGLESv1_CM`，NDK `armeabi-v7a`/`APP_STL=gnustl_static`/`APP_PLATFORM=android-9`）需 Android NDK 工具链 + 真机/模拟器，本机 Linux 无 NDK/设备；即使宿主就绪，互通目标（新服务端登录）亦未落地（同 02-01 卡点）。协议结果未采集；两侧缺口均已登记。
 - [x] **BW-14-02-03 运行原版 iOS 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
@@ -10737,6 +10835,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 分配数：`6b6cc9c` 落 `crates/foundation/tests/alloc_counts.rs` + `crates/server-runtime/tests/alloc_counts.rs`——计数全局分配器 + thread-local 追踪旗标（旗标与计数全在调用线程，并发测试线程互不污染；全局计数器版首跑即暴露互踩：纯浮点夹具数出幻影分配），夹具与时序表逐形对应（`iter_batched` 出时间窗的 setup 同样出计数窗），每测断言双跑恒等故数字按工具链逐位可复现；11 行基线：add_1000_timers 1010 次/112,440 B（每计时器 ~1 次、firing pass 0 次）、process_1000_due 0/0、add_cancel_process_100 108/12,504、encode 29/26,563、decode 20/11,481、math 四面全 0/0、updatables call pass 0/0、register_deregister_100 114/12,424；`cargo test -p foundation` 228+9 绿、`-p server-runtime` 1303+2 绿、两 crate `--tests` clippy 净。
   - 加载峰值：bots 二进制（debug，main `70a4672`）在 `LOAD_CLIENTS=4` 信封下 `/usr/bin/time -v` 实测三场景 peak RSS——steady-move 3,164 KiB（bots_online 4）、login-hurricane 3,180 KiB（online_peak 4、4/4 admitted）、dense-aoi 3,148 KiB（bots 4、max_visible 3）；`ci/load.sh` 3/3 PASS 落 TSV；离线面按仿真时间跑完故此峰是生成器自身足迹，实拓扑逐期 RSS/CPU 采样（`ResourceTracker`，BW-17-03-04）在 `crates/load` 已测但尚未接进 driver 报告（归 bw17 席）。
 - [x] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。**跨席复测勾**（2026-11-26，本席）：bw19-docs 席 lane `6174b44`+勾 `f742b62`（噪声地板+交错 A/B 口径），main=`8e17603`（time_queue.rs process 循环预回调簿记+post 收尾两借窗，每点火 5-6 窗→2；tick.rs Updatables.handles 指针键 hasher 去种子探针；双二进制 10 轮交错 A/B 噪声地板 -3.4%，主张限逐 tick 派发探针、timer 腿只保借窗减半不主张提速；记录 docs/perf-baseline-2026-11-24.md OPT-01-01-02 节），本席 cherry-pick `f504370`。复跑证：foundation 232 lib+10 集成绿、server-runtime 1756 lib+集成全绿（含 tick 面），fmt/clippy scoped 净。
+
 - [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。`ebbde2b` 双面交付（main=`e478d90`）：
   - 资源缓存热路径零分配：`crates/resources/src/data_section_cache.rs` 链指针原是 `Option<String>` 路径拷贝（每次重链 2-6 次 String 分配）→ 槽位 arena（`Vec<CacheNode>` 整数双向链 + 侵入式自由链；`add` 一次性付两份 String——map key + 槽内 name 拷贝——稳态 relink 机器全零分配；section 在 entry 释放时 drop，与参照删节点同语义）。TDD 红先证旧实现逐操作计数（find 中段 6 次/36 B、尾段 5/30、purgeLRU 3/18、remove 中/尾 3/18、remove 头 2/12、head 命中/miss/原地重加 0），新实现 `crates/resources/tests/data_section_cache_alloc.rs` 全零断言 3 测绿，模块 llvm-cov 100.00%（380/380 行）；「复跑失效夹具」随 `cargo test -p resources` 222 全绿一并完成（multi_file_system 目录列举缓存失效 + data_section_cache 七测同套）。
   - BinaryStream 64 字节预留：`crates/foundation/src/stream.rs` 手写 `Default` = `Vec::with_capacity(64)`（参照 `MemoryOStream( int size = 64 )`，`lib/cstdmf/memory_stream.hpp`——参照默认构造即预留，`new()`/`from_u32_le` 同享；`from_slice` 读流包已有内存不预留）。红先证旧实现 61 字节小写 2 次分配，新实现 1 次/64 B；encode_mixed_payload 29→26 次（26,563→26,507 B）；`cargo test -p foundation` 228+10 绿（405 处 `BinaryStream::new()` 调用点无回归），clippy 净。
@@ -10751,6 +10850,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。（bw15 席 `bc1ee86`/`071bdc6`/`3e7c776`，lane/bw15-platform，main=`c733e5a`/`7dc6d12`/`3590227`：platform::socket 落 sendmmsg/recvmmsg 包装+SendScratch/RecvScratch 保留式暂存（Linux cfg）；crates/mercury/tests/batch_io.rs 三臂对照=批量/逐报/分配计数，批宽 64 收发系统调用各 63×摊派（3495→55）确定、每报摊派成本 p50 持平、稳态 0 alloc/报（现行路径 1.00/报）、回环吞吐同量级（窗深投递延迟主导，墙钟只记录不设带）；TSV docs/review/fixtures/network-baseline/batch-io.tsv，证据页 docs/review/opt-02-01-03-batch-and-copy.md；platform 64+mercury 377/7/5/1 全绿（本席 main 复测 455 绿））
 - [x] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。**跨席复测勾**（2026-11-26，本席）：bw15-platform 席 lane `fc181f5`/`19a9c42`/`29cc302`/`f438b7d`/`1b27379`，main=`261a2d0`/`25ee476`/`3675b18`/`62ea5d3`/`4b83ebb`+证据 `3fd6e3d`，本席 cherry-pick `738703d`/`dda66d9`/`fabe0a5`/`e8141cd`/`bc3fc07`/`61a534b`（+dev 边补 `message_logger` 两笔 build `4b48b81`/`c79d7be`）。面：el7_mixed_deploy.rs 五腿真机混部（`#[ignore]` 场景 EL7_MIXED_OUT 落 TSV）+四真互操作 bug 修复（machined 线格式对参考/记录头源字段宽/进程统计答全匹配面/workspace 边）。复跑证：server-runtime 1756 lib+集成全绿（mixed deploy 测试编译过、场景腿按设计 ignore 待 EL7 环境），fmt/clippy scoped 净；EL7 真机腿证据以 bw15 席 TSV 为准（docs/review/fixtures/network-baseline/el7-mixed-deploy.tsv）。
   - 登记（2026-11-26，本席）：bw15-platform 席 lane-only 交付（`fc181f5`/`19a9c42`/`29cc302`/`f438b7d`/`1b27379`，未进 main）：crates/server-runtime/tests/el7_mixed_deploy.rs 五腿真机混部（新版→原版 UDP pid/WholeMachine 查询、原版→新版 UDP logger 注册+birth/death、发现广播版本门两臂、新版→原版 TCP 注册帧化落 mldb、新版→原版 UDP 裸数据报落 mldb）+四个真互操作 bug 修复（contracts/machined.rs v51 pid u32+Listener/Signal extra 块殿后+ProcessMessage.port 网络序；message_logger 记录头 DebugMessageSource=4 字节裸枚举 38 vs 41 字节账；MachinedDaemon answer_query_all 逐匹配应答 bwmachined.cpp:1410-1452）。行保持开：本席不重做不勾，待 lane/bw15-platform 并 main 后本席 cherry-pick 跨席复测再勾。
+
 
 ### OPT-03-01 Python 桥接基线
 
@@ -10775,8 +10875,11 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
 - [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `5120dea`+`0fbfa8f`：crates/load/src/hotspot.rs run_hotspot_baseline 三窗口=allocation（fleet 经 feed_log_on_result 上线+整窗口 circle-walk，ResourceTracker 读 procfs 八次：utime/stime+VmRSS）、recovery（seeded 子集 mid-window drop，reconnect feed_logged_off(Some(true))，floor 2 tick=drop@d/relogin@d/reply@d+2 与 reconnect 同）、reclamation（drain 全 feed_logged_off(None) destroy，online 归零，采样延到尾部）；可复现面 vs 墙钟：online/recovery/drop 计划/sample schedule 固定 seed 全等断言，RSS/CPU 排除 PartialEq 仅经 resource_report_entries 落 LOAD_REPORT（带 metric def）；7 新 hotspot 测+smoke 门入 saved-kinds；覆盖 269/271=99.26%；ci/load.sh 7/7 PASS；记录 run=300/75 tick、4/4 recoveries、mean=max 2、load 最小在线占比 0.75、sampling 4.6s/8、peak RSS 3464 KiB、final 3464、reclaimed 0 KiB（小 fleet drain 回收 0=诚实值，故墙钟只记录不设带）；baseline 加 min 2.0 floor；证据页 docs/review/opt-05-01-01-load-hotspot-baseline.md）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收平行腿 `e028fbf`（cellappmgr_baseline.rs 三腿合成钟 harness 入 cellappmgr.rs）与本席 `5120dea`+`0fbfa8f`（load/src/hotspot.rs run_hotspot_baseline）同面异实现，待主席择一。
 - [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（本席 `a577c5c`：crates/server-runtime/src/balance_baseline.rs run_schedule_scenario 用真 CellAppMgr 跑固定 96 tick 双相位（热相 app0≈0.6 偏斜触发拆并、冷相全低触发 retire），每次 report 后 load_balance+meta_load_balance+tick；ScheduleLedger 记 cells_added/cells_removed/apps_retired/partitions_moved/reports；BalanceTuning 新 seam（load_smoothing_bias/estimated_initial_cell_load/safety_bound/safety_ratio/meta_load_balance_tolerance/lower_bound/limit_to_chunks，Default 全等参考常量，inform_of_load 保留旧行为、新增 inform_of_load_with 显式 bias；Space::partition_positions+BspNode::visit_partitions 供台账数线）；固定 seed 27_182_828 基线 partitions_moved=0 vs 候选 limit_to_chunks=false 移动 2 条（final loads/cells 两侧一致，差异在调度路径非分布）；5 新测（含双跑全等）；覆盖 balance_baseline.rs 171/171=100%；cargo test -p server-runtime 1693 lib+集成全绿；fmt/clippy 干净（仅既有 blowfish 未用依赖告警）；证据页 docs/review/opt-05-01-02-schedule-comparison.md）
+  - 双交付 FLAG（2026-11-26，本席登记）：main 另收平行腿 `cd056fc`（cellappmgr_tuning.rs 三固定场景对比）与本席 `a577c5c`（balance_baseline.rs run_schedule_scenario）同面异实现，待主席择一。
 - [x] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。（本席 `fd21b51`：crates/server-runtime/src/lifecycle_scenario.rs run_lifecycle_scenario(seed=41) 组合真 MigrationRecovery（offload→target_lost→两通 Failed 缓冲→restore 转发→reconcile 五谓词全真）、controlled_shut_down_server+ShutdownState Request/Inform/Perform+CellAppMgr cell ack、TaskManager stop_all 排空 backup/flush-replay、ReplayDataCollector/Writer 真前缀签名 4 tick 落盘、read_replay_prefix 混部门（当前接受/异版拒绝，无混部 fleet runner 故以此面为界）；6 新测全绿且双跑 ledger 逐字段全等；覆盖 187/187=100%；cargo test -p server-runtime 1699 lib+集成全绿；fmt/clippy 干净（仅既有 blowfish 未用依赖告警）；证据页 docs/review/opt-05-01-03-lifecycle-rerun.md）
+  - 本席 lane-only 交付（`fd21b51`）待主席并入；main 侧行保持开。
 
 ### OPT-06-01 登录与资源下载基线
 
@@ -10796,6 +10899,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。4c19ee7（shared_data_baseline.rs+shared_data_tuning.rs 96 变更过真实双 mgr 链(set/del 四 scope+forward/relay 环 4 BaseApp+3 CellApp)：shipped 575 消息(base284/cell219/fwd24/relay48) vs 抑制 no-op 写 444(216/174/17/37)=省 131(−22.8%)，21 次 no-op 放大为全链腿消去(全局 set=5/转发 set=9/cell=3)；终态三权威图逐位相等(same_load 钉)；跨种子形状钉；9 测 baseline 98.58%+tuning 100%）
 - [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。2fbfcf8（takeover_rerun.rs 12 实体种子舰队过真实备份面后源亡接管 restore 12/12 属性全等；16 变更建双 mgr 权威图后按 count+pairs 恢复流形状落盘、全新 mgr 对经真实 recover_shared_data_from_stream 读回=四图逐位等(2/4/2/4 条目)；跨种子形状钉；4 测 99.65% 行 100% 区域，唯一缺行=属性不匹配假臂被断言正确性排除）
 
+
 ### OPT-08-01 密集 AOI 基线
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
@@ -10805,6 +10909,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。(2026-11-26 本席 lane/bw14-script-host 5e4181c:space_parallel.rs 复用 BW-08-05-01 decide_offload/collect_offload 实面,120 实体密场按 x=16m 分裂面两侧驻扎,AoI 基线同款 ±0.75m 步表真跨面;台账 crossings=2/offloads=2(逐 crossing 恰一次,落点=p_cell_at 所含侧)/stays=118,check_ms≈0.009-0.012 probe 打印不断言;分支规则 coordinate<position 把分界平面判给右子(x/z 双轴实证,骑面者归左必迁 OffloadTo(FAR));四 Stay 门(未创建/死通道/缺通道项=死/删除挂起)+disabled cell_should_offload 全 Stay;重跑台账恒等;4 测,lib 1754 全绿;review=docs/review/opt-08-01-03-space-parallel.md)
 - [x] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。(2026-11-26 本席 lane/bw14-script-host 616a885:aoi_rerun.rs 复跑密场景两遍逐 tick 审计,TickLedger 增有序 starts/stops/enters/leaves+整份 bundle 发送序;状态正确=视距触发器布点=窗谓词 (sub-range<x≤sub+range) 双轴、可见集=扫描锥真值(update gate 读控制器公开 tick 计数,run tick 用现位置/skip tick 恒等携带集)、start/stop 差分自洽(starts 只打未见 id/stops 只打持有 id/差分复现 visible_entities)、EnterAoI/LeaveAoI 消息=触发器跨越、witness AoI 映=500m 窗、bundle 逐实体序 EnterAoI→CreateEntity→EntityUpdate 更新不先于创建;迁移腿 destination+native 双世界 16 tick 全审,seed 静默 46→46、held 重报=0、终态 visible 42/range 布点/AoI 映三层全等 native;坑=client bundle 是客户端面向 AoI 态唯一重放源,tick 0 120 条 EnterAoI=120 跨越,二次重放会重复计数——两视图须对账不能叠加;2 测,lib 1756 全绿;review=docs/review/opt-08-01-04-aoi-rerun-state.md)
 
+
 ### OPT-09-01 分别采集 MySQL 与 PostgreSQL 基线
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
@@ -10813,6 +10918,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。9dda748（pool_merge_eval.rs 同一 48 行+48 读种子负载三种执行形状过真 PG：shipped 1 连接 96 语句 48 提交 vs unpooled 96 次连接(纯多付连接 ≈4×墙钟 1.8s vs 450ms) vs merged 单事务 48 写并 1 提交+ANY 单语句读(50 语句 1 提交 ≈6×吞吐 75ms vs 450ms，fsync 类落盘 48→1)；结构计数断言=后端无关，MySQL 半=语句形状恒等且 OPT-09-01-01 同形状 store.sh 真机绿(无 Rust mysql 驱动不采样墙钟如实声明)；墙钟只打印不断言(BW-17-02-08 门)；4 跑数字留档 docs/review）
 - [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。01d391c（archive_batch_eval.rs 同一 64 行种子负载三写形过真 PG：autocommit 64 语句 64 提交 ~540ms vs 事务批 66 语句 1 提交 ~165ms(≈3.3×,落盘 64→1) vs 单条多行 INSERT(按 schema 自身列构建) 1 语句 ~4-5ms(≈100×)；三形 rows_ok=64 逐行相等=改的是成本不是内容；归档整合=export_backup 12 表 193 行 ~30-50ms → restore_backup 空库 ~145ms → 目标库重导出逐记录相等(restored==dump)=恢复正确性；墙钟只打印不断言；db-postgres 135 测全绿）
 - [x] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。已交付 f09727b：crates/db-postgres/tests/rerun_recovery.rs 三腿（同种子 32 行事务复跑两库 export dump 逐记录相等=复跑即复现；rollback 腿脏读可见 staged 写+staged delete 读 None、rollback 后 dump == 事务前快照且覆盖/删除行原样回归；retry_query/query_with_reconnect/run_with_retry 各吃一次脚本化首尝试失败（DbError::Retry=store.rs:48 SQLSTATE 40P01/55P03 同款、LostConnection、classify(1045) fatal）后真连库读回该行，attempt/reconnect/on_retry 计数逐项钉死+complete 恰一次+无 reconnect 时损毁面原样上浮不重发；恢复腿 restore_backup 进空库后同工作负载走 update 面复跑、export == 源 dump）。计数/等值全 assert，墙钟仅打印不 assert（125.6/87.3ms、73.1/89.4ms、restore 36.0ms）。坑：put_entity 第三参是 create 非 overwrite——复跑踩已存在行须走 update 面(false)，首稿 create=true 全腿 AlreadyExists 被面契约当场揭穿；EntityStorageImage 仅 Memory 实现(storage.rs:884-901)，retry_transaction 图像回滚属内存后端，PG 侧对应物=事务/rollback 腿。docs/review/opt-09-01-04-rerun-recovery.md。门禁 db-postgres 138 绿/fmt/clippy 净。
+
 
 ### OPT-10-01 地图加载和查询基线
 
@@ -10832,6 +10938,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。(2026-11-26 lane/bw14-script-host 5535b86：crates/client/tests/render_stream_sched_opt.rs 基线固定镜头(640×480, 64 帧)走 shipped 帧调度面 FrameLoop::run_frame（Tick→UpdateAnimations→Draw 逐帧 canonical+hooks 按相序断言，64 帧×3 端），六个排程切图帧(8/16/24/32/40/48)走 shipped load_and_bind 把参考夹具图 37 候选按扫描序分六批流进活空间；单 tracked 区跨全程=逐帧 allocs 增量+live 轨迹连续；切图报告（结构断言）：切图帧恰落在排程帧、并集=probe 全集 6 chunk、逐切图帧 allocs 954/32/32/32/32/128 严格大于全部稳帧(≤9)——分配账即切图/长帧的结构识别；内存=总 1729 allocs/峰值 1281573/终 live 1280327（流进的空间骑在设备 1228848 基线上），复跑恒等；长帧报告（probe 只印不断言）：本调试 runner 墙钟尾被 OS 抖动主导（最慢帧是稳帧 allocs=8 达 27-76ms 非切图帧），逐帧 192 行+切图行+每端 top-5 落 docs/review/opt-11-01-03-render-stream-sched-opt.md；夹具发现=第六绑 chunk 是分隔块 001x000x/sep/00110000o（标识符是路径非格胞，格胞中心解析只盖四个 hex 外块）；收尾四外块 find_chunk_from_point 各自格胞中心归位；client 门禁 876 绿）
 - [x] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。(2026-11-26 lane/bw14-script-host 96d8f67：crates/client/tests/render_visual_rerun.rs 三端复跑 OPT-11-01-01 saved 基线固定镜头（640×480, 64 帧）：钉帧 1..=8+64 摘要逐帧对上 saved 记录（首走+复走双验）；容差=复走间钉帧逐像素 differing_pixels=0 断言位级相等（确定性面容差下限=位，不设预算）——连 OPT-11-01-02 批量候选面也同满足：64 帧逐帧答 walked 摘要+钉帧批量像素 vs shipped 背板差 0；内存账复跑=saved 数字（走查区内 2 allocs/峰值 1228848，帧仍不抬高）；截图面（ScreenCopy::capture→TGA，BW-11-04-07 通道）钉帧 1/8/64 逐帧捕获=18 字节头+1228800 帧体，三端逐帧字节相等+第二遍复跑字节恒等（视觉回归产物自身复现）；OPT-11-01 簇收官——基线/上传批次/流与调度/视觉回归四面互相咬合（saved 摘要钉三行共答）；client 门禁 878 绿）
 
+
 ### OPT-12-01 各观测通道开销
 
 降低日志、Watcher、Profiler 的观测成本。验证背压、关闭观测后的开销及新旧工具查询兼容。
@@ -10839,6 +10946,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。(661e12a)
 - [x] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。(9a74213)
 - [x] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。(f4fce4f)
+
 
 ### OPT-13-01 冷构建、增量与编辑器加载
 
@@ -10848,6 +10956,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。(663dc8c)
 - [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。(`827ed8e`)
 - [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。(2026-11-26 补勾（交付 b981ae7 已在树，勾行遗漏）：crates/asset-pipeline/tests/asset_hash_format.rs 四测复跑 4/4 绿——hash64 五向量钉原版 bw_hash64.cpp FNV-1a 含 LE-integer+combine 契约（combined 0x85562B3F62384861）；SpaceConverter 真 space 两次独立转换逐字节+摘要全等（213B/3 sections，原版读者树读回 models/box.model|models/spikes.model）；DependencyList 精确哈希 4 输入 1 输出（primary 0x3A31A0D27AFBDAAB/full 0x39F4CDF311678C81）；res_packer 夹具两跑逐字节全等（177B×2）+原版 EL7 产物 bw.packed 经本包读者树读回全等（tree_equal=true）；墙钟 ASSET-FMT 只印不断言；docs/review/opt-13-01-04-asset-hash-format.md 补档）
+
 
 ### OPT-14-01 发布包尺寸及首次运行
 
@@ -10864,7 +10973,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（7081674）
   - 双交付 FLAG（2026-11-26，本席）：bw15-platform 席 Linux 腿 `56c2673`（lane/bw15-platform），main=`f6107e8` 同名文件 crates/platform/tests/io_timer_baseline.rs（9 行 512 ops 负载+自有 TSV/证据页）与本席 `7081674`（13 probe+tests/baseline 目录+pending 语法钉）物理撞名待主席择一；main 台账席 d21cc1d 已将行重开待 Windows/macOS 腿（BW-15-05-01）——本席勾保持为交付记录，行终态随主席合并裁定。
 - [x] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。(2026-11-26 lane/bw14-script-host 2f77126：crates/client/tests/render_backend_baseline.rs 按图形后端登记表采集三问——新树唯一出货像素后端=Device 下的软件光栅器（参考侧 D3D9/OpenGL/cocos2d/Awesomium 四后端是 BW-15-06-01 档事实非移植，登记表 BACKENDS 留位后端落地即插行）；设备面（结构断言）：SoftwareDevice 640×480 adapter=0 307200px RGBA8、帧序 1..=64 单设备对象、status=Ok 全程、leaked()=0；驱动面（probe 只印不断言）：软件光栅的"驱动"=执行环境（CPU 型号/逻辑核/OS/内核）文本入报告；帧时（probe 只印不断言）：固定镜头 check_device→step→present 64 帧逐帧 FRAME-TIME+FRAME-TAIL 汇总入 RENDER_BACKEND_OUT 报告（本机 p50 15.6-18.8ms/p99 24.2-25.1ms，随宿主漂移如实记录不断言）；结构契约：逐相邻帧摘要必异+帧 1..=8/64 复现 OPT-11-01-01 saved 钉（后端记录与端基线同一光栅不漂移）+帧 1/7/31/64 纯帧序号复现+复跑恒等；提交目录 tests/baseline/render-backend-baseline.tsv 十列（platform/backend/device/driver/frames/min/median/p99/max/note），linux-x86_64=measured，macos-arm64/windows-x86_64=pending 行带 BW-15-04/BW-15-03 blocker 不编数字，语法检查拒 pending 带测量/未知后端 id/重复(platform,backend)/非数字帧时/测量平台缺任一出货后端行；client 门禁 861 绿+集成全绿）
+  - main 已收（台账席，2026-11-26）：本席 `2f77126`→main `25e40c7`（cherry-pick，取本席版非 bw15 腿），本席勾保持为交付记录。
 - [x] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。(2026-11-26 lane/bw14-script-host 3761c24：crates/platform/tests/platform_opt_parity.rs——树内平台针对性优化=platform::socket 的 Linux sendmmsg/recvmmsg 批对（OPT-02-01-03 交付面），检验法=同一套协议场景跑两臂比结果：泛化臂 sendto/recvfrom 逐数据报一系统调用 vs 批臂 sendmmsg/recvmmsg 一窗口一系统调用，同一 loopback UDP 对（两臂共骑同一发送套接字，源三元组才可比）；结构断言：256 数据报逐报字节恒等+序恒等（载荷内大端序号=自身下标）+源 port/address 网络序恒等+变长 16..=1200 字节抓聚合/拆裂+批臂系统调用形状 8 send+8 recv vs 泛化臂 256+256；边沿同答：空批发 0/空收请求读 0/静默非阻塞套接字两臂同答 errno=EAGAIN（包装器露 -1+errno 的 libc 约定，mercury 调用方本就 last_os_error 处理，sendmmsg 注释"-errno"措辞与实态不符已如实登记）/8 槽收 5 排队恰回 5 槽序字节恒等/单数据报批与 sendto 同契（recvfrom 报回发送方临时 port+loopback 源址）；套件自揭两发现：drained 错误形（-1+errno 非 -errno，行为被钉）与槽宽=批容量（4 槽收 5 排队回 4 未丢不请求者留队，独立 C repro 验内核 5 槽回 5）；platform 门禁 64 lib+io_timer 1+parity 2+signal_call_sites 1 全绿）
+  - main 已收（台账席，2026-11-26）：本席 `3761c24`→main `117a588`（cherry-pick，取本席版非 bw15 腿），本席勾保持为交付记录。
 
 ### OPT-16-01 采集依赖与增量构建基线
 
@@ -10874,6 +10985,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 8c37171(asset-pipeline/tests/split_evaluation.rs+fixtures/dep-graph/split-*) 已 cherry-pick 入本树 0ddb5e0 并复跑绿，asset-pipeline 门禁 384 lib+集成含 split_evaluation 2 测全绿)
 - [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。(2026-11-26 跨席复测勾：bw16-18 席 main 交付 870ad04(asset-pipeline/tests/install_path_recheck.rs+fixtures/install-recheck/) 已 cherry-pick 入本树 5e99e3a 并复跑绿——the_load_and_install_paths_stay_compatible PASS+本树连带复跑 install-layout 全 PASS+package-baseline verify 3 平台语法净)
 
+
 ### OPT-23-01 关闭及开启采集的长稳基线
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
@@ -10881,6 +10993,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。(2026-11-26 跨席复测勾：他席 main 交付 38b99db(profiler/tests/long_stability_collection.rs+fixtures/long-stability/long-stability.tsv+docs/review/opt-23-01-01-long-stability-collection.md) 已 cherry-pick 入本树 5bb641c 并复跑绿，profiler 门禁 43 lib+集成全绿)
 - [x] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。(2026-11-26 跨席复测勾：他席 main 交付 2a26627(profiler/tests/buffer_export_evaluation.rs+fixtures/buffer-export/+docs/review/opt-23-01-02-buffer-export.md) 已 cherry-pick 入本树 98bec50 并复跑绿)
 - [x] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。(2026-11-26 跨席复测勾：他席 main 交付 0ee4b28(profiler/tests/collection_integrity_regression.rs+fixtures/collection-regression/+docs/review/opt-23-01-03-collection-integrity.md) 已 cherry-pick 入本树 28c1da9 并复跑绿)
+
 
 ### OPT-26-01 固定事件回放并采集查询基线
 
@@ -10893,6 +11006,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `bf335b5`（未进 main）：查询聚合评估（name 索引 ~4700×）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
 - [x] **OPT-26-01-04 复算样本报表**。**验收** 窗口及计数与优化前一致。。**跨席复测勾**（2026-11-26，本席）：opt-26-db 席 lane `b34554a`（lane/opt-26-db），main=`1590095`，本席 cherry-pick `7a1867c`。面：sample_report_rerun.rs 3 测=从存储语料复算样本报表对照 TSV 基线逐项等+每项优化后复算仍等；证据页；复跑 3 绿；db-postgres 25 套全绿 fmt/clippy scoped 净。登记行随此勾关闭。
   - 登记（2026-11-26，本席）：lane/opt-26-db 席 lane-only 交付 `b34554a`（未进 main）：样本报表复跑对比（三腿九键全等）；本簇按 lane 名归该席（01-01..01-04 已全勾其 lane tip `668894a`），行保持开本席不接，待其并 main 后跨席复测。
+
 
 ## 5. 实施顺序与里程碑
 

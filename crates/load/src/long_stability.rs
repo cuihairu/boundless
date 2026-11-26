@@ -290,6 +290,6 @@ mod tests {
     fn a_refused_admission_shrinks_the_fleet() {
         let scenario = scenario(4, Duration::from_secs(60), 173205);
         let ledger = run_long_stability(&scenario, FD_PER_BOT, scenario.fixed_seed);
-        assert_eq!(ledger.online.iter().all(|&n| n == 1), true);
+        assert!(ledger.online.iter().all(|&n| n == 1));
     }
 }

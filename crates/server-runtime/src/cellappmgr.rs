@@ -22,7 +22,7 @@ use foundation::stream::{BinaryStream, StreamError};
 use crate::cluster_shutdown::{CellAppMgrShutDown, ShutDownAction};
 use crate::shared_data::{
     CellAppSharedDataOutcome, SHARED_DATA_TYPE_BASE_APP, SHARED_DATA_TYPE_CELL_APP,
-    SHARED_DATA_TYPE_GLOBAL, SharedDataMessage, read_shared_section,
+    SHARED_DATA_TYPE_GLOBAL, SharedDataMessage, SharedDataSync, read_shared_section,
 };
 use crate::shutdown::ShutDownStage;
 
@@ -215,6 +215,14 @@ impl Range1d {
         self.max - self.min
     }
 }
+
+#[cfg(test)]
+#[path = "cellappmgr_baseline.rs"]
+mod cellappmgr_baseline;
+
+#[cfg(test)]
+#[path = "cellappmgr_tuning.rs"]
+mod cellappmgr_tuning;
 
 /// A rectangle in the `x`/`y` plane, the coordinate system `BW::Rect` uses
 /// for a space's cell partitioning.
@@ -2716,6 +2724,10 @@ pub enum AddAppOutcome {
         timeout_period: f32,
         /// `initData.isReady`.
         is_ready: bool,
+        /// The join fill (`CellAppMgr::addApp`, `cellappmgr.cpp:1351-1377`):
+        /// every authoritative shared-data entry, cell data first, one
+        /// `setSharedData` message per entry.
+        shared_data: Vec<SharedDataMessage>,
     },
 }
 
@@ -2824,11 +2836,28 @@ impl CellAppMgr {
         app.last_heard_ms = now_ms;
         self.apps.add(app);
         self.pending_apps.push(addr);
+        // The join fill (`CellAppMgr::addApp`, `cellappmgr.cpp:1351-1377`):
+        // the new app's bundle carries every authoritative entry, cell
+        // data first, one `setSharedData` message per entry.
+        let shared_data = self.join_sync().expand();
         AddAppOutcome::Accepted {
             id,
             timeout_period: CELL_APP_TIMEOUT,
             is_ready: self.has_started,
+            shared_data,
         }
+    }
+
+    /// The batched join-sync of the authoritative maps (cell data first,
+    /// then global data): the optimization form of the per-entry fill,
+    /// one message instead of one per entry.
+    pub fn join_sync(&self) -> SharedDataSync {
+        SharedDataSync::from_maps(
+            SHARED_DATA_TYPE_CELL_APP,
+            &self.shared_cell_app_data,
+            SHARED_DATA_TYPE_GLOBAL,
+            &self.shared_global_data,
+        )
     }
 
     /// `CellAppMgr::delApp`.
@@ -4217,6 +4246,37 @@ mod tests {
 
         let out = mgr.set_shared_data(SHARED_DATA_TYPE_GLOBAL, "g", "v", (0, 0));
         assert_eq!(out.base_app_mgr, None);
+    }
+
+    /// A newly accepted CellApp's fill carries every authoritative entry,
+    /// cell data first (`cellappmgr.cpp:1351-1377`), and is exactly the
+    /// batched join-sync's expansion.
+    #[test]
+    fn a_joined_cell_app_receives_the_authoritative_entries() {
+        let mut mgr = mgr_with(vec![((0x7f000001, 3000), 0.5)]);
+        mgr.set_shared_data(SHARED_DATA_TYPE_CELL_APP, "c", "x", (0, 0));
+        mgr.set_shared_data(SHARED_DATA_TYPE_GLOBAL, "g", "v", (0, 0));
+
+        let out = mgr.add_app((0x7f000002, 3001), 5000, 1000);
+        let AddAppOutcome::Accepted { shared_data, .. } = out else {
+            panic!("the fixture app joins");
+        };
+        assert_eq!(shared_data, mgr.join_sync().expand());
+        assert_eq!(shared_data.len(), 2);
+        assert!(
+            matches!(
+                &shared_data[0],
+                SharedDataMessage::Set { data_type: SHARED_DATA_TYPE_CELL_APP, key, .. } if key == "c"
+            ),
+            "cell data streams first"
+        );
+        assert!(
+            matches!(
+                &shared_data[1],
+                SharedDataMessage::Set { data_type: SHARED_DATA_TYPE_GLOBAL, key, .. } if key == "g"
+            ),
+            "global data follows"
+        );
     }
 
     /// The delete path mirrors the set path on the CellAppMgr side.

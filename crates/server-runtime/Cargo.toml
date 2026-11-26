@@ -62,6 +62,11 @@ criterion = "0.8"
 # (BW-07-05-02/03: what the writer produces must parse back losslessly).
 client = { workspace = true }
 
+# OPT-12-01-01: the observation channels' cost baseline drives the Watcher
+# registry, the MessageLogger entry writer and the profiler global from
+# outside their own crates (test-only edges).
+watcher = { workspace = true }
+profiler = { workspace = true }
 # The mixed-version rerun (OPT-02-01-04) builds the register/record
 # envelopes with the logger protocol codecs and speaks them to the
 # reference EL7 `message_logger` over UDP and TCP (workspace edge since
