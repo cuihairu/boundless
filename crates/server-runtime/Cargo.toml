@@ -11,6 +11,7 @@ repository.workspace = true
 foundation = { workspace = true }
 libc = { workspace = true }
 contracts = { workspace = true }
+flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
 platform = { workspace = true }
 # dbapp storage startup (BW-09-06-01): a downward edge into the domain layer.
 db = { workspace = true }

@@ -287,9 +287,27 @@ pub(super) unsafe fn coerce_float(object: *mut capi::PyObject, var_name: &str) -
     }
     if unsafe { capi::py_long_check(object) } {
         // The reference does not check the overflow error here
-        // (`script.cpp:1820-1825`): a value past `long` reads as `-1`.
+        // (`script.cpp:1820-1825`): a value past `long` reads as `-1`,
+        // its `OverflowError` left pending — a stale indicator the
+        // reference survives because it arms its trace callback inside
+        // the profiling binaries alone, while this host installs
+        // `_bw_profile` at init and no callback return can hide a
+        // pending error from the armed monitoring shim (reproduced
+        // against CPython 3.14). The value keeps the reference's `-1`
+        // read; only the error this read itself raised is dropped, and
+        // an error raised before the call — a sibling `coerce_float` in
+        // the same parse, say `setPitchYaw('x', 1)` — is stashed across
+        // it and handed back, the way the reference's parse stacks its
+        // pending errors.
         // SAFETY: the check above guarantees an int object.
+        let prior = unsafe { capi::PyErr_GetRaisedException() };
         let value = unsafe { capi::PyLong_AsLong(object) };
+        unsafe { capi::clear_error() };
+        if !prior.is_null() {
+            // SAFETY: the stashed exception is owned and moves back to
+            // the interpreter.
+            unsafe { capi::PyErr_SetRaisedException(prior) };
+        }
         return Some(value as f64);
     }
     raise_type_error(&format!("{var_name} must be set to a float"));

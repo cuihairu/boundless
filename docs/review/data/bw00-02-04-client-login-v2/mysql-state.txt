@@ -1,0 +1,22 @@
+# bigworld DB after the login drive (2026-11-24, MariaDB 127.0.0.1:3306)
+Tables_in_bigworld
+bigworldEntityDefsChecksum
+bigworldEntityTypes
+bigworldGameTime
+bigworldInfo
+bigworldLogOnMapping
+bigworldLogOns
+bigworldNewID
+bigworldSecondaryDatabases
+bigworldSpaceData
+bigworldSpaces
+bigworldUsedIDs
+tbl_Account
+tbl_ClientAvatar
+tbl_ClientAvatar_prop5_dictValue
+tbl_Guard
+tbl_Space
+clientavatar_rows
+0
+account_rows
+0

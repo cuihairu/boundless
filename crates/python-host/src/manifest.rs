@@ -989,6 +989,121 @@ static BW_CONFIG_ITEMS: &[Item] = &[
     ),
 ];
 
+/// The `_bw_profile` tool module (BW-12-03-02, BW-12-03-03): the
+/// start/stop surface and the JSON dump face.
+static BW_PROFILE_ITEMS: &[Item] = &[
+    item(
+        "__onThreadStart",
+        Kind::Function,
+        Scope::Both,
+        Status::Ported,
+        "threadName: str",
+        "None",
+        "TypeError from the auto argument parse",
+        "server/tools/bw_profile/bw_profile.cpp:123-137",
+    ),
+    item(
+        "__onThreadEnd",
+        Kind::Function,
+        Scope::Both,
+        Status::Ported,
+        "no arguments",
+        "None",
+        "",
+        "server/tools/bw_profile/bw_profile.cpp:139-146",
+    ),
+    item(
+        "enable",
+        Kind::Function,
+        Scope::Both,
+        Status::Ported,
+        "flag: int",
+        "None",
+        "TypeError from the auto argument parse",
+        "server/tools/bw_profile/bw_profile.cpp:148-162",
+    ),
+    item(
+        "isEnabled",
+        Kind::Function,
+        Scope::Both,
+        Status::Ported,
+        "no arguments",
+        "int (1 or 0)",
+        "",
+        "server/tools/bw_profile/bw_profile.cpp:163-170",
+    ),
+    item(
+        "tick",
+        Kind::Function,
+        Scope::Both,
+        Status::Ported,
+        "no arguments",
+        "None",
+        "",
+        "server/tools/bw_profile/bw_profile.cpp:171-177",
+    ),
+    item(
+        "startJsonDump",
+        Kind::Function,
+        Scope::Both,
+        Status::Ported,
+        "no arguments",
+        "None",
+        "",
+        "server/tools/bw_profile/bw_profile.cpp:179-186",
+    ),
+    item(
+        "setJsonDumpCount",
+        Kind::Function,
+        Scope::Both,
+        Status::Ported,
+        "count: int",
+        "None",
+        "TypeError from the auto argument parse",
+        "server/tools/bw_profile/bw_profile.cpp:187-201",
+    ),
+    item(
+        "setJsonDumpDir",
+        Kind::Function,
+        Scope::Both,
+        Status::Ported,
+        "dir: str",
+        "None",
+        "IOError \"setJsonDumpDir: Unable to write to JSON dump directory: <dir>: <errno>.\"",
+        "server/tools/bw_profile/bw_profile.cpp:202-236",
+    ),
+    item(
+        "getJsonDumpState",
+        Kind::Function,
+        Scope::Both,
+        Status::Ported,
+        "no arguments",
+        "int (the JsonDumpState value)",
+        "",
+        "server/tools/bw_profile/bw_profile.cpp:237-242",
+    ),
+    item(
+        "getJsonDumpStateValue",
+        Kind::Function,
+        Scope::Both,
+        Status::Ported,
+        "state: str",
+        "int (the JsonDumpState value)",
+        "RuntimeError \"getJsonDumpStateValue: Invalid dump state value <state>\"",
+        "server/tools/bw_profile/bw_profile.cpp:259-301",
+    ),
+    item(
+        "getJsonOutputFilePath",
+        Kind::Function,
+        Scope::Both,
+        Status::Ported,
+        "no arguments",
+        "str",
+        "",
+        "server/tools/bw_profile/bw_profile.cpp:303-308",
+    ),
+];
+
 /// The full inventory. Module rows with no `items` are name-and-scope records:
 /// their surface is either out of this lane's scope (rendering and tool
 /// stacks) or supplied by the project, and rows record that in `note`.
@@ -1055,6 +1170,25 @@ static ENTRIES: &[Entry] = &[
                pickle module for dumps (:132) and a restricted loads \
                (:141-145) (lib/pyscript/pickler.cpp:126)",
         items: &[],
+    },
+    Entry {
+        module: "_bw_profile",
+        scope: Scope::Both,
+        status: Status::Ported,
+        reference: "server/tools/bw_profile/bw_profile.cpp:322-342 (PyInit), \
+                    :76-121 (profileFunc)",
+        note: "the reference builds the extension module into its \
+               profiling binaries and scripts import it, so the module \
+               scope is every role the port's one host runs; the port \
+               registers it in sys.modules at interpreter init (after the \
+               init-time snapshot, so it stays a script's find) and the \
+               install performs the import-time work: the fixed 128MB \
+               profiler budget (:329-331), the `profiler/enabled` watcher \
+               (`lib/cstdmf/profiler.cpp:896-899`) and the trace callback \
+               armed (:340-342). BW-12-03-02 delivered the start/stop \
+               surface; the JSON dump rows land with BW-12-03-03 and stay \
+               pending",
+        items: BW_PROFILE_ITEMS,
     },
     Entry {
         module: "__main__",
@@ -1702,8 +1836,9 @@ mod tests {
     /// BW-03-03-03 delivered -- the client pair gated to the client role,
     /// the server trio gated to the server roles -- and the ungated
     /// `fetchURL` BW-03-03-05 delivered, plus the Math module with every
-    /// factory name; the Windows-only matrix animation is the one row
-    /// still pending.
+    /// factory name, and the `_bw_profile` start/stop surface BW-12-03-02
+    /// delivered with its JSON dump face BW-12-03-03 delivered too; the
+    /// Windows-only matrix animation is the one other row still pending.
     #[test]
     fn only_the_delivered_surface_is_marked_ported() {
         let ported_modules: Vec<_> = entries()
@@ -1711,7 +1846,7 @@ mod tests {
             .filter(|entry| entry.status == Status::Ported)
             .map(|entry| entry.module)
             .collect();
-        assert_eq!(ported_modules, vec!["BigWorld", "Math"]);
+        assert_eq!(ported_modules, vec!["BigWorld", "Math", "_bw_profile"]);
         let ported_items: Vec<_> = find("BigWorld")
             .unwrap()
             .items
@@ -1771,6 +1906,36 @@ mod tests {
             .map(|item| item.name)
             .collect();
         assert_eq!(pending_math, vec!["MatrixAnimation"]);
+        let bw_profile = find("_bw_profile").expect("_bw_profile");
+        let ported_profile: Vec<_> = bw_profile
+            .items
+            .iter()
+            .filter(|item| item.status == Status::Ported)
+            .map(|item| item.name)
+            .collect();
+        assert_eq!(
+            ported_profile,
+            vec![
+                "__onThreadStart",
+                "__onThreadEnd",
+                "enable",
+                "isEnabled",
+                "tick",
+                "startJsonDump",
+                "setJsonDumpCount",
+                "setJsonDumpDir",
+                "getJsonDumpState",
+                "getJsonDumpStateValue",
+                "getJsonOutputFilePath",
+            ]
+        );
+        let pending_profile: Vec<_> = bw_profile
+            .items
+            .iter()
+            .filter(|item| item.status == Status::Pending)
+            .map(|item| item.name)
+            .collect();
+        assert_eq!(pending_profile, Vec::<&str>::new());
     }
 
     /// Rendering a row spells the scope and the status the way the

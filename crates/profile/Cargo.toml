@@ -1,0 +1,15 @@
+[package]
+name = "profile"
+description = "BW-12-03 profiler frames and counters compatibility layer (lib/cstdmf/profile)"
+edition.workspace = true
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+foundation.workspace = true
+# The JSON dump file names compose through `localtime`
+# (`profiler.cpp:1305-1315`, BW-12-03-03).
+libc.workspace = true
+watcher = { path = "../watcher" }

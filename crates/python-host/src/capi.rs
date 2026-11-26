@@ -217,6 +217,18 @@ pub unsafe fn refcount(obj: *mut PyObject) -> isize {
     unsafe { std::ptr::addr_of!((*obj).ob_refcnt).read() }
 }
 
+/// `PyCFunction_Check`, a macro in the C API (`PyObject_TypeCheck` against
+/// `&PyCFunction_Type`): the trace callback's gate on its C-call events
+/// (`bw_profile.cpp:104`).
+///
+/// SAFETY: `obj` must be a borrowed object CPython gave out, or null.
+pub unsafe fn py_cfunction_check(obj: *mut PyObject) -> bool {
+    if obj.is_null() {
+        return false;
+    }
+    unsafe { PyType_IsSubtype(Py_TYPE(obj), std::ptr::addr_of_mut!(PyCFunction_Type)) == 1 }
+}
+
 /// `PyCFunction`: a builtin function object's implementation (`ml_meth`).
 pub type PyCFunction = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject;
 
@@ -281,6 +293,35 @@ pub const METH_VARARGS: c_int = 0x0001;
 /// `METH_KEYWORDS` from `Include/methodobject.h`: the handler takes a third
 /// `kwargs` argument (see [`PyCFunctionWithKeywords`]).
 pub const METH_KEYWORDS: c_int = 0x0002;
+
+/// `METH_NOARGS` from `Include/methodobject.h`: the handler takes no
+/// arguments — CPython calls it with a null args parameter.
+pub const METH_NOARGS: c_int = 0x0004;
+
+/// `PyTrace_CALL` from `Include/cpython/pystate.h`: the trace events of the
+/// legacy profiling protocol `_bw_profile` reads (`bw_profile.cpp:76-120`).
+pub const PyTrace_CALL: c_int = 0;
+/// `PyTrace_EXCEPTION`.
+pub const PyTrace_EXCEPTION: c_int = 1;
+/// `PyTrace_LINE`.
+pub const PyTrace_LINE: c_int = 2;
+/// `PyTrace_RETURN`.
+pub const PyTrace_RETURN: c_int = 3;
+/// `PyTrace_C_CALL`.
+pub const PyTrace_C_CALL: c_int = 4;
+/// `PyTrace_C_EXCEPTION`.
+pub const PyTrace_C_EXCEPTION: c_int = 5;
+/// `PyTrace_C_RETURN`.
+pub const PyTrace_C_RETURN: c_int = 6;
+/// `PyTrace_OPCODE`.
+pub const PyTrace_OPCODE: c_int = 7;
+
+/// `Py_tracefunc` from `Include/cpython/pystate.h`: the legacy profiling
+/// callback — the object, the frame, the `PyTrace_*` action and the event's
+/// argument. The frame is opaque (`PyFrameObject`), so it rides as a plain
+/// object pointer.
+pub type PyTraceFunc =
+    unsafe extern "C" fn(*mut PyObject, *mut PyObject, c_int, *mut PyObject) -> c_int;
 
 /// `Py_file_input` from `Include/pythonrun.h`: `PyRun_String` parses the
 /// source as a statement block.
@@ -503,6 +544,7 @@ unsafe extern "C" {
     pub static mut Py_IgnoreEnvironmentFlag: c_int;
     pub static mut PyModule_Type: PyTypeObject;
     pub static mut PyTraceBack_Type: PyTypeObject;
+    pub static mut PyCFunction_Type: PyTypeObject;
     pub static mut PyFloat_Type: PyTypeObject;
     pub static mut PyLong_Type: PyTypeObject;
     pub static mut PyTuple_Type: PyTypeObject;
@@ -521,6 +563,9 @@ unsafe extern "C" {
     pub fn Py_IncRef(obj: *mut PyObject);
     pub fn PyEval_RestoreThread(tstate: *mut std::os::raw::c_void);
     pub fn PyEval_SaveThread() -> *mut std::os::raw::c_void;
+    pub fn PyEval_SetProfile(profile_func: Option<PyTraceFunc>, object: *mut PyObject);
+    pub fn PyFrame_GetCode(frame: *mut PyObject) -> *mut PyObject;
+    pub fn PyUnicode_AsUTF8(unicode: *mut PyObject) -> *const c_char;
     pub fn PyThreadState_Swap(tstate: *mut std::os::raw::c_void) -> *mut std::os::raw::c_void;
     pub fn PyRun_SimpleString(string: *const c_char) -> c_int;
     pub fn PyRun_String(
@@ -574,6 +619,8 @@ unsafe extern "C" {
         traceback: *mut *mut PyObject,
     );
     pub fn PyErr_Restore(type_: *mut PyObject, value: *mut PyObject, traceback: *mut PyObject);
+    pub fn PyErr_GetRaisedException() -> *mut PyObject;
+    pub fn PyErr_SetRaisedException(exc: *mut PyObject);
     pub fn PyUnicode_FromFormat(format: *const c_char, ...) -> *mut PyObject;
     pub fn PyErr_SetObject(exception: *mut PyObject, value: *mut PyObject) -> c_int;
     pub fn PyErr_SetString(exception: *mut PyObject, message: *const c_char);
@@ -629,6 +676,7 @@ unsafe extern "C" {
     pub static mut PyExc_AttributeError: *mut PyObject;
     pub static mut PyExc_EnvironmentError: *mut PyObject;
     pub static mut PyExc_IOError: *mut PyObject;
+    pub static mut PyExc_RuntimeError: *mut PyObject;
     pub static mut PyExc_SystemError: *mut PyObject;
     pub fn PyIndex_Check(obj: *mut PyObject) -> c_int;
     pub fn PyNumber_AsSsize_t(obj: *mut PyObject, exception: *mut PyObject) -> PySsize;

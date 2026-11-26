@@ -1,0 +1,116 @@
+WARNING: [ResMgr] The use of the BW_RES_PATH environment variable is deprecated post 1.8.1
+INFO: [ResMgr] Added res path: "/home/cui/workspaces/BigWorld/programming/bigworld/examples/client_integration/python/simple/res" (from BW_RES_PATH env variable).
+INFO: [ResMgr] Added res path: "/home/cui/workspaces/BigWorld/game/res/bigworld" (from BW_RES_PATH env variable).
+INFO: [ResMgr] Added res path: "/home/cui/workspaces/BigWorld/scripts/cluster-smoke/res" (from BW_RES_PATH env variable).
+INFO: [Config] BWConfig::init: Adding server/bw_cui.xml
+INFO: [Network] NetworkInterface::recreateListeningSocket: Querying BWMachined for interface
+WARNING: [Network] NetworkInterface::recreateListeningSocket: No address received from machined so binding to all interfaces.
+INFO: [Network] NetworkInterface::recreateListeningSocket: address 192.168.5.188:39627
+INFO: [Network] WatcherNub::init: listeningInterface = '192.168.5.188', listeningPort = 0
+TRACE: [Network] LoggerMessageForwarder::LoggerMessageForwarder: Finding loggers ...
+TRACE: [Network] LoggerMessageForwarder::LoggerMessageForwarder: Total # loggers on network: 0
+ERROR: [CStdMF] DirectoryWatcher::addChild: tried to replace existing watcher filterThreshold
+INFO: [Config] ---- BaseAppMgr Version: 14.4.1. Config: hybrid. Built: 00:38:03 Nov 23 2026. UID: 1000. User: cui. PID: 2729348 ----
+INFO: [Config] Server coding: Intel(R) Core(TM) i9-10880H CPU @ 2.30GHz x14 with 48207120kB RAM
+INFO: [Config] Resource path (1 of 3): /home/cui/workspaces/BigWorld/programming/bigworld/examples/client_integration/python/simple/res
+INFO: [Config] Resource path (2 of 3): /home/cui/workspaces/BigWorld/game/res/bigworld
+INFO: [Config] Resource path (3 of 3): /home/cui/workspaces/BigWorld/scripts/cluster-smoke/res
+WARNING: [Config] ServerAppConfig::init: baseAppMgr/maxDestinationsInCreateBaseInfo not read from bw.xml chain. Using default (250)
+WARNING: [Config] ServerAppConfig::init: baseAppMgr/updateCreateBaseInfoPeriod not read from bw.xml chain. Using default (5)
+WARNING: [Config] ServerAppConfig::init: baseAppMgr/baseAppTimeout not read from bw.xml chain. Using default (5)
+WARNING: [Config] ServerAppConfig::init: loginConditions/baseApp/minLoad not read from bw.xml chain. Using default (0.8)
+WARNING: [Config] ServerAppConfig::init: loginConditions/overloadTolerancePeriod not read from bw.xml chain. Using default (5)
+WARNING: [Config] ServerAppConfig::init: loginConditions/baseApp/overloadLogins not read from bw.xml chain. Using default (10)
+WARNING: [Config] ServerAppConfig::init: shutDownServerOnBadState not read from bw.xml chain. Using default (true)
+WARNING: [Config] ServerAppConfig::init: shutDownServerOnBaseAppDeath not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: shutDownServerOnCellAppDeath not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: shutDownServerOnServiceAppDeath not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: shutDownServerOnServiceDeath not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: isBadStateWithNoServiceApps not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: serverMode not read from bw.xml chain. Using default (standalone)
+WARNING: [Config] ServerAppConfig::init: production not read from bw.xml chain. Using default (true)
+WARNING: [Config] ServerAppConfig::init: timeSyncPeriod not read from bw.xml chain. Using default (60)
+WARNING: [Config] ServerAppConfig::init: useDefaultSpace not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: maxOpenFileDescriptors not read from bw.xml chain. Using default (-1)
+WARNING: [Config] ServerAppConfig::init: channelTimeoutPeriod not read from bw.xml chain. Using default (60)
+WARNING: [Config] ServerAppConfig::init: allowInteractiveDebugging not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: maxSharedDataValueSize not read from bw.xml chain. Using default (10240)
+WARNING: [Config] ServerAppConfig::init: maxMgrRegisterStagger not read from bw.xml chain. Using default (0)
+WARNING: [Config] ServerAppConfig::init: numStartupRetries not read from bw.xml chain. Using default (60)
+WARNING: [Config] ServerAppConfig::init: hitchDetection/enabled not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: hitchDetection/threshold not read from bw.xml chain. Using default (1.5)
+WARNING: [Config] ServerAppConfig::init: profilerJsonDumpDirectory not read from bw.xml chain. Using default ()
+WARNING: [Config] ServerAppConfig::init: profilerMaxThreads not read from bw.xml chain. Using default (96)
+INFO: [Config] Configuration options (from server/bw.xml):
+INFO: [Config]   baseAppMgr/maxDestinationsInCreateBaseInfo = 250
+INFO: [Config]   baseAppMgr/updateCreateBaseInfoPeriod = 5
+INFO: [Config]   baseAppMgr/baseAppTimeout          = 5
+INFO: [Config]   loginConditions/baseApp/minLoad    = 0.8
+INFO: [Config]   loginConditions/overloadTolerancePeriod = 5
+INFO: [Config]   loginConditions/baseApp/overloadLogins = 10
+INFO: [Config]   shutDownServerOnBadState           = true
+INFO: [Config]   shutDownServerOnBaseAppDeath       = false
+INFO: [Config]   shutDownServerOnCellAppDeath       = false
+INFO: [Config]   shutDownServerOnServiceAppDeath    = false
+INFO: [Config]   shutDownServerOnServiceDeath       = false
+INFO: [Config]   isBadStateWithNoServiceApps        = false
+INFO: [Config]   gameUpdateHertz                    = 10
+INFO: [Config]   personality                        = egclient4 (default: BWPersonality)
+INFO: [Config]   serverMode                         = standalone
+INFO: [Config]   production                         = true
+INFO: [Config]   timeSyncPeriod                     = 60
+INFO: [Config]   useDefaultSpace                    = false
+INFO: [Config]   maxOpenFileDescriptors             = -1
+INFO: [Config]   channelTimeoutPeriod               = 60
+INFO: [Config]   allowInteractiveDebugging          = false
+INFO: [Config]   maxSharedDataValueSize             = 10240
+INFO: [Config]   maxMgrRegisterStagger              = 0
+INFO: [Config]   numStartupRetries                  = 60
+INFO: [Config]   hitchDetection/enabled             = false
+INFO: [Config]   hitchDetection/threshold           = 1.5
+INFO: [Config]   profilerJsonDumpDirectory          = 
+INFO: [Config]   profilerMaxThreads                 = 96
+TRACE: [CStdMF] ProfilerSystem: 12mb memory used.
+INFO: [ProcessIP] Internal address = 192.168.5.188:39627
+INFO: [Server] ServerApp::init: Run from bwmachined = false
+INFO: [Server] ReviverSubject::init: msTimeout_ = 200
+INFO: [Config] isRecovery = False
+INFO: [Network] MachineDaemon::findInterface: Failed to find CellAppMgrInterface for UID 1000 on attempt 1.
+DEBUG: [Network] IFindInterfaceHandler::onProcessStatsMessage: Found interface CellAppMgrInterface at 192.168.5.188:56380
+INFO: [Server] ---- BaseAppMgr is running ----
+INFO: BaseAppMgr::handleCellAppMgrBirth: 192.168.5.188:56380
+INFO: ChannelMap::find: Creating anonymous channel to 192.168.5.188:42038
+DEBUG: BaseAppMgr::updateDBAppHash: Got new DBApp Alpha 192.168.5.188:60331
+INFO: [Config] BaseAppMgr::initData: game time = 0.0
+INFO: ChannelMap::find: Creating anonymous channel to 192.168.5.188:51881
+INFO: [Network] UDPChannel::get: Claimed anonymous channel to udp:192.168.5.188:51881
+TRACE: [ProcessIP] BaseAppMgr::finishedInit: 192.168.5.188:51881
+DEBUG: [Config] ManagedAppSubSet::addApp:
+	Allocated id		= 1
+	BaseApps	in use	= 1
+	Internal address	= 192.168.5.188:51881
+	External address	= 192.168.5.188:46691
+	Service App		= false
+DEBUG: [ProcessIP] BaseAppMgr::finishedInit: now have 1 base apps and 0 service apps ready
+INFO: ChannelMap::find: Creating anonymous channel to 192.168.5.188:48514
+INFO: [Network] UDPChannel::get: Claimed anonymous channel to udp:192.168.5.188:48514
+TRACE: [ProcessIP] BaseAppMgr::finishedInit: 192.168.5.188:48514
+DEBUG: [Config] ManagedAppSubSet::addApp:
+	Allocated id		= 2
+	BaseApps	in use	= 2
+	Internal address	= 192.168.5.188:48514
+	External address	= 192.168.5.188:52918
+	Service App		= false
+DEBUG: [ProcessIP] BaseAppMgr::finishedInit: now have 2 base apps and 0 service apps ready
+INFO: ChannelMap::find: Creating anonymous channel to 192.168.5.188:47611
+INFO: [Network] UDPChannel::get: Claimed anonymous channel to udp:192.168.5.188:47611
+TRACE: [ProcessIP] BaseAppMgr::finishedInit: 192.168.5.188:47611
+DEBUG: [Config] ManagedAppSubSet::addApp:
+	Allocated id		= 1
+	ServiceApps	in use	= 1
+	Internal address	= 192.168.5.188:47611
+	External address	= 192.168.5.188:54191
+	Service App		= true
+DEBUG: [ProcessIP] BaseAppMgr::finishedInit: now have 2 base apps and 1 service apps ready
+INFO: BaseAppMgr is starting
+INFO: BaseAppMgr::registerBaseGlobally: Registered base '\x80\x02X\x0C\x00\x00\x00DefaultSpaceq\x00.' -> mailbox { entity=4801, addr=192.168.5.188:48514 } from 192.168.5.188:48514

@@ -1,0 +1,67 @@
+WARNING: [ResMgr] The use of the BW_RES_PATH environment variable is deprecated post 1.8.1
+INFO: [ResMgr] Added res path: "/home/cui/workspaces/BigWorld/programming/bigworld/examples/client_integration/python/simple/res" (from BW_RES_PATH env variable).
+INFO: [ResMgr] Added res path: "/home/cui/workspaces/BigWorld/game/res/bigworld" (from BW_RES_PATH env variable).
+INFO: [ResMgr] Added res path: "/home/cui/workspaces/BigWorld/scripts/cluster-smoke/res" (from BW_RES_PATH env variable).
+INFO: [Config] BWConfig::init: Adding server/bw_cui.xml
+INFO: [Network] NetworkInterface::recreateListeningSocket: Querying BWMachined for interface
+WARNING: [Network] NetworkInterface::recreateListeningSocket: No address received from machined so binding to all interfaces.
+INFO: [Network] NetworkInterface::recreateListeningSocket: address 192.168.5.188:42038
+INFO: [Network] WatcherNub::init: listeningInterface = '192.168.5.188', listeningPort = 0
+TRACE: [Network] LoggerMessageForwarder::LoggerMessageForwarder: Finding loggers ...
+TRACE: [Network] LoggerMessageForwarder::LoggerMessageForwarder: Total # loggers on network: 0
+ERROR: [CStdMF] DirectoryWatcher::addChild: tried to replace existing watcher filterThreshold
+INFO: [Config] ---- DBAppMgr   Version: 14.4.1. Config: hybrid. Built: 00:38:11 Nov 23 2026. UID: 1000. User: cui. PID: 2729340 ----
+INFO: [Config] Server coding: Intel(R) Core(TM) i9-10880H CPU @ 2.30GHz x14 with 48207120kB RAM
+INFO: [Config] Resource path (1 of 3): /home/cui/workspaces/BigWorld/programming/bigworld/examples/client_integration/python/simple/res
+INFO: [Config] Resource path (2 of 3): /home/cui/workspaces/BigWorld/game/res/bigworld
+INFO: [Config] Resource path (3 of 3): /home/cui/workspaces/BigWorld/scripts/cluster-smoke/res
+WARNING: [Config] ServerAppConfig::init: serverMode not read from bw.xml chain. Using default (standalone)
+WARNING: [Config] ServerAppConfig::init: production not read from bw.xml chain. Using default (true)
+WARNING: [Config] ServerAppConfig::init: timeSyncPeriod not read from bw.xml chain. Using default (60)
+WARNING: [Config] ServerAppConfig::init: useDefaultSpace not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: maxOpenFileDescriptors not read from bw.xml chain. Using default (-1)
+WARNING: [Config] ServerAppConfig::init: channelTimeoutPeriod not read from bw.xml chain. Using default (60)
+WARNING: [Config] ServerAppConfig::init: allowInteractiveDebugging not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: maxSharedDataValueSize not read from bw.xml chain. Using default (10240)
+WARNING: [Config] ServerAppConfig::init: maxMgrRegisterStagger not read from bw.xml chain. Using default (0)
+WARNING: [Config] ServerAppConfig::init: numStartupRetries not read from bw.xml chain. Using default (60)
+WARNING: [Config] ServerAppConfig::init: hitchDetection/enabled not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: hitchDetection/threshold not read from bw.xml chain. Using default (1.5)
+WARNING: [Config] ServerAppConfig::init: profilerJsonDumpDirectory not read from bw.xml chain. Using default ()
+WARNING: [Config] ServerAppConfig::init: profilerMaxThreads not read from bw.xml chain. Using default (96)
+INFO: [Config] Configuration options (from server/bw.xml):
+INFO: [Config]   gameUpdateHertz                    = 10
+INFO: [Config]   personality                        = egclient4 (default: BWPersonality)
+INFO: [Config]   serverMode                         = standalone
+INFO: [Config]   production                         = true
+INFO: [Config]   timeSyncPeriod                     = 60
+INFO: [Config]   useDefaultSpace                    = false
+INFO: [Config]   maxOpenFileDescriptors             = -1
+INFO: [Config]   channelTimeoutPeriod               = 60
+INFO: [Config]   allowInteractiveDebugging          = false
+INFO: [Config]   maxSharedDataValueSize             = 10240
+INFO: [Config]   maxMgrRegisterStagger              = 0
+INFO: [Config]   numStartupRetries                  = 60
+INFO: [Config]   hitchDetection/enabled             = false
+INFO: [Config]   hitchDetection/threshold           = 1.5
+INFO: [Config]   profilerJsonDumpDirectory          = 
+INFO: [Config]   profilerMaxThreads                 = 96
+TRACE: [CStdMF] ProfilerSystem: 12mb memory used.
+INFO: [Server] ServerApp::init: Run from bwmachined = false
+INFO: [ProcessIP] Internal address = 192.168.5.188:42038
+INFO: [Network] MachineDaemon::findInterface: Failed to find CellAppMgrInterface for UID 1000 on attempt 1.
+INFO: [Network] MachineDaemon::findInterface: Failed to find CellAppMgrInterface for UID 1000 on attempt 2.
+DEBUG: [Network] IFindInterfaceHandler::onProcessStatsMessage: Found interface CellAppMgrInterface at 192.168.5.188:56380
+DEBUG: [Network] IFindInterfaceHandler::onProcessStatsMessage: Found interface BaseAppMgrInterface at 192.168.5.188:39627
+INFO: [Server] ReviverSubject::init: msTimeout_ = 200
+INFO: [Server] ---- DBAppMgr is running ----
+INFO: ChannelMap::find: Creating anonymous channel to 192.168.5.188:60331
+INFO: [Network] UDPChannel::get: Claimed anonymous channel to udp:192.168.5.188:60331
+DEBUG: [Config] DBAppMgr::addDBApp:
+	Allocated id   = 1
+	DBApps in use  = 1
+	Address        = 192.168.5.188:60331
+	Alpha          = true
+DEBUG: DBAppMgr::sendDBAppHashUpdate: Directing DBApp-Alpha 1 (192.168.5.188:60331) to perform reset of game server state
+INFO: ChannelMap::find: Creating anonymous channel to 192.168.5.188:39317
+DEBUG: DBAppMgr::serverHasStarted: true

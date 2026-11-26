@@ -1,76 +1,58 @@
-# BW-00-02-04 最小客户端登录
+# BW-00-02-04 最小客户端登录录制
 
-> 证据面（BW-00-02-04 验收：留存请求和回调序列）。
+基线 `4657a17` 产物树的 `simple_python_client`（`game/bin/server/el7/examples/`，example 自源构建）对 **BW-00-02-03 v2 在线集群**实跑登录。对应 todo.md BW-00-02-04：**留存请求和回调序列**。证据目录 `data/bw00-02-04-client-login-v2/`（client-drive.log + 四份服务端日志 + mysql-state.txt）。
 
-由 `tools/client_login_scan.py` 驱动参考仓示例客户端（`examples/client_integration/python/simple` → `simple_python_client`）登录运行中的单机集群，抓取客户端请求/回调与服务端脚本回调；源数据 `reference/bw00_02_04_client_login.json`。
+## 环境
 
-| 项 | 值 |
-| --- | --- |
-| 参考仓提交 | `f3f53898` |
-| 捕获时间 | `2026-11-23 01:46:38 +0800` |
-| 客户端命令 | `/home/cui/workspaces/BigWorld/game/bin/server/el7/examples/simple_python_client -server 127.0.0.1 -user MyAccount -password a -autoDisconnect` |
-| BW_RES_PATH | `/home/cui/workspaces/BigWorld/programming/bigworld/examples/client_integration/python/simple/res:/home/cui/workspaces/BigWorld/game/res/bigworld:/home/cui/workspaces/BigWorld/scripts/cluster-smoke/res` |
-| 退出码 / 耗时 | `0` / 2.226s |
-| 客户端源地址 | `192.168.5.188:55283` |
-| 本机账号 | `MyAccount` / `a`（示例 `db.xml` 的 LogOnMapping，实体 `ClientAvatar`=`MyCharacter`，实体 id 4805） |
+- 集群：BW-00-02-03 v2 十进程稳态（bwmachined2 + 三管理器 + dbapp/cellapp/baseapp×2/loginapp/serviceapp），loginapp 外部口 `192.168.5.188:20013`，baseapp2 外部口 `192.168.5.188:52918`。
+- 密钥：`loginapp.privkey`/`loginapp.pubkey`（openssl RSA-2048，运营方供给模型；pubkey 在 smoke res 段，客户端经 BW_RES_PATH 找到后走加密登录）。
+- 账号面：`billingSystem/shouldAcceptUnknownUsers=true` + `entityTypeForUnknownUsers=ClientAvatar`（bw_deep.xml）；`tbl_Account` 为空，故 MyAccount 走**未知用户受理**路径，Avatar 为临时实体。
+- 驱动命令：`simple_python_client -server 192.168.5.188:20013 -user MyAccount -password a`，BW_RES_PATH 三段同集群，**exit 0 干净退出**。
 
-## 请求序列
+## 请求序列（client-drive.log 行号为证据锚）
 
-客户端按 `loginapp:20013` UDP → `baseapp` UDP 两跳完成登录（`-autoDisconnect` 使连上后即退出，故运行有界）：
+| # | 请求 | 证据（client-drive.log） |
+|---|---|---|
+| 1 | 实体定义装载（ClientAvatar 5 顶层属性/2 client 方法/1 base 方法） | L5-L9 `Highest exposed counts` |
+| 2 | 客户端绑定 UDP `192.168.5.188:54388` | L11-L12 |
+| 3 | `logOnTo` → `ServerConnection::logOnBegin: Using server: 192.168.5.188:20013, transport: UDP, username: MyAccount` | L13-L14 |
+| 4 | LoginHandler 起重试机（# requests: 10, retry 1.0s, timeout 8.0s）→ Attempt #1 连 LoginApp | L15-L17 |
+| 5 | LoginApp 回复（0.1s）携带 BaseApp 地址 | L21 + L22 |
+| 6 | Attempt #1 连 BaseApp `192.168.5.188:52918`（UDP） | L23-L24 |
+| 7 | BaseApp 回复（0.1s）→ 登录成立 | L25-L26 |
+| 8 | `ServerConnection::logOn: status==LOGGED_ON` → `enableEntities` | L27-L30 |
+| 9 | 断开（演示结束）→ 干净退出 exit 0 | L31 `Connected to 192.168.5.188:52918` 后退出 |
 
-| # | 类型 | 客户端日志 |
-| --- | --- | --- |
-| 1 | request | `LoginApp@127.0.0.1:20013 over UDP (# requests: 10, retry interval: 1.0s, timeout interval: 8.0s)` |
-| 2 | request | `From 192.168.5.188:55283, attempt #1 / 10 to LoginApp 127.0.0.1:20013` |
-| 3 | reply | `Attempt #1: Received reply from 127.0.0.1:20013 (after 0.1s)` |
-| 4 | callback | `BaseApp@192.168.5.188:51079 over UDP (# requests: 10, retry interval:1.0s, timeout interval: 8.0s)` |
-| 5 | request | `From 192.168.5.188:55283, attempt #1 / 10 to BaseApp 192.168.5.188:51079` |
-| 6 | reply | `Attempt #1: Received reply from 192.168.5.188:51079 (after 0.1s)` |
-| 7 | callback | `Got reply from BaseApp channel udp:192.168.5.188:51079` |
-| 8 | callback | `status==LOGGED_ON` |
-| 9 | callback | `from: 192.168.5.188:55283` |
-| 10 | callback | `to:   192.168.5.188:51079` |
-| 11 | callback | `Enabling entities` |
-| 12 | callback | `192.168.5.188:51079` |
+## 回调序列（两侧对照）
 
-## 服务端日志匹配（按客户端源端口）
+客户端侧（client-drive.log）：
 
-| 服务端 | 日志行 |
-| --- | --- |
-| `loginapp` | `INFO: LoginApp::login: Attempt from 127.0.0.1:55283` |
-| `loginapp` | `INFO: LoginApp::login: Logging in user 'MyAccount' (127.0.0.1:55283)` |
-| `baseapp(2)` | `WARNING: LoginHandler::updateStatistics: Addresses are different (due to NAT?). Was 127.0.0.1:55283. Now 192.168.5.188:55283` |
-| `baseapp(2)` | `TRACE: BaseApp: Adding proxy 4805 at udp:192.168.5.188:55283` |
-| `baseapp(2)` | `INFO: LoginHandler::login: 4805 attached from 192.168.5.188:55283. Attempt 1` |
-| `baseapp(2)` | `ERROR: [Network] Exception occurred: 'REASON_NO_SUCH_PORT' on '192.168.5.188:55283'` |
-| `baseapp(2)` | `TRACE: BaseApp::removeProxy: Removing proxy id 4805 addr udp:192.168.5.188:55283` |
-| `baseapp(2)` | `ERROR: [Network] Exception occurred: 'REASON_NO_SUCH_PORT' on '192.168.5.188:55283'` |
+1. `LoginRequest::handleMessage: Attempt #1: Received reply from 192.168.5.188:20013`（L21）
+2. `LoginHandler::onLoginAppLoginSuccess: BaseApp@192.168.5.188:52918 over UDP`（L22）
+3. `LoginRequest::handleMessage: ... Received reply from ...:52918`（L25）
+4. `LoginHandler::onBaseAppLoginSuccess: Got reply from BaseApp channel udp:192.168.5.188:52918`（L26）
+5. `ServerConnection::logOn: status==LOGGED_ON`（L27）→ `enableEntities: Enabling entities`（L30）
 
-## 服务端回调序列（本运行的实体 id 4805）
+服务端侧（各组件日志）：
 
-`baseapp.log` / `baseapp2.log`（登录可能落在第二个 BaseApp 实例，两个日志一并切分）：
+1. loginapp：`LoginApp::login: Logging in user 'MyAccount' (192.168.5.188:54388)`（loginapp.log）
+2. dbapp：`DBApp::logOn: MyAccount`（billing 未知用户受理，entityTypeForUnknownUsers=ClientAvatar；dbapp.log）
+3. baseapp2（接洽实例，外口 52918）：`Base::Base(4802): ClientAvatar` → `BaseApp: Adding proxy 4802 at udp:192.168.5.188:54388` → `LoginHandler::login: 4802 attached ... Attempt 1` → `Proxy::enableEntities(4802)` → `Proxy::addCreateBasePlayerToChannelBundle(4802): Creating player on client` → `ClientAvatar.onEntitiesEnabled: 4802`（baseapp2.log；另见引导 `Base::Base(4801): Space` + `py_registerGlobally 'DefaultSpace'`）
+4. cellapp：`Cell::createEntityInternal: New ClientAvatar (4802)` → `ClientAvatar.__init__: {}`（cellapp.log）
 
-- `INFO: LoginHandler::login: 4805 attached from 192.168.5.188:55283. Attempt 1`
-- `DEBUG: Proxy::enableEntities(4805)`
-- `DEBUG: Proxy::addCreateBasePlayerToChannelBundle(4805): Creating player on client`
-- `INFO: ClientAvatar.onEntitiesEnabled: 4805`
-- `ERROR: [Network] Exception occurred: 'REASON_NO_SUCH_PORT' on '192.168.5.188:55283'`
-- `TRACE: Proxy::onClientDeath: Client id 4805 has disconnected (Requested by client)`
-- `TRACE: BaseApp::removeProxy: Removing proxy id 4805 addr udp:192.168.5.188:55283`
-- `INFO: ClientAvatar.onClientDeath: 4805`
-- `ERROR: [Network] Exception occurred: 'REASON_NO_SUCH_PORT' on '192.168.5.188:55283'`
-- `INFO: Base::~Base(4805): ClientAvatar`
+拆链（客户端退出后，baseapp2.log/cellapp.log）：
 
-`cellapp.log`：
+1. `Proxy::onClientDeath: Client id 4802 has disconnected (Requested by client)`
+2. `BaseApp::removeProxy: Removing proxy id 4802 addr udp:192.168.5.188:54388`
+3. `Base::~Base(4802): ClientAvatar`
+4. cellapp：`Cell::entityDestroyed: ClientAvatar 4802 has been destroyed.`
 
-- `INFO: ClientAvatar.__init__: {}`
-- `INFO: Cell::entityDestroyed: ClientAvatar 4805 has been destroyed.`
+## 持久化观察（mysql-state.txt）
 
-## 说明
+`syncTablesToDefs=true` 已按实体定义建全表集（tbl_Account/tbl_ClientAvatar + 属性 blob 表/tbl_Guard/tbl_Space/bigworldLogOnMapping 等）；本次登录为未知用户受理路径，断开即毁（`tbl_ClientAvatar` 行数 0，`tbl_Account` 行数 0）——临时实体未持久化，符合 billing 受理口径。
 
-- **两跳协议**：LoginApp 回复后转 BaseApp；`onLoginAppLoginSuccess` 与 `onBaseAppLoginSuccess` 即两次握手的回调，`LOGGED_ON` → `enableEntities` 后实体（ClientAvatar）随 proxy 下发。
-- **NAT 观察**：客户端经 `127.0.0.1:20013` 连 LoginApp，baseapp 记 `Addresses are different (due to NAT?)`——同机双路径（回环 + 网卡地址）。
-- **`REASON_NO_SUCH_PORT`**：`-autoDisconnect` 断开后客户端端口已释放，服务端再发包时的正常告警，随 `Proxy::onClientDeath`/`removeProxy` 收尾。
-- **日志归属**：`baseapp*.log`/`cellapp.log` 为追加式，本运行的回调行按实体 id（`Base::Base(4805): ClientAvatar`）切分。
+## 口径与缺口
 
-生成：`client_login_scan.py` + `client_login_doc.py`。
+- 基础二进制口径同 BW-00-02-03 v2：baseapp2 为 smoke 单对象偏差重编版（`ping_manager.o` 无 USE_OPENSSL），**loginapp/dbapp/cellapp/客户端均为原版产物**；`server/bigworld.key` 缺口不变（见 00-02-03 文档）。
+- 加密登录生效：客户端持 `loginapp.pubkey` 加密登录参数，一次 Attempt #1 即获回复；更细的 challenge 分步（challengeRequest/challengeResponse）在本运行日志详级别下未单独打印，序列按实印留存，不推测补行。
+- 参考方法名对照（源码口径）：`LoginHandler` 的请求/回调族与参考 `client_interface`/`login_interface` 一致（logOnTo→login→LoginReply；onLoginAppLoginSuccess→onBaseAppLoginSuccess→enableEntities），实跑序列为上述源码面在 14.4.1 二进制上的运行实例。
