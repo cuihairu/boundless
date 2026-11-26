@@ -2896,7 +2896,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化空间流式装载、碰撞走查和导航缓存。比较峰值内存、场景冷启动和查询尾延迟，核对坐标与碰撞结果。
 
 - [x] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。(2026-11-26 本席 lane/bw14-script-host 37ec32a:crates/chunk/tests/map_load_baseline.rs 对原版夹具空间(docs/review/fixtures/chunk_space 18×2 网格)走全套流式面=解析 mapping→gather_chunks 枚举 37 候选→load_and_bind 绑 6 个 .chunk→focus→双半板地形 slab 过 focussed add_obstacle 门,整段冷启动计数分配器(OPT-01-01-01 同款 thread-local)+VmRSS 包夹;保存:冷启 1.6-2.5ms/2025 allocs/163790 bytes/rss Δ≈428kB,find_chunk_from_point 100 探针 p50 0.53µs/p99 1.7µs,collide findDropPoint 形 100 射线(50m→-10m 止于 10m 板) p50 1.8µs/p99 18.7µs;结构账断言且重跑恒等:绑集=6 文件、逐探针命中属主 chunk、逐射线 40m 处止板(±1e-3)、绑序/答案/距离/分配数全复现(2025/163790 双跑);墙钟与内存 probe 打印不断言;chunk 188 测全绿;review=docs/review/opt-10-01-01-map-load-baseline.md)
-- [ ] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。
+- [x] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。（2026-11-26 lane/bw14-script-host 7fc6d76：crates/chunk/tests/map_stream_opt.rs 走 shipped scan 卸两格重载全周期，候选=BwResource 段缓存 LRU 同 load_and_bind 解析面 vs 原始读+解析基线；峰值内存=计数分配器 LIVE 高水位 PEAK 单元，报告见 docs/review/opt-10-01-02-map-stream-opt.md——冷缓存填付 write_to_string 尺寸化 +469 allocs 更慢，重载 3.77ms/759 vs 原始 10.46ms/931，热全空间 1.50ms/1132 vs 冷 2.97ms/2025；结构面断言：缓存段 PartialEq 同树、双侧 bound/reloaded/finds/dists 全等、周期复跑恒等；墙钟探针数据只印不断言，allocs/peak 复跑精确复现；chunk 门禁 190 绿）
 - [ ] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。
 - [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
 
@@ -4477,7 +4477,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化空间流式装载、碰撞走查和导航缓存。比较峰值内存、场景冷启动和查询尾延迟，核对坐标与碰撞结果。
 
 - [x] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。(2026-11-26 本席 lane/bw14-script-host 37ec32a:crates/chunk/tests/map_load_baseline.rs 对原版夹具空间(docs/review/fixtures/chunk_space 18×2 网格)走全套流式面=解析 mapping→gather_chunks 枚举 37 候选→load_and_bind 绑 6 个 .chunk→focus→双半板地形 slab 过 focussed add_obstacle 门,整段冷启动计数分配器(OPT-01-01-01 同款 thread-local)+VmRSS 包夹;保存:冷启 1.6-2.5ms/2025 allocs/163790 bytes/rss Δ≈428kB,find_chunk_from_point 100 探针 p50 0.53µs/p99 1.7µs,collide findDropPoint 形 100 射线(50m→-10m 止于 10m 板) p50 1.8µs/p99 18.7µs;结构账断言且重跑恒等:绑集=6 文件、逐探针命中属主 chunk、逐射线 40m 处止板(±1e-3)、绑序/答案/距离/分配数全复现(2025/163790 双跑);墙钟与内存 probe 打印不断言;chunk 188 测全绿;review=docs/review/opt-10-01-01-map-load-baseline.md)
-- [ ] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。
+- [x] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。（2026-11-26 lane/bw14-script-host 7fc6d76：crates/chunk/tests/map_stream_opt.rs 走 shipped scan 卸两格重载全周期，候选=BwResource 段缓存 LRU 同 load_and_bind 解析面 vs 原始读+解析基线；峰值内存=计数分配器 LIVE 高水位 PEAK 单元，报告见 docs/review/opt-10-01-02-map-stream-opt.md——冷缓存填付 write_to_string 尺寸化 +469 allocs 更慢，重载 3.77ms/759 vs 原始 10.46ms/931，热全空间 1.50ms/1132 vs 冷 2.97ms/2025；结构面断言：缓存段 PartialEq 同树、双侧 bound/reloaded/finds/dists 全等、周期复跑恒等；墙钟探针数据只印不断言，allocs/peak 复跑精确复现；chunk 门禁 190 绿）
 - [ ] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。
 - [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
 
@@ -6019,7 +6019,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化空间流式装载、碰撞走查和导航缓存。比较峰值内存、场景冷启动和查询尾延迟，核对坐标与碰撞结果。
 
 - [x] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。(2026-11-26 本席 lane/bw14-script-host 37ec32a:crates/chunk/tests/map_load_baseline.rs 对原版夹具空间(docs/review/fixtures/chunk_space 18×2 网格)走全套流式面=解析 mapping→gather_chunks 枚举 37 候选→load_and_bind 绑 6 个 .chunk→focus→双半板地形 slab 过 focussed add_obstacle 门,整段冷启动计数分配器(OPT-01-01-01 同款 thread-local)+VmRSS 包夹;保存:冷启 1.6-2.5ms/2025 allocs/163790 bytes/rss Δ≈428kB,find_chunk_from_point 100 探针 p50 0.53µs/p99 1.7µs,collide findDropPoint 形 100 射线(50m→-10m 止于 10m 板) p50 1.8µs/p99 18.7µs;结构账断言且重跑恒等:绑集=6 文件、逐探针命中属主 chunk、逐射线 40m 处止板(±1e-3)、绑序/答案/距离/分配数全复现(2025/163790 双跑);墙钟与内存 probe 打印不断言;chunk 188 测全绿;review=docs/review/opt-10-01-01-map-load-baseline.md)
-- [ ] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。
+- [x] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。（2026-11-26 lane/bw14-script-host 7fc6d76：crates/chunk/tests/map_stream_opt.rs 走 shipped scan 卸两格重载全周期，候选=BwResource 段缓存 LRU 同 load_and_bind 解析面 vs 原始读+解析基线；峰值内存=计数分配器 LIVE 高水位 PEAK 单元，报告见 docs/review/opt-10-01-02-map-stream-opt.md——冷缓存填付 write_to_string 尺寸化 +469 allocs 更慢，重载 3.77ms/759 vs 原始 10.46ms/931，热全空间 1.50ms/1132 vs 冷 2.97ms/2025；结构面断言：缓存段 PartialEq 同树、双侧 bound/reloaded/finds/dists 全等、周期复跑恒等；墙钟探针数据只印不断言，allocs/peak 复跑精确复现；chunk 门禁 190 绿）
 - [ ] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。
 - [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
 
@@ -7561,7 +7561,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化空间流式装载、碰撞走查和导航缓存。比较峰值内存、场景冷启动和查询尾延迟，核对坐标与碰撞结果。
 
 - [x] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。(2026-11-26 本席 lane/bw14-script-host 37ec32a:crates/chunk/tests/map_load_baseline.rs 对原版夹具空间(docs/review/fixtures/chunk_space 18×2 网格)走全套流式面=解析 mapping→gather_chunks 枚举 37 候选→load_and_bind 绑 6 个 .chunk→focus→双半板地形 slab 过 focussed add_obstacle 门,整段冷启动计数分配器(OPT-01-01-01 同款 thread-local)+VmRSS 包夹;保存:冷启 1.6-2.5ms/2025 allocs/163790 bytes/rss Δ≈428kB,find_chunk_from_point 100 探针 p50 0.53µs/p99 1.7µs,collide findDropPoint 形 100 射线(50m→-10m 止于 10m 板) p50 1.8µs/p99 18.7µs;结构账断言且重跑恒等:绑集=6 文件、逐探针命中属主 chunk、逐射线 40m 处止板(±1e-3)、绑序/答案/距离/分配数全复现(2025/163790 双跑);墙钟与内存 probe 打印不断言;chunk 188 测全绿;review=docs/review/opt-10-01-01-map-load-baseline.md)
-- [ ] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。
+- [x] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。（2026-11-26 lane/bw14-script-host 7fc6d76：crates/chunk/tests/map_stream_opt.rs 走 shipped scan 卸两格重载全周期，候选=BwResource 段缓存 LRU 同 load_and_bind 解析面 vs 原始读+解析基线；峰值内存=计数分配器 LIVE 高水位 PEAK 单元，报告见 docs/review/opt-10-01-02-map-stream-opt.md——冷缓存填付 write_to_string 尺寸化 +469 allocs 更慢，重载 3.77ms/759 vs 原始 10.46ms/931，热全空间 1.50ms/1132 vs 冷 2.97ms/2025；结构面断言：缓存段 PartialEq 同树、双侧 bound/reloaded/finds/dists 全等、周期复跑恒等；墙钟探针数据只印不断言，allocs/peak 复跑精确复现；chunk 门禁 190 绿）
 - [ ] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。
 - [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
 
@@ -9142,7 +9142,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化空间流式装载、碰撞走查和导航缓存。比较峰值内存、场景冷启动和查询尾延迟，核对坐标与碰撞结果。
 
 - [x] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。(2026-11-26 本席 lane/bw14-script-host 37ec32a:crates/chunk/tests/map_load_baseline.rs 对原版夹具空间(docs/review/fixtures/chunk_space 18×2 网格)走全套流式面=解析 mapping→gather_chunks 枚举 37 候选→load_and_bind 绑 6 个 .chunk→focus→双半板地形 slab 过 focussed add_obstacle 门,整段冷启动计数分配器(OPT-01-01-01 同款 thread-local)+VmRSS 包夹;保存:冷启 1.6-2.5ms/2025 allocs/163790 bytes/rss Δ≈428kB,find_chunk_from_point 100 探针 p50 0.53µs/p99 1.7µs,collide findDropPoint 形 100 射线(50m→-10m 止于 10m 板) p50 1.8µs/p99 18.7µs;结构账断言且重跑恒等:绑集=6 文件、逐探针命中属主 chunk、逐射线 40m 处止板(±1e-3)、绑序/答案/距离/分配数全复现(2025/163790 双跑);墙钟与内存 probe 打印不断言;chunk 188 测全绿;review=docs/review/opt-10-01-01-map-load-baseline.md)
-- [ ] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。
+- [x] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。（2026-11-26 lane/bw14-script-host 7fc6d76：crates/chunk/tests/map_stream_opt.rs 走 shipped scan 卸两格重载全周期，候选=BwResource 段缓存 LRU 同 load_and_bind 解析面 vs 原始读+解析基线；峰值内存=计数分配器 LIVE 高水位 PEAK 单元，报告见 docs/review/opt-10-01-02-map-stream-opt.md——冷缓存填付 write_to_string 尺寸化 +469 allocs 更慢，重载 3.77ms/759 vs 原始 10.46ms/931，热全空间 1.50ms/1132 vs 冷 2.97ms/2025；结构面断言：缓存段 PartialEq 同树、双侧 bound/reloaded/finds/dists 全等、周期复跑恒等；墙钟探针数据只印不断言，allocs/peak 复跑精确复现；chunk 门禁 190 绿）
 - [ ] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。
 - [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
 
@@ -10684,7 +10684,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化空间流式装载、碰撞走查和导航缓存。比较峰值内存、场景冷启动和查询尾延迟，核对坐标与碰撞结果。
 
 - [x] **OPT-10-01-01 测量地图加载和查询基线**。**验收** 保存冷启动、内存及尾延迟。(2026-11-26 本席 lane/bw14-script-host 37ec32a:crates/chunk/tests/map_load_baseline.rs 对原版夹具空间(docs/review/fixtures/chunk_space 18×2 网格)走全套流式面=解析 mapping→gather_chunks 枚举 37 候选→load_and_bind 绑 6 个 .chunk→focus→双半板地形 slab 过 focussed add_obstacle 门,整段冷启动计数分配器(OPT-01-01-01 同款 thread-local)+VmRSS 包夹;保存:冷启 1.6-2.5ms/2025 allocs/163790 bytes/rss Δ≈428kB,find_chunk_from_point 100 探针 p50 0.53µs/p99 1.7µs,collide findDropPoint 形 100 射线(50m→-10m 止于 10m 板) p50 1.8µs/p99 18.7µs;结构账断言且重跑恒等:绑集=6 文件、逐探针命中属主 chunk、逐射线 40m 处止板(±1e-3)、绑序/答案/距离/分配数全复现(2025/163790 双跑);墙钟与内存 probe 打印不断言;chunk 188 测全绿;review=docs/review/opt-10-01-01-map-load-baseline.md)
-- [ ] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。
+- [x] **OPT-10-01-02 优化空间流式加载**。**验收** 报告峰值内存及加载速度。（2026-11-26 lane/bw14-script-host 7fc6d76：crates/chunk/tests/map_stream_opt.rs 走 shipped scan 卸两格重载全周期，候选=BwResource 段缓存 LRU 同 load_and_bind 解析面 vs 原始读+解析基线；峰值内存=计数分配器 LIVE 高水位 PEAK 单元，报告见 docs/review/opt-10-01-02-map-stream-opt.md——冷缓存填付 write_to_string 尺寸化 +469 allocs 更慢，重载 3.77ms/759 vs 原始 10.46ms/931，热全空间 1.50ms/1132 vs 冷 2.97ms/2025；结构面断言：缓存段 PartialEq 同树、双侧 bound/reloaded/finds/dists 全等、周期复跑恒等；墙钟探针数据只印不断言，allocs/peak 复跑精确复现；chunk 门禁 190 绿）
 - [ ] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。
 - [ ] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。
 
