@@ -3232,6 +3232,345 @@ impl MetaParticleSystem {
 }
 
 // ---------------------------------------------------------------------------
+// Section: save faces (`save`/`saveInternal` bodies; BW-13-04-05)
+//
+// The reference load and save faces walk the same `BW_PARITCLE_SERIALISE`
+// templates, so a faithful save writes exactly the tags the load faces
+// above read, in the template's member order. The `newSection(tag)`
+// helper (delete the old matches, append a fresh child) is what every
+// reference save uses to place its sub-sections.
+// ---------------------------------------------------------------------------
+
+/// `DataSection::newSection(tagPath)` (`xml_section.cpp:313`): append a
+/// fresh child carrying the tag — a pure append that allows duplicates
+/// (the tint ramp's repeated `Tint` children). The typed writers are the
+/// overwrite face (`openSection(path, true)` = get-or-create first match);
+/// `newSection` never removes anything.
+fn new_section<'a>(ds: &'a mut DataSection, tag: &str) -> &'a mut DataSection {
+    ds.add_child(tag)
+}
+
+impl VectorGenerator {
+    /// `VectorGeneratorBase::nameID` (`vector_generator.ipp`).
+    pub fn name_id(&self) -> &'static str {
+        match self {
+            VectorGenerator::Point { .. } => "PointVectorGenerator",
+            VectorGenerator::Line { .. } => "LineVectorGenerator",
+            VectorGenerator::Cylinder { .. } => "CylinderVectorGenerator",
+            VectorGenerator::Sphere { .. } => "SphereVectorGenerator",
+            VectorGenerator::Box { .. } => "BoxVectorGenerator",
+        }
+    }
+
+    /// `VectorGenerator::save` (`vector_generator.cpp:112-120`): a fresh
+    /// section per generator named by `nameID`, the `nameID_` sanity
+    /// string, then the type's members in serialise order (the Box keeps
+    /// its legacy `opposite_` tag, the `BW_PARITCLE_SERIALISE_NAMED`
+    /// override).
+    pub fn save(&self, ds: &mut DataSection) {
+        let sect = new_section(ds, self.name_id());
+        sect.write_string("nameID_", self.name_id());
+        match self {
+            VectorGenerator::Point { position } => {
+                sect.write_vector3("position_", *position);
+            }
+            VectorGenerator::Line { origin, direction } => {
+                sect.write_vector3("origin_", *origin);
+                sect.write_vector3("direction_", *direction);
+            }
+            VectorGenerator::Cylinder {
+                origin,
+                direction,
+                max_radius,
+                min_radius,
+                basis_u,
+                basis_v,
+            } => {
+                sect.write_vector3("origin_", *origin);
+                sect.write_vector3("direction_", *direction);
+                sect.write_float("maxRadius_", *max_radius);
+                sect.write_float("minRadius_", *min_radius);
+                sect.write_vector3("basisU_", *basis_u);
+                sect.write_vector3("basisV_", *basis_v);
+            }
+            VectorGenerator::Sphere {
+                centre,
+                max_radius,
+                min_radius,
+            } => {
+                sect.write_vector3("centre_", *centre);
+                sect.write_float("maxRadius_", *max_radius);
+                sect.write_float("minRadius_", *min_radius);
+            }
+            VectorGenerator::Box { corner, opposite } => {
+                sect.write_vector3("corner_", *corner);
+                sect.write_vector3("opposite_", *opposite);
+            }
+        }
+    }
+}
+
+impl ParticleAction {
+    /// `ParticleSystemAction::save` (`particle_system_action.cpp:488-495`):
+    /// a fresh section named by `nameID()`, the base serialise
+    /// (delay/minimumAge/name), then the type's `saveInternal`. `name_`
+    /// carries the display name; the reference ctor defaults it to
+    /// `nameID()`, which is what the port writes (the port carries no
+    /// separate display name). `enabled_` is editor-only state the
+    /// reference never serialises; the port writes it so its own round
+    /// trip keeps the flag — the reference loader ignores the unknown tag,
+    /// which is what keeps "旧编辑器可重载" true.
+    pub fn save(&self, ds: &mut DataSection) {
+        let sect = new_section(ds, self.kind.type_id().name_id());
+        sect.write_float("delay_", self.base.delay);
+        sect.write_float("minimumAge_", self.base.minimum_age);
+        sect.write_string("name_", self.kind.type_id().name_id());
+        sect.write_bool("enabled_", self.base.enabled);
+        match &self.kind {
+            ActionKind::Source(s) => {
+                // `SourcePSA::saveInternal` (`source_psa.cpp:106-134`):
+                // the generator sources go in first, then the members.
+                if let Some(vg) = &s.position_src {
+                    let vs = new_section(sect, "pPositionSrc");
+                    vg.save(vs);
+                }
+                if let Some(vg) = &s.velocity_src {
+                    let vs = new_section(sect, "pVelocitySrc");
+                    vg.save(vs);
+                }
+                sect.write_bool("motionTriggered_", s.motion_triggered);
+                sect.write_bool("timeTriggered_", s.time_triggered);
+                sect.write_bool("grounded_", s.grounded);
+                sect.write_float("dropDistance_", s.drop_distance);
+                sect.write_float("rate_", s.rate);
+                sect.write_float("sensitivity_", s.sensitivity);
+                sect.write_float("maxSpeed_", s.max_speed);
+                sect.write_float("activePeriod_", s.active_period);
+                sect.write_float("sleepPeriod_", s.sleep_period);
+                sect.write_float("sleepPeriodMax_", s.sleep_period_max);
+                sect.write_float("minimumSize_", s.minimum_size);
+                sect.write_float("maximumSize_", s.maximum_size);
+                sect.write_int("forcedUnitSize_", s.forced_unit_size);
+                sect.write_float("allowedTimeInSeconds_", s.allowed_time_in_seconds);
+                sect.write_vector2("initialRotation_", s.initial_rotation);
+                sect.write_vector2("randomInitialRotation_", s.random_initial_rotation);
+                sect.write_vector4("initialColour_", s.initial_colour);
+                sect.write_bool("randomSpin_", s.random_spin);
+                sect.write_float("minSpin_", s.min_spin);
+                sect.write_float("maxSpin_", s.max_spin);
+                sect.write_bool("ignoreRotation_", s.ignore_rotation);
+                sect.write_float("inheritVelocity_", s.inherit_velocity);
+            }
+            ActionKind::Sink(s) => {
+                sect.write_float("maximumAge_", s.maximum_age);
+                sect.write_float("minimumSpeed_", s.minimum_speed);
+                sect.write_bool("outsideOnly_", s.outside_only);
+            }
+            ActionKind::Barrier(b) => {
+                // `_ENUM` members serialise as ints.
+                sect.write_int("shape_", b.shape as i32);
+                sect.write_int("reaction_", b.reaction as i32);
+                sect.write_vector3("vecA_", b.vec_a);
+                sect.write_vector3("vecB_", b.vec_b);
+                sect.write_float("radius_", b.radius);
+            }
+            ActionKind::Force(f) => {
+                sect.write_vector3("vector_", f.vector);
+            }
+            ActionKind::Stream(st) => {
+                sect.write_vector3("vector_", st.vector);
+                sect.write_float("halfLife_", st.half_life);
+            }
+            ActionKind::Jitter(j) => {
+                // `JitterPSA::saveInternal` (`jitter_psa.cpp:213-231`):
+                // members first, the generator sources last — the mirror
+                // image of the Source order.
+                sect.write_bool("affectPosition_", j.affect_position);
+                sect.write_bool("affectVelocity_", j.affect_velocity);
+                if let Some(vg) = &j.position_src {
+                    let vs = new_section(sect, "pPositionSrc");
+                    vg.save(vs);
+                }
+                if let Some(vg) = &j.velocity_src {
+                    let vs = new_section(sect, "pVelocitySrc");
+                    vg.save(vs);
+                }
+            }
+            ActionKind::Scaler(sc) => {
+                sect.write_float("size_", sc.size);
+                sect.write_float("rate_", sc.rate);
+            }
+            ActionKind::TintShader(t) => {
+                sect.write_bool("repeat_", t.repeat);
+                sect.write_float("period_", t.period);
+                sect.write_float("fogAmount_", t.fog_amount);
+                // `TintShaderPSA::saveInternal`
+                // (`tint_shader_psa.cpp:228-248`): the tints list.
+                let tints = new_section(sect, "tints_");
+                for tint in &t.tints {
+                    let sub = new_section(tints, "Tint");
+                    sub.write_float("time", tint.time);
+                    sub.write_vector4("color", tint.colour);
+                }
+            }
+            ActionKind::NodeClamp(n) => {
+                sect.write_bool("fullyClamp_", n.fully_clamp);
+            }
+            ActionKind::Orbitor(o) => {
+                sect.write_vector3("point_", o.point);
+                sect.write_float("angularVelocity_", o.angular_velocity);
+                sect.write_bool("affectVelocity_", o.affect_velocity);
+            }
+            ActionKind::Flare(f) => {
+                sect.write_string("flareName_", &f.flare_name);
+                sect.write_float("flareStep_", f.flare_step);
+                sect.write_bool("colourize_", f.colourize);
+                sect.write_bool("useParticleSize_", f.use_particle_size);
+            }
+            ActionKind::Collide(c) => {
+                sect.write_bool("spriteBased_", c.sprite_based);
+                sect.write_float("elasticity_", c.elasticity);
+                sect.write_float("minAddedRotation_", c.min_added_rotation);
+                sect.write_float("maxAddedRotation_", c.max_added_rotation);
+                sect.write_string("soundTag_", &c.sound_tag);
+                sect.write_bool("soundEnabled_", c.sound_enabled);
+                sect.write_int("soundSrcIdx_", c.sound_src_idx);
+                sect.write_string("soundProject_", &c.sound_project);
+                sect.write_string("soundGroup_", &c.sound_group);
+                sect.write_string("soundName_", &c.sound_name);
+            }
+            // `MatrixSwarmPSA` and `SplatPSA` serialise no members.
+            ActionKind::MatrixSwarm(_) | ActionKind::Splat(_) => {}
+            ActionKind::Magnet(m) => {
+                sect.write_float("strength_", m.strength);
+                sect.write_float("minDist_", m.min_dist);
+            }
+        }
+    }
+}
+
+impl ParticleRenderer {
+    /// `ParticleSystemRenderer::save` + the sprite `saveInternal`s
+    /// (`particle_system_renderer.cpp`, `sprite_particle_renderer.cpp:815`):
+    /// a fresh section named by `nameID`, the base members, then the
+    /// sprite members (`materialFX_` as the enum int). The `rotated` flag
+    /// is not serialised — the loader re-derives it from the Source
+    /// rotations.
+    pub fn save(&self, ds: &mut DataSection) {
+        let (base, sprite) = match self {
+            ParticleRenderer::Sprite { base, sprite }
+            | ParticleRenderer::PointSprite { base, sprite } => (base, sprite),
+        };
+        let sect = new_section(ds, self.name_id());
+        sect.write_bool("viewDependent_", base.view_dependent);
+        sect.write_bool("local_", base.local);
+        sect.write_int("materialFX_", sprite.material_fx as i32);
+        sect.write_int("frameCount_", sprite.frame_count);
+        sect.write_float("frameRate_", sprite.frame_rate);
+        sect.write_vector3("explicitOrientation_", sprite.explicit_orientation);
+        sect.write_string("textureName_", &sprite.texture_name);
+        sect.write_float("softDepthRange_", sprite.soft_depth_range);
+        sect.write_float("softFalloffPower_", sprite.soft_falloff_power);
+        sect.write_float("softDepthOffset_", sprite.soft_depth_offset);
+        sect.write_float("nearFadeCutoff_", sprite.near_fade_cutoff);
+        sect.write_float("nearFadeStart_", sprite.near_fade_start);
+        sect.write_float("nearFadeFalloffPower_", sprite.near_fade_falloff_power);
+    }
+}
+
+impl ParticleSystem {
+    /// `ParticleSystem::save(DataSectionPtr, name, transient)`
+    /// (`particle_system.cpp:247-256`): the sanitised section name is
+    /// assigned back (the meta save passes it), then `saveInternal`.
+    pub fn save(&mut self, ds: &mut DataSection, name: &str, transient: bool) -> bool {
+        self.name = name.to_string();
+        self.save_internal(ds, transient)
+    }
+
+    /// `ParticleSystem::saveInternal` (`particle_system.cpp:419-465`):
+    /// the version stamp, the serialise tags (`explicitTransform_`
+    /// deliberately last, the template's own comment), the `Actions` and
+    /// `Renderer` sections, the capacity, then the bounding box —
+    /// `transient` keeps the cached box, a full save recalculates it.
+    pub fn save_internal(&mut self, ds: &mut DataSection, transient: bool) -> bool {
+        ds.write_int(VERSION_STRING, PARTICLE_SERIALISE_VERSION);
+
+        ds.write_float("windFactor_", self.wind_factor);
+        ds.write_vector3("explicitPosition_", self.explicit_position);
+        ds.write_vector3("explicitDirection_", self.explicit_direction);
+        ds.write_bool("explicitTransform_", self.explicit_transform);
+        ds.write_vector3("localOffset_", self.local_offset);
+        ds.write_float("maxLod_", self.max_lod);
+        ds.write_float("fixedFrameRate_", self.fixed_frame_rate);
+
+        let actions = new_section(ds, "Actions");
+        for action in &self.actions {
+            action.save(actions);
+        }
+
+        if let Some(renderer) = self.renderer.as_ref() {
+            let renderer_ds = new_section(ds, "Renderer");
+            renderer.save(renderer_ds);
+        }
+
+        ds.write_int("capacity", self.capacity);
+
+        // `forceFullBoundingBoxCalculation` only arms a flag the next
+        // `updateBoundingBox` honours; the written box is still the last
+        // calculated one either way, and the port's update always counts
+        // every live particle, so there is no flag to arm here.
+        if transient {
+            self.viz_box = self.bounding_box;
+        }
+
+        if let Some(bb) = ds.open_or_make_section("boundingBox") {
+            bb.del_children();
+            if !self.bounding_box.inside_out() {
+                bb.write_vector3("min", self.bounding_box.min);
+                bb.write_vector3("max", self.bounding_box.max);
+            }
+        }
+
+        true
+    }
+}
+
+impl MetaParticleSystem {
+    /// `MetaParticleSystem::save` (`meta_particle_system.cpp:305-351`):
+    /// the seed time is read back before the children go and rewritten
+    /// afterwards when it was set, each system lands in its own
+    /// sanitised section (spaces become the ".." token,
+    /// `XMLSection::sanitise`), and the helper model block is always
+    /// written. The editor-only metaData block is a tool seam.
+    pub fn save(&mut self, ds: &mut DataSection, transient: bool) -> bool {
+        let seed_time = ds.read_float("seedTime", -1.0);
+
+        ds.del_children();
+
+        for system in self.systems.iter_mut() {
+            let system_name = system.name.replace(' ', "..");
+            if let Some(child) = ds.open_or_make_section(&system_name) {
+                system.save(child, &system_name, transient);
+            }
+        }
+
+        if seed_time > -1.0 {
+            ds.write_float("seedTime", seed_time);
+        }
+
+        if let Some(helper) = ds.open_or_make_section("helperModel") {
+            helper.write_string("helperModelName", &self.helper_model_name);
+            helper.write_uint(
+                "helperModelCenterOnHardPoint",
+                self.helper_model_center_on_hard_point,
+            );
+        }
+
+        true
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Section: tests
 // ---------------------------------------------------------------------------
 
@@ -7421,5 +7760,526 @@ mod tests {
         // a system without a sink reports no duration
         let bare = ParticleSystem::new();
         assert_f32_eq!(bare.duration(), -1.0, "no sink");
+    }
+
+    // ---- coverage batch: save faces (BW-13-04-05) ---------------------------
+
+    /// `ParticleSystem::save` + `load` round trip over every serialised
+    /// face: all 15 action kinds with distinctive payloads, the system
+    /// serialise members, and the sprite renderer. The port's load faces
+    /// are the old editor's loader, so a clean round trip is the
+    /// acceptance ("旧编辑器可重载").
+    #[test]
+    fn system_save_round_trips_every_serialised_face() {
+        let mut system = ParticleSystem::new();
+        system.capacity = 77;
+        system.wind_factor = 0.3;
+        system.explicit_position = Vector3::new(1.0, 2.0, 3.0);
+        system.explicit_direction = Vector3::new(0.0, 0.0, -1.0);
+        system.explicit_transform = true;
+        system.local_offset = Vector3::new(4.0, 5.0, 6.0);
+        system.max_lod = 0.9;
+        system.fixed_frame_rate = 60.0;
+        system.bounding_box =
+            BoundBox::new(Vector3::new(-1.0, -1.0, -1.0), Vector3::new(2.0, 2.0, 2.0));
+        for (index, kind) in [
+            ActionKind::Source(SourcePSA::default()),
+            ActionKind::Sink(SinkPSA::default()),
+            ActionKind::Barrier(BarrierPSA::default()),
+            ActionKind::Force(ForcePSA::default()),
+            ActionKind::Stream(StreamPSA::default()),
+            ActionKind::Jitter(JitterPSA::default()),
+            ActionKind::Scaler(ScalerPSA::default()),
+            ActionKind::TintShader(TintShaderPSA::default()),
+            ActionKind::NodeClamp(NodeClampPSA { fully_clamp: false }),
+            ActionKind::Orbitor(OrbitorPSA::default()),
+            ActionKind::Flare(FlarePSA::default()),
+            ActionKind::Collide(CollidePSA::default()),
+            ActionKind::MatrixSwarm(MatrixSwarmPSA),
+            ActionKind::Magnet(MagnetPSA::default()),
+            ActionKind::Splat(SplatPSA),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            system.actions.push(ParticleAction {
+                base: ActionBase {
+                    delay: index as f32 * 0.5,
+                    minimum_age: index as f32,
+                    enabled: index != 14,
+                    ..ActionBase::default()
+                },
+                kind,
+            });
+        }
+        if let ActionKind::Source(s) = &mut system.actions[0].kind {
+            s.motion_triggered = true;
+            s.grounded = true;
+            s.drop_distance = 0.25;
+            s.rate = 11.0;
+            s.sensitivity = 3.0;
+            s.max_speed = 9.0;
+            s.active_period = 2.0;
+            s.sleep_period = 1.0;
+            s.sleep_period_max = 4.0;
+            s.minimum_size = 0.1;
+            s.maximum_size = 2.0;
+            s.forced_unit_size = 3;
+            s.allowed_time_in_seconds = 6.0;
+            s.initial_rotation = Vector2::new(1.0, 2.0);
+            s.random_initial_rotation = Vector2::new(0.5, 1.5);
+            s.initial_colour = Vector4::new(0.1, 0.2, 0.3, 0.4);
+            s.random_spin = true;
+            s.min_spin = -1.0;
+            s.max_spin = 1.0;
+            s.ignore_rotation = true;
+            s.inherit_velocity = 0.75;
+            s.position_src = Some(VectorGenerator::Box {
+                corner: Vector3::ZERO,
+                opposite: Vector3::new(1.0, 2.0, 3.0),
+            });
+            s.velocity_src = Some(VectorGenerator::Cylinder {
+                origin: Vector3::ZERO,
+                direction: Vector3::new(0.0, 1.0, 0.0),
+                max_radius: 2.0,
+                min_radius: 0.5,
+                basis_u: Vector3::new(1.0, 0.0, 0.0),
+                basis_v: Vector3::new(0.0, 0.0, 1.0),
+            });
+        }
+        if let ActionKind::Sink(s) = &mut system.actions[1].kind {
+            s.maximum_age = 3.5;
+            s.minimum_speed = 0.25;
+            s.outside_only = true;
+        }
+        if let ActionKind::Barrier(b) = &mut system.actions[2].kind {
+            b.shape = BarrierShape::Box;
+            b.reaction = BarrierReaction::Wrap;
+            b.vec_a = Vector3::new(-1.0, -1.0, -1.0);
+            b.vec_b = Vector3::new(1.0, 1.0, 1.0);
+            b.radius = 0.5;
+        }
+        if let ActionKind::Force(f) = &mut system.actions[3].kind {
+            f.vector = Vector3::new(0.0, -2.0, 0.0);
+        }
+        if let ActionKind::Stream(st) = &mut system.actions[4].kind {
+            st.vector = Vector3::new(1.0, 0.0, 0.0);
+            st.half_life = 2.5;
+        }
+        if let ActionKind::Jitter(j) = &mut system.actions[5].kind {
+            j.affect_position = false;
+            j.position_src = Some(VectorGenerator::Sphere {
+                centre: Vector3::new(1.0, 1.0, 1.0),
+                max_radius: 2.0,
+                min_radius: 0.5,
+            });
+            j.velocity_src = Some(VectorGenerator::Point {
+                position: Vector3::new(2.0, 2.0, 2.0),
+            });
+        }
+        if let ActionKind::Scaler(sc) = &mut system.actions[6].kind {
+            sc.size = 1.5;
+            sc.rate = 5.0;
+        }
+        if let ActionKind::TintShader(t) = &mut system.actions[7].kind {
+            t.repeat = true;
+            t.period = 3.0;
+            t.fog_amount = 0.25;
+            t.tints = vec![
+                Tint {
+                    time: 0.25,
+                    colour: Vector4::new(1.0, 0.6, 0.2, 1.0),
+                },
+                Tint {
+                    time: 0.75,
+                    colour: Vector4::new(0.4, 0.1, 0.05, 0.0),
+                },
+            ];
+        }
+        if let ActionKind::NodeClamp(n) = &mut system.actions[8].kind {
+            n.fully_clamp = true;
+        }
+        if let ActionKind::Orbitor(o) = &mut system.actions[9].kind {
+            o.point = Vector3::new(1.0, 2.0, 3.0);
+            o.angular_velocity = 1.5;
+            o.affect_velocity = false;
+        }
+        if let ActionKind::Flare(f) = &mut system.actions[10].kind {
+            f.flare_name = "flare/test".to_string();
+            f.flare_step = 0.5;
+            f.colourize = true;
+            f.use_particle_size = true;
+        }
+        if let ActionKind::Collide(c) = &mut system.actions[11].kind {
+            c.sprite_based = true;
+            c.elasticity = 0.5;
+            c.min_added_rotation = -1.0;
+            c.max_added_rotation = 1.0;
+            c.sound_tag = "tag".to_string();
+            c.sound_enabled = true;
+            c.sound_src_idx = 2;
+            c.sound_project = "proj".to_string();
+            c.sound_group = "grp".to_string();
+            c.sound_name = "snd".to_string();
+        }
+        if let ActionKind::Magnet(m) = &mut system.actions[13].kind {
+            m.strength = 2.0;
+            m.min_dist = 3.0;
+        }
+        system.renderer = Some(ParticleRenderer::Sprite {
+            base: RendererBase {
+                view_dependent: true,
+                local: true,
+            },
+            sprite: SpriteData {
+                material_fx: MaterialFX::Solid,
+                frame_count: 6,
+                frame_rate: 12.0,
+                explicit_orientation: Vector3::new(0.0, 1.0, 0.0),
+                texture_name: "fx/test.bmp".to_string(),
+                soft_depth_range: 0.4,
+                soft_falloff_power: 2.0,
+                soft_depth_offset: 0.05,
+                near_fade_cutoff: 0.1,
+                near_fade_start: 0.2,
+                near_fade_falloff_power: 3.0,
+                // the Source carries a non-zero initial rotation, so the
+                // reload re-derives the same flag
+                rotated: true,
+            },
+        });
+
+        let mut ds = resources::datasection::DataSection::new("root");
+        assert!(system.save(&mut ds, "round", true));
+        assert_eq!(
+            system.viz_box, system.bounding_box,
+            "transient keeps the cache"
+        );
+
+        let xml = ds.write_to_string();
+        let parsed = resources::datasection::parse("root", xml.as_bytes()).expect("parse");
+
+        let mut loaded = ParticleSystem::new();
+        assert!(loaded.load(&parsed, "round"));
+        assert_eq!(loaded.name, "round");
+        assert_eq!(loaded.capacity, 77);
+        assert_f32_eq!(loaded.wind_factor, 0.3, "wind");
+        assert_eq!(loaded.explicit_position, Vector3::new(1.0, 2.0, 3.0));
+        assert_eq!(loaded.explicit_direction, Vector3::new(0.0, 0.0, -1.0));
+        assert!(loaded.explicit_transform);
+        assert_eq!(loaded.local_offset, Vector3::new(4.0, 5.0, 6.0));
+        assert_f32_eq!(loaded.max_lod, 0.9, "lod");
+        assert_f32_eq!(loaded.fixed_frame_rate, 60.0, "frame rate");
+        assert_eq!(loaded.renderer, system.renderer, "renderer face");
+        // The Source's sleep period is recomputed by the load face
+        // (generateSleepPeriod, source_psa.cpp), so the expected value is
+        // the recomputation; every other action round trips whole.
+        let mut expect_source = system.actions[0].clone();
+        if let ActionKind::Source(s) = &mut expect_source.kind {
+            s.current_sleep_period = generate_sleep_period(s.sleep_period, s.sleep_period_max);
+        }
+        assert_eq!(loaded.actions[0], expect_source, "source face");
+        assert_eq!(&loaded.actions[1..7], &system.actions[1..7], "kinds 1..7");
+        assert_eq!(loaded.actions[7], system.actions[7], "tint ramp");
+        assert_eq!(
+            &loaded.actions[8..15],
+            &system.actions[8..15],
+            "kinds 8..15"
+        );
+    }
+
+    /// Recursive tag-path walk, document order.
+    fn tag_paths(ds: &DataSection, prefix: &str, out: &mut Vec<String>) {
+        let path = if prefix.is_empty() {
+            ds.section_name().to_string()
+        } else {
+            format!("{prefix}/{}", ds.section_name())
+        };
+        out.push(path.clone());
+        for i in 0..ds.count_children() {
+            tag_paths(ds.open_child(i).unwrap(), &path, out);
+        }
+    }
+
+    /// The saved XML pins the reference save layout: system serialise tags
+    /// in template order (explicitTransform last), `Actions` then
+    /// `Renderer` then `capacity` then `boundingBox`, the Source
+    /// generators ahead of its members and the Jitter generators behind
+    /// them, and the helper block last.
+    #[test]
+    fn saved_xml_pins_the_reference_tag_order() {
+        let mut meta = crate::particle::MetaParticleSystem::default();
+        let mut system = ParticleSystem::new();
+        system.name = "p".to_string();
+        let source = SourcePSA {
+            position_src: Some(VectorGenerator::Point {
+                position: Vector3::new(1.0, 1.0, 1.0),
+            }),
+            initial_rotation: Vector2::new(1.0, 2.0),
+            initial_colour: Vector4::new(0.1, 0.2, 0.3, 0.4),
+            ..SourcePSA::default()
+        };
+        system.actions.push(ParticleAction {
+            base: ActionBase::default(),
+            kind: ActionKind::Source(source),
+        });
+        let jitter = JitterPSA {
+            velocity_src: Some(VectorGenerator::Line {
+                origin: Vector3::ZERO,
+                direction: Vector3::new(0.0, 0.0, 1.0),
+            }),
+            ..JitterPSA::default()
+        };
+        system.actions.push(ParticleAction {
+            base: ActionBase::default(),
+            kind: ActionKind::Jitter(jitter),
+        });
+        system.actions.push(ParticleAction {
+            base: ActionBase::default(),
+            kind: ActionKind::TintShader(TintShaderPSA {
+                repeat: true,
+                period: 2.0,
+                fog_amount: 0.5,
+                tints: vec![Tint {
+                    time: 0.25,
+                    colour: Vector4::new(1.0, 0.6, 0.2, 1.0),
+                }],
+            }),
+        });
+        system.renderer =
+            Some(ParticleRenderer::create_renderer_of_type("SpriteParticleRenderer").unwrap());
+        system.bounding_box =
+            BoundBox::new(Vector3::new(-1.0, -1.0, -1.0), Vector3::new(2.0, 2.0, 2.0));
+        meta.add_system(system);
+
+        let mut ds = resources::datasection::DataSection::new("root");
+        assert!(meta.save(&mut ds, false));
+        let xml = ds.write_to_string();
+
+        // member order and the value formats the reference writer produces
+        assert!(
+            xml.contains("<serialiseVersionData>\t2\t</serialiseVersionData>"),
+            "version stamp"
+        );
+        assert!(
+            xml.contains("<initialRotation_>\t1.000000 2.000000\t</initialRotation_>"),
+            "vector2 face"
+        );
+        assert!(
+            xml.contains(
+                "<initialColour_>\t0.100000 0.200000 0.300000 0.400000\t</initialColour_>"
+            ),
+            "vector4 face"
+        );
+        assert!(
+            xml.contains(
+                "<helperModelCenterOnHardPoint>\t4294967295\t</helperModelCenterOnHardPoint>"
+            ),
+            "uint face"
+        );
+        assert!(xml.contains("<min>\t-1.000000 -1.000000 -1.000000\t</min>"));
+        assert!(xml.contains("<max>\t2.000000 2.000000 2.000000\t</max>"));
+        assert!(xml.contains("<capacity>\t40\t</capacity>"));
+
+        // the Source writes its generator ahead of its members, the Jitter
+        // behind them (source_psa.cpp:106 vs jitter_psa.cpp:213)
+        let source_at = xml.find("<Source>").expect("source");
+        let gen_at = xml.find("<pPositionSrc>").expect("source generator");
+        let members_at = xml.find("<motionTriggered_>").expect("source members");
+        assert!(
+            gen_at > source_at && gen_at < members_at,
+            "source: generator first"
+        );
+        let jitter_at = xml.find("<Jitter>").expect("jitter");
+        let jitter_members_at = xml.find("<affectPosition_>").expect("jitter members");
+        let jitter_gen_at = xml.find("<pVelocitySrc>").expect("jitter generator");
+        assert!(
+            jitter_members_at > jitter_at && jitter_gen_at > jitter_members_at,
+            "jitter: generator last"
+        );
+        assert!(
+            xml.find("<Source>").unwrap() < xml.find("<helperModel>").unwrap(),
+            "systems ahead of the helper block"
+        );
+
+        let parsed = resources::datasection::parse("root", xml.as_bytes()).expect("parse");
+        let mut got: Vec<String> = Vec::new();
+        tag_paths(&parsed, "", &mut got);
+        let expect: &[&str] = &[
+            "root",
+            "root/p",
+            "root/p/serialiseVersionData",
+            "root/p/windFactor_",
+            "root/p/explicitPosition_",
+            "root/p/explicitDirection_",
+            "root/p/explicitTransform_",
+            "root/p/localOffset_",
+            "root/p/maxLod_",
+            "root/p/fixedFrameRate_",
+            "root/p/Actions",
+            "root/p/Actions/Source",
+            "root/p/Actions/Source/delay_",
+            "root/p/Actions/Source/minimumAge_",
+            "root/p/Actions/Source/name_",
+            "root/p/Actions/Source/enabled_",
+            "root/p/Actions/Source/pPositionSrc",
+            "root/p/Actions/Source/pPositionSrc/PointVectorGenerator",
+            "root/p/Actions/Source/pPositionSrc/PointVectorGenerator/nameID_",
+            "root/p/Actions/Source/pPositionSrc/PointVectorGenerator/position_",
+            "root/p/Actions/Source/motionTriggered_",
+            "root/p/Actions/Source/timeTriggered_",
+            "root/p/Actions/Source/grounded_",
+            "root/p/Actions/Source/dropDistance_",
+            "root/p/Actions/Source/rate_",
+            "root/p/Actions/Source/sensitivity_",
+            "root/p/Actions/Source/maxSpeed_",
+            "root/p/Actions/Source/activePeriod_",
+            "root/p/Actions/Source/sleepPeriod_",
+            "root/p/Actions/Source/sleepPeriodMax_",
+            "root/p/Actions/Source/minimumSize_",
+            "root/p/Actions/Source/maximumSize_",
+            "root/p/Actions/Source/forcedUnitSize_",
+            "root/p/Actions/Source/allowedTimeInSeconds_",
+            "root/p/Actions/Source/initialRotation_",
+            "root/p/Actions/Source/randomInitialRotation_",
+            "root/p/Actions/Source/initialColour_",
+            "root/p/Actions/Source/randomSpin_",
+            "root/p/Actions/Source/minSpin_",
+            "root/p/Actions/Source/maxSpin_",
+            "root/p/Actions/Source/ignoreRotation_",
+            "root/p/Actions/Source/inheritVelocity_",
+            "root/p/Actions/Jitter",
+            "root/p/Actions/Jitter/delay_",
+            "root/p/Actions/Jitter/minimumAge_",
+            "root/p/Actions/Jitter/name_",
+            "root/p/Actions/Jitter/enabled_",
+            "root/p/Actions/Jitter/affectPosition_",
+            "root/p/Actions/Jitter/affectVelocity_",
+            "root/p/Actions/Jitter/pVelocitySrc",
+            "root/p/Actions/Jitter/pVelocitySrc/LineVectorGenerator",
+            "root/p/Actions/Jitter/pVelocitySrc/LineVectorGenerator/nameID_",
+            "root/p/Actions/Jitter/pVelocitySrc/LineVectorGenerator/origin_",
+            "root/p/Actions/Jitter/pVelocitySrc/LineVectorGenerator/direction_",
+            "root/p/Actions/TintShader",
+            "root/p/Actions/TintShader/delay_",
+            "root/p/Actions/TintShader/minimumAge_",
+            "root/p/Actions/TintShader/name_",
+            "root/p/Actions/TintShader/enabled_",
+            "root/p/Actions/TintShader/repeat_",
+            "root/p/Actions/TintShader/period_",
+            "root/p/Actions/TintShader/fogAmount_",
+            "root/p/Actions/TintShader/tints_",
+            "root/p/Actions/TintShader/tints_/Tint",
+            "root/p/Actions/TintShader/tints_/Tint/time",
+            "root/p/Actions/TintShader/tints_/Tint/color",
+            "root/p/Renderer",
+            "root/p/Renderer/SpriteParticleRenderer",
+            "root/p/Renderer/SpriteParticleRenderer/viewDependent_",
+            "root/p/Renderer/SpriteParticleRenderer/local_",
+            "root/p/Renderer/SpriteParticleRenderer/materialFX_",
+            "root/p/Renderer/SpriteParticleRenderer/frameCount_",
+            "root/p/Renderer/SpriteParticleRenderer/frameRate_",
+            "root/p/Renderer/SpriteParticleRenderer/explicitOrientation_",
+            "root/p/Renderer/SpriteParticleRenderer/textureName_",
+            "root/p/Renderer/SpriteParticleRenderer/softDepthRange_",
+            "root/p/Renderer/SpriteParticleRenderer/softFalloffPower_",
+            "root/p/Renderer/SpriteParticleRenderer/softDepthOffset_",
+            "root/p/Renderer/SpriteParticleRenderer/nearFadeCutoff_",
+            "root/p/Renderer/SpriteParticleRenderer/nearFadeStart_",
+            "root/p/Renderer/SpriteParticleRenderer/nearFadeFalloffPower_",
+            "root/p/capacity",
+            "root/p/boundingBox",
+            "root/p/boundingBox/min",
+            "root/p/boundingBox/max",
+            "root/helperModel",
+            "root/helperModel/helperModelName",
+            "root/helperModel/helperModelCenterOnHardPoint",
+        ];
+        let expect: Vec<String> = expect.iter().map(|s| s.to_string()).collect();
+        assert_eq!(got, expect, "the whole document tree in order");
+    }
+
+    /// `MetaParticleSystem::save` sanitises section names (spaces become
+    /// the ".." token) and preserves a seed time that was already in the
+    /// section it saves over.
+    #[test]
+    fn meta_save_sanitises_names_and_preserves_the_seed_time() {
+        let mut meta = crate::particle::MetaParticleSystem::default();
+        let mut system = ParticleSystem::new();
+        system.name = "my sys".to_string();
+        meta.add_system(system);
+        meta.helper_model_name = "helper/thing.model".to_string();
+
+        let mut ds =
+            resources::datasection::parse("root", b"<root><seedTime>0.25</seedTime></root>")
+                .expect("parse");
+        assert!(meta.save(&mut ds, false));
+        assert_f32_eq!(ds.read_float("seedTime", -1.0), 0.25, "seed time kept");
+        assert!(ds.find_child("my..sys").is_some(), "sanitised section name");
+        assert!(ds.find_child("my sys").is_none());
+        let helper = ds.find_child("helperModel").expect("helper block");
+        assert_eq!(
+            helper.read_string("helperModelName", ""),
+            "helper/thing.model"
+        );
+
+        // a fresh document carries no seed time and none is invented
+        let mut fresh = resources::datasection::DataSection::new("root");
+        assert!(meta.save(&mut fresh, false));
+        assert!(fresh.find_child("seedTime").is_none());
+    }
+
+    /// `saveInternal` always makes the `boundingBox` section but only
+    /// fills it when the box is not inside out; the empty section reloads
+    /// as the unit box and is then cleared, exactly like the reference.
+    #[test]
+    fn inside_out_box_writes_an_empty_bounding_section() {
+        let mut system = ParticleSystem::new();
+        system.renderer =
+            Some(ParticleRenderer::create_renderer_of_type("SpriteParticleRenderer").unwrap());
+        let mut ds = resources::datasection::DataSection::new("root");
+        assert!(system.save(&mut ds, "bare", true));
+        let bb = ds.find_child("boundingBox").expect("section always made");
+        assert_eq!(bb.count_children(), 0, "inside out: no min or max");
+
+        let xml = ds.write_to_string();
+        let parsed = resources::datasection::parse("root", xml.as_bytes()).expect("parse");
+        let mut loaded = ParticleSystem::new();
+        assert!(loaded.load(&parsed, "bare"));
+        assert_eq!(loaded.bounding_box.min, Vector3::new(-0.01, -0.01, -0.01));
+        assert_eq!(loaded.bounding_box.max, Vector3::new(0.01, 0.01, 0.01));
+    }
+
+    /// The acceptance face: the editor document saves, and a fresh editor
+    /// (the old editor's loader) reads it back whole.
+    #[test]
+    fn editor_save_then_load_is_the_old_editor_reload() {
+        let mut editor = editor_all_kinds();
+        editor.set_capacity(0, 55);
+        editor.set_wind_factor(0, 0.4);
+        editor.set_explicit_position(0, Vector3::new(1.0, 1.0, 2.0));
+        editor.meta.systems[0].set_renderer(ParticleRenderer::create_renderer_of_type(
+            "SpriteParticleRenderer",
+        ));
+        let face = crate::particle_editor::SpriteFace {
+            material_fx: MaterialFX::Blended,
+            frame_count: 3,
+            ..Default::default()
+        };
+        assert!(editor.set_sprite(0, &face));
+
+        let xml = editor.save(false);
+        let mut reloaded = crate::particle_editor::ParticleEditor::new(oracle::ORACLE_SEED);
+        assert!(reloaded.load(&xml, "doc"));
+        assert_eq!(reloaded.meta.name, "doc");
+        assert_eq!(reloaded.meta.n_systems(), 1);
+        let original = &editor.meta.systems[0];
+        let loaded = &reloaded.meta.systems[0];
+        assert_eq!(loaded.name, "all", "the system keeps its section name");
+        assert_eq!(loaded.capacity, 55);
+        assert_f32_eq!(loaded.wind_factor, 0.4, "wind");
+        assert_eq!(loaded.explicit_position, Vector3::new(1.0, 1.0, 2.0));
+        assert_eq!(loaded.renderer, original.renderer);
+        assert_eq!(loaded.actions, original.actions, "every action kind");
     }
 }

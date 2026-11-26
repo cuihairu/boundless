@@ -342,6 +342,39 @@ mod tests {
             column.find_chunk(&Vector3::new(50.0, 0.0, 50.0), &chunks),
             Some("00000000o".to_string())
         );
+        // a re-add while the column is shut to that chunk returns whole:
+        // the guard at `base_chunk_space.cpp:430-433` precedes both the slot
+        // contest and the holding, so a chunk the pump just shut out of this
+        // column adds nothing. A re-add without the see/shut cycle is not
+        // that case — `shutIfSeen` only shuts to a chunk the column has seen
+        // — and lands a second holding, like the reference's `holdings_`.
+        let items_before = column.holdings().len();
+        column.open_and_see("00000000o");
+        column.shut_if_seen("00000000o");
+        column.add_chunk(
+            &box_border(
+                Vector3::new(0.0, -1.0, 0.0),
+                Vector3::new(100.0, 1.0, 100.0),
+            ),
+            &chunks["00000000o"],
+        );
+        assert_eq!(
+            column.holdings().len(),
+            items_before,
+            "the shut re-add lands nothing"
+        );
+        // and the re-add after the pump re-opened the column lands its
+        // holding and keeps the slot
+        column.open_and_see("00000000o");
+        column.add_chunk(
+            &box_border(
+                Vector3::new(0.0, -1.0, 0.0),
+                Vector3::new(100.0, 1.0, 100.0),
+            ),
+            &chunks["00000000o"],
+        );
+        assert_eq!(column.holdings().len(), items_before + 1);
+        assert_eq!(column.outside_chunk(), Some("00000000o"));
     }
 
     #[test]
@@ -450,6 +483,18 @@ mod tests {
             column.find_chunk_excluding(&Vector3::new(90.0, 0.0, 90.0), "00000000o", &chunks),
             None
         );
+        // the excluded name standing as the current holder leaves the take
+        // arm reading the holder's volume — the reference dereferences a
+        // stale pointer there (`pChunk->volume()`, base_chunk_space.cpp:549);
+        // the port reads the map instead, so a holder whose entry is gone
+        // refuses the take and the walk keeps the outside chunk.
+        let mut no_inside = chunks.clone();
+        no_inside.remove("00000000i");
+        assert_eq!(
+            column.find_chunk_excluding(&Vector3::new(90.0, 0.0, 90.0), "00000000i", &no_inside),
+            Some("00000000o".to_string()),
+            "the stale holder loses its bid, the outside chunk stands"
+        );
     }
 
     /// The hull walk prefers the larger volume and skips identifiers no
@@ -491,12 +536,19 @@ mod tests {
             &small,
         );
 
-        let chunks = chunk_map(vec![big, small]);
+        let chunks = chunk_map(vec![big, small.clone()]);
         let pt = Vector3::new(13.0, 2.0, 13.0);
         // the walk takes the big hull first, then the small hull beats it
         // on the strictly-greater volume rule
         assert_eq!(
             column.find_chunk(&pt, &chunks),
+            Some("00000000i".to_string())
+        );
+        // an outside chunk missing from the map loses its bid too: the walk
+        // treats the holder like the reference treats a stale pointer and
+        // keeps the hull answer
+        assert_eq!(
+            column.find_chunk(&pt, &chunk_map(vec![small])),
             Some("00000000i".to_string())
         );
         // excluding the winner leaves the big hull standing

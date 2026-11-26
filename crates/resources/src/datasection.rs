@@ -993,6 +993,42 @@ impl DataSection {
         }
     }
 
+    /// `DataSection::writeVector2` (`datasection.cpp`): the two-component
+    /// twin of [`DataSection::write_vector3`].
+    pub fn write_vector2(&mut self, path: &str, value: Vector2) -> bool {
+        match self.open_or_make(path) {
+            Some(section) => {
+                section.set_vector2(value);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// `DataSection::writeVector4` (`datasection.cpp`): the four-component
+    /// twin of [`DataSection::write_vector3`].
+    pub fn write_vector4(&mut self, path: &str, value: Vector4) -> bool {
+        match self.open_or_make(path) {
+            Some(section) => {
+                section.set_vector4(value);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// `DataSection::writeUInt` (`datasection.cpp`): the unsigned twin of
+    /// [`DataSection::write_int`].
+    pub fn write_uint(&mut self, path: &str, value: u32) -> bool {
+        match self.open_or_make(path) {
+            Some(section) => {
+                section.set_uint(value);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// `DataSection::writeMatrix34` (`datasection.cpp:1066-1076`): create
     /// the path as needed and set its matrix value.
     pub fn write_matrix34(&mut self, path: &str, value: &Matrix) -> bool {
@@ -2408,6 +2444,26 @@ mod tests {
                 .unwrap()
                 .as_vector3(Vector3::ZERO),
             Vector3::new(4.0, 5.0, 6.0)
+        );
+    }
+
+    #[test]
+    fn write_vector2_vector4_and_uint_create_the_path_and_overwrite() {
+        let mut doc = parse_doc("<r/>");
+        assert!(doc.write_vector2("initialRotation_", Vector2::new(1.5, -2.0)));
+        assert!(doc.write_vector4("initialColour_", Vector4::new(1.0, 0.6, 0.2, 1.0)));
+        assert!(doc.write_uint("helperModelCenterOnHardPoint", 4294967295));
+        assert_eq!(
+            doc.write_to_string(),
+            "<root>\n\t<initialRotation_>\t1.500000 -2.000000\t</initialRotation_>\n\t<initialColour_>\t1.000000 0.600000 0.200000 1.000000\t</initialColour_>\n\t<helperModelCenterOnHardPoint>\t4294967295\t</helperModelCenterOnHardPoint>\n</root>\n"
+        );
+        // The path is made when missing, and an existing leaf is replaced.
+        assert!(doc.write_vector2("initialRotation_", Vector2::new(3.0, 4.0)));
+        assert_eq!(
+            doc.open_section("initialRotation_")
+                .unwrap()
+                .as_vector2(Vector2::ZERO),
+            Vector2::new(3.0, 4.0)
         );
     }
 
