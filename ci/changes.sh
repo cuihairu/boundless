@@ -146,7 +146,7 @@ main() {
         # The installer lane packages the server binary, so it follows the
         # entry crate, the runtime it ships and the lane.
         case "$p" in
-        apps/server/* | crates/server-runtime/* | ci/package.sh) package=1 ;;
+        apps/server/* | crates/server-runtime/* | ci/package.sh | ci/package-baseline.sh | tests/baseline/package-baseline.tsv) package=1 ;;
         esac
         # The docs release lane builds and archives the site, so it follows
         # the docs tree and the lane.

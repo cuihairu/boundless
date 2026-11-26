@@ -16,3 +16,4 @@ cross-cell	bots_set_out	min	1	docs/review/fixtures/load/cross-cell.report.json
 reconnect	mean_recovery_ticks	min	2.0	docs/review/fixtures/load/reconnect.report.json
 long-stability	resource_sample_count	min	1	docs/review/fixtures/load/long-stability.report.json
 long-stability	min_online_ratio	min	1.0	docs/review/fixtures/load/long-stability.report.json
+hotspot-baseline	mean_recovery_ticks	min	2.0	docs/review/fixtures/load/hotspot-baseline.report.json

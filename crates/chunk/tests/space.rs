@@ -489,6 +489,42 @@ fn streaming_bind_sequence_connects_neighbours() {
     assert_eq!(space.bind_order(), &order[..]);
 }
 
+/// BW-10-01-05: the point queries walk the focus grid — no column before a
+/// chunk is focussed, the outside chunk answers after `focus_chunk`, and
+/// points off the grid resolve to nothing.
+#[test]
+fn point_queries_walk_the_focus_grid_columns() {
+    let mapping = load_mapping();
+    let mut space = ChunkSpace::new(0, vec![mapping]);
+    let camera = Vector3::new(50.0, 0.0, 50.0);
+    let candidates = space.scan(&camera, 200.0);
+    space.load_and_bind(&candidates, &resource_resolver);
+
+    // `column(pt, false)` finds nothing while no chunk has been focussed:
+    // the columns only exist once `focusChunk` installs them.
+    let centre = Vector3::new(50.0, 0.0, 50.0);
+    assert!(space.column_at(&centre).is_none());
+    assert!(space.find_outside_chunk_from_point(&centre).is_none());
+
+    // Focusing 00000000o installs its column; the outside-chunk query now
+    // resolves the point to that chunk.
+    space.focus_chunk("00000000o");
+    let column = space.column_at(&centre).expect("the focussed column");
+    assert_eq!(column.outside_chunk(), Some("00000000o"));
+    assert_eq!(
+        space
+            .find_outside_chunk_from_point(&centre)
+            .map(|c| c.identifier.as_str()),
+        Some("00000000o")
+    );
+
+    // A point past the mapping's grid edge has no cell in the focus grid,
+    // so both queries answer None even with columns installed.
+    let astray = Vector3::new(150.0, 0.0, 250.0);
+    assert!(space.column_at(&astray).is_none());
+    assert!(space.find_outside_chunk_from_point(&astray).is_none());
+}
+
 /// BW-10-01-03: an inside chunk binds its external portal to an already-bound
 /// outside chunk, while portals to chunks that are not bound stay open.
 #[test]

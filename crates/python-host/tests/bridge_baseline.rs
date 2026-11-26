@@ -1,10 +1,12 @@
-//! OPT-03-01-01: the Python bridge baseline measurements.
+//! OPT-03-01-01 / OPT-03-01-02 / OPT-03-01-03: the Python bridge baseline
+//! measurements.
 //!
-//! The acceptance saves three record families — native↔Python conversion
-//! timing, cross-language callback timing, and GIL-queue occupancy —
-//! against the embedded interpreter the way the engine runs it: the
-//! main thread owns the lock from `Script::init` and the posted-task
-//! queue is drained by the thread that owns the GIL.
+//! The acceptance saves five record families — native↔Python conversion
+//! timing, cross-language callback timing, GIL-queue occupancy, the
+//! server timer fire path, and the frequent-task walk — against the
+//! embedded interpreter the way the engine runs it: the main thread owns
+//! the lock from `Script::init` and the posted-task queue is drained by
+//! the thread that owns the GIL.
 //!
 //! Structural invariants are asserted on every run: every conversion
 //! round-trip must return the value it was given, every callback must
@@ -21,6 +23,8 @@
 //!     --test bridge_baseline the_python_bridge_baseline_runs_all_legs -- --exact
 //! ```
 
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::mpsc::{Sender, channel};
@@ -30,6 +34,64 @@ use python_host::capi;
 use python_host::import_paths;
 use python_host::interpreter::{InitConfig, Interpreter};
 use python_host::pyref::PyRef;
+
+// ---------------------------------------------------------------------------
+// The counting allocator (the foundation alloc_counts pattern)
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    /// const-init: the flag and counters never allocate, so turning
+    /// tracking on inside the allocator cannot recurse.
+    static TRACKING: Cell<bool> = const { Cell::new(false) };
+    static ALLOCS: Cell<usize> = const { Cell::new(0) };
+    static BYTES: Cell<usize> = const { Cell::new(0) };
+}
+
+struct Counting;
+
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if TRACKING.with(Cell::get) {
+            ALLOCS.with(|c| c.set(c.get() + 1));
+            BYTES.with(|c| c.set(c.get() + layout.size()));
+        }
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) }
+    }
+}
+
+#[global_allocator]
+static GLOBAL: Counting = Counting;
+
+/// What one measurement window counted.
+struct Count {
+    /// The calling thread's allocation calls.
+    allocs: usize,
+    /// Their cumulative requested size.
+    bytes: usize,
+}
+
+/// Count the calling thread's allocations inside `body`. Everything the
+/// window touches runs on this thread — the tick loop, the timer fires,
+/// and the interpreter calls they make — so the count covers the whole
+/// fire path and is exactly reproducible on a given toolchain.
+fn measure<T>(body: impl FnOnce() -> T) -> (Count, T) {
+    TRACKING.with(|t| {
+        ALLOCS.with(|c| c.set(0));
+        BYTES.with(|c| c.set(0));
+        t.set(true);
+    });
+    let out = body();
+    TRACKING.with(|t| t.set(false));
+    let count = TRACKING.with(|_| Count {
+        allocs: ALLOCS.with(Cell::get),
+        bytes: BYTES.with(Cell::get),
+    });
+    (count, out)
+}
 
 /// Round-trips per conversion family.
 const CONVERT_ROUNDS: usize = 20_000;
@@ -73,7 +135,7 @@ impl Record {
 }
 
 /// The p50/p90/p99/max/min summary of a sample set, in nanoseconds.
-fn summarize(samples: &mut Vec<f64>) -> [f64; 5] {
+fn summarize(samples: &mut [f64]) -> [f64; 5] {
     samples.sort_by(|a, b| a.total_cmp(b));
     let pick = |p: f64| {
         let idx = ((p * samples.len() as f64).ceil() as usize).clamp(1, samples.len()) - 1;
@@ -204,11 +266,14 @@ fn gil_leg(record: &mut Record) {
     });
 
     let started = Instant::now();
+    let mut busy = std::time::Duration::ZERO;
     let mut completed = 0;
     while completed < POSTED_CALLBACKS {
         // Safe: this is the thread that owns the GIL, and the posted
         // closures only touch the report channel.
+        let pass = Instant::now();
         let ran = unsafe { python_host::gil::process() };
+        busy += pass.elapsed();
         completed += ran;
     }
     let drained = started.elapsed();
@@ -232,6 +297,18 @@ fn gil_leg(record: &mut Record) {
 
     record.put("gil_posted", POSTED_CALLBACKS);
     put_summary(record, "gil_e2e", summarize(&mut latencies));
+    // GIL occupancy: the share of the drain window the owning thread
+    // spends inside `process()` — servicing posted callbacks plus the
+    // polling between them. Under a flat-out poster this is the
+    // saturated-queue occupancy; an idle host spends most of its window
+    // outside `process()`.
+    record.put(
+        "gil_occupancy_pct",
+        format!(
+            "{:.1}",
+            busy.as_nanos() as f64 / drained.as_nanos() as f64 * 100.0
+        ),
+    );
     record.put(
         "gil_drain_ns_per_callback",
         format!("{:.1}", drained.as_nanos() as f64 / POSTED_CALLBACKS as f64),
@@ -260,7 +337,166 @@ fn temp_resource_root() -> PathBuf {
     root
 }
 
-/// `Script::init`'s config with the fixture root in the path list.
+/// Leg 4: the server timer fire path — the native→Python conversion a
+/// running cell pays on every fire of every repeating timer. `K`
+/// repeating timers are registered from script and driven by the
+/// engine tick; each fire carries `(id, userArg)` across the bridge,
+/// so the aggregate per-fire cost includes the conversion block the
+/// fire path builds. The fired count is asserted; the per-fire
+/// nanoseconds are recorded.
+fn timer_fire_leg(record: &mut Record, interpreter: &Interpreter) {
+    const TIMERS: usize = 32;
+    const TICKS: usize = 64;
+    const FIRES: usize = TIMERS * TICKS;
+
+    assert!(
+        interpreter.run_simple_string(
+            "import BigWorld\n\
+             fire_count = [0]\n\
+             timer_handles = []\n\
+             def on_fire(id, userArg):\n\
+             \x20   fire_count[0] += 1\n\
+             for _ in range(32):\n\
+             \x20   timer_handles.append(BigWorld.addTimer(on_fire, 0.1, 0.1, 9))\n\
+             ",
+        ),
+        "registering the timers failed"
+    );
+
+    // One tick of 0.1s at the 10 Hz server clock advances the queue one
+    // step, so each timer fires once per tick. The tick loop is also the
+    // allocation-count window: wall-clock nanoseconds are machine and
+    // load dependent (the fleet's compile load makes them swing), and
+    // the alloc count turns out to record a boundary, not a
+    // discriminator — CPython's pymalloc serves the fire path's object
+    // allocations from its own arenas, invisible to the Rust allocator,
+    // so both fire paths count 0.00 here and the number documents where
+    // the allocations live rather than which path is cheaper.
+    let (count, elapsed) = measure(|| {
+        let started = Instant::now();
+        for _ in 0..TICKS {
+            python_host::timers::tick(0.1);
+        }
+        started.elapsed()
+    });
+
+    // Read the fired count back out of __main__ through the probe the
+    // interpreter scenarios use.
+    assert!(
+        interpreter.run_simple_string("__probe = fire_count[0]\n"),
+        "probing the fired count failed"
+    );
+    let module = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+    assert!(!module.is_null(), "fetching __main__ failed");
+    let holder = PyRef::borrowed(module);
+    let probe = unsafe { capi::PyObject_GetAttrString(holder.as_ptr(), c"__probe".as_ptr()) };
+    let probe = PyRef::from_owned(probe).expect("fetching __probe failed");
+    let fired = unsafe { capi::PyLong_AsLongLong(probe.as_ptr()) };
+    assert_eq!(
+        fired, FIRES as i64,
+        "every timer must fire exactly once per tick"
+    );
+
+    // Cancel the timers so the legs that tick after this one (the
+    // frequent-task walk) measure their own Python work only. The
+    // measure window above already finished, so the cancel does not
+    // touch the recorded fire numbers.
+    assert!(
+        interpreter.run_simple_string(
+            "for h in timer_handles:\n\
+             \x20   BigWorld.delTimer(h)\n\
+             ",
+        ),
+        "cancelling the timers failed"
+    );
+
+    record.put("timer_fire_count", FIRES);
+    record.put(
+        "timer_fire_allocs_per_fire",
+        format!("{:.2}", count.allocs as f64 / FIRES as f64),
+    );
+    record.put(
+        "timer_fire_bytes_per_fire",
+        format!("{:.2}", count.bytes as f64 / FIRES as f64),
+    );
+    record.put(
+        "timer_fire_ns_per_fire",
+        format!("{:.1}", elapsed.as_nanos() as f64 / FIRES as f64),
+    );
+    record.put(
+        "timer_fire_ticks_s",
+        format!("{:.3}", elapsed.as_secs_f64()),
+    );
+}
+
+/// Leg 5: the frequent-task walk — the no-argument cross-language
+/// callback every registered task pays once per server tick
+/// (`ScriptFrequentTask::update`, `script_frequent_tasks.cpp:43-63`).
+/// `K` no-argument tasks are registered from script and driven by the
+/// same engine tick as the timers; a `None` result keeps a task
+/// registered, so the walk sees all of them every tick. The call count
+/// is asserted; the per-call nanoseconds are recorded.
+fn frequent_call_leg(record: &mut Record, interpreter: &Interpreter) {
+    const TASKS: usize = 32;
+    const TICKS: usize = 64;
+    const CALLS: usize = TASKS * TICKS;
+
+    assert!(
+        interpreter.run_simple_string(
+            "import BigWorld\n\
+             freq_count = [0]\n\
+             def on_frequent():\n\
+             \x20   freq_count[0] += 1\n\
+             \x20   return None\n\
+             for _ in range(32):\n\
+             \x20   BigWorld.addFrequentTask(on_frequent)\n\
+             ",
+        ),
+        "registering the frequent tasks failed"
+    );
+
+    let (count, elapsed) = measure(|| {
+        let started = Instant::now();
+        for _ in 0..TICKS {
+            python_host::timers::tick(0.1);
+        }
+        started.elapsed()
+    });
+
+    assert!(
+        interpreter.run_simple_string("__probe = freq_count[0]\n"),
+        "probing the frequent call count failed"
+    );
+    let module = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+    assert!(!module.is_null(), "fetching __main__ failed");
+    let holder = PyRef::borrowed(module);
+    let probe = unsafe { capi::PyObject_GetAttrString(holder.as_ptr(), c"__probe".as_ptr()) };
+    let probe = PyRef::from_owned(probe).expect("fetching __probe failed");
+    let calls = unsafe { capi::PyLong_AsLongLong(probe.as_ptr()) };
+    assert_eq!(
+        calls, CALLS as i64,
+        "every frequent task must run exactly once per tick"
+    );
+
+    record.put("frequent_calls", CALLS);
+    record.put(
+        "frequent_allocs_per_call",
+        format!("{:.2}", count.allocs as f64 / CALLS as f64),
+    );
+    record.put(
+        "frequent_bytes_per_call",
+        format!("{:.2}", count.bytes as f64 / CALLS as f64),
+    );
+    record.put(
+        "frequent_ns_per_call",
+        format!("{:.1}", elapsed.as_nanos() as f64 / CALLS as f64),
+    );
+    record.put("frequent_ticks_s", format!("{:.3}", elapsed.as_secs_f64()));
+}
+
+/// `Script::init`'s config with the fixture root in the path list and
+/// the `cell` component, which carries the server timer table the fire
+/// leg drives.
 fn baseline_config() -> InitConfig {
     let root = temp_resource_root();
     let root_path = root.to_str().expect("a UTF-8 root").to_owned();
@@ -268,6 +504,7 @@ fn baseline_config() -> InitConfig {
     paths.add_res_path(&[&root_path], import_paths::COMMON_PATH);
     InitConfig {
         import_paths: paths,
+        component: "cell".to_owned(),
         ..InitConfig::default()
     }
 }
@@ -283,6 +520,8 @@ fn the_python_bridge_baseline_runs_all_legs() {
 
     conversion_leg(&mut record);
     callback_leg(&mut record, &interpreter);
+    timer_fire_leg(&mut record, &interpreter);
+    frequent_call_leg(&mut record, &interpreter);
     gil_leg(&mut record);
 
     assert_eq!(

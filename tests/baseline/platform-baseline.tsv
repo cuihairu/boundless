@@ -1,0 +1,16 @@
+platform	probe	samples	min_ns	median_ns	p99_ns	max_ns	note
+linux-x86_64	clock_read_latency	1	272	272	272	272	per monotonic_now_micros() call
+linux-x86_64	clock_granularity	1	1	1	1	1	min nonzero adjacent-read delta; 38 distinct steps over 200000 reads
+linux-x86_64	instant_read_latency	1	195	195	195	195	per Instant::now() call
+linux-x86_64	instant_resolution	1	59	59	59	59	min nonzero Instant pair delta (the repo's timing floor)
+linux-x86_64	sleep_1ms_actual	50	1065440	1080771	1503818	1503818	requested=1ms overshoot_median=0us
+linux-x86_64	sleep_2ms_actual	50	2053400	2088015	2510502	2510502	requested=2ms overshoot_median=0us
+linux-x86_64	sleep_5ms_actual	50	5054767	5084358	5118134	5118134	requested=5ms overshoot_median=0us
+linux-x86_64	sleep_10ms_actual	50	10075671	10083773	10575422	10575422	requested=10ms overshoot_median=0us
+linux-x86_64	file_write_4k	256	8178	9177	28338	57642	4096B payload, std::fs::write per op
+linux-x86_64	file_read_4k	256	4820	5442	27142	658841	4096B payload, std::fs::read per op, byte-equal
+linux-x86_64	atomic_replace_4k	256	23341	25453	85477	3099387	platform::file::atomic_replace per op (write+fsync+rename), byte-equal
+linux-x86_64	wakeup_roundtrip	200	658	797	4280	21080	trigger -> blocked wait reports the self-pipe (per round)
+linux-x86_64	poller_timeout_1ms	100	1050847	1081201	3792718	3792718	epoll_wait(1ms) with no events, actual wait per call
+macos-arm64	-	-	-	-	-	-	pending: BW-15-04 — the macOS legs compile clock/interface only; the file-system and windowing slices own the I/O and timer faces
+windows-x86_64	-	-	-	-	-	-	pending: BW-15-03 — server-runtime/src/signals.rs still uses Linux-only signal APIs, so the Windows leg cannot build the workspace

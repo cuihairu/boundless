@@ -10,3 +10,12 @@ repository.workspace = true
 [dependencies]
 foundation = { workspace = true }
 platform = { workspace = true }
+
+# Network baselines (OPT-02-01-01): criterion benches in benches/
+# (RPC round trip, fragmentation, wire and TCP throughput).
+[dev-dependencies]
+criterion = "0.8"
+
+[[bench]]
+name = "network"
+harness = false

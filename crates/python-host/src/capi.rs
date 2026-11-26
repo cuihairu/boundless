@@ -435,6 +435,9 @@ pub const Py_tp_doc: c_int = 56;
 pub const Py_tp_methods: c_int = 64;
 /// `Py_tp_new` (`typeslots.h`).
 pub const Py_tp_new: c_int = 65;
+/// `Py_tp_init` (`typeslots.h`; the number is part of the stable ABI, it
+/// does not follow `Py_tp_new`'s — slot 66 is `Py_tp_repr`).
+pub const Py_tp_init: c_int = 60;
 /// `Py_tp_repr` (`typeslots.h`).
 pub const Py_tp_repr: c_int = 66;
 /// `PyMappingMethods` (`cpython/object.h`): the mapping protocol table.
@@ -646,6 +649,7 @@ unsafe extern "C" {
     ) -> c_int;
     pub fn PyObject_CallNoArgs(func: *mut PyObject) -> *mut PyObject;
     pub fn PyObject_CallObject(func: *mut PyObject, args: *mut PyObject) -> *mut PyObject;
+    pub fn PyObject_CallFunction(func: *mut PyObject, format: *const c_char, ...) -> *mut PyObject;
     pub fn PyCallable_Check(obj: *mut PyObject) -> c_int;
     pub fn PyObject_IsTrue(obj: *mut PyObject) -> c_int;
     pub fn PyModule_AddFunctions(module: *mut PyObject, functions: *const PyMethodDef) -> c_int;
@@ -689,6 +693,11 @@ unsafe extern "C" {
     pub fn PyNumber_AsSsize_t(obj: *mut PyObject, exception: *mut PyObject) -> PySsize;
     pub fn PyType_FromSpec(spec: *mut PyTypeSpec) -> *mut PyObject;
     pub fn PyType_GenericAlloc(type_: *mut PyTypeObject, items: PySsize) -> *mut PyObject;
+    /// `PyInstanceMethod_New`: wraps any callable so a class-attribute read
+    /// through an instance binds the instance as the first argument. The
+    /// engine-built base classes take this route (the type object already
+    /// exists when the host wires its method faces).
+    pub fn PyInstanceMethod_New(callable: *mut PyObject) -> *mut PyObject;
     pub fn PyType_GetFlags(type_: *mut PyTypeObject) -> std::os::raw::c_ulong;
     pub fn PyType_GetSlot(type_: *mut PyTypeObject, slot: c_int) -> *mut std::os::raw::c_void;
     pub fn PyObject_GC_UnTrack(obj: *mut PyObject);

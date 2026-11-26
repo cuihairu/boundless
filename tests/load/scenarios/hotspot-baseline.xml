@@ -1,0 +1,12 @@
+<scenario>
+  <name>hotspot-baseline</name>
+  <seed>271828</seed>
+  <concurrency>200</concurrency>
+  <rampRate>20</rampRate>
+  <warmup>10</warmup>
+  <duration>300</duration>
+  <accountPool mode="explicit">
+    <accounts>HotspotBot1,HotspotBot2,HotspotBot3,HotspotBot4</accounts>
+    <password>hotspot</password>
+  </accountPool>
+</scenario>

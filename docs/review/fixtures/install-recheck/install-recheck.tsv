@@ -1,0 +1,11 @@
+install_ok	1
+our_artifact_bytes	177
+el7_artifact_bytes	177
+artifacts_byte_identical	1
+tree_nodes	7
+leaf_values_compared	4
+tree_mismatches	0
+typed_spot_checks	4
+repack_identical	1
+interface_faces_ok	1
+error_messages_exact	2

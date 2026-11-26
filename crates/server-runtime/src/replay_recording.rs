@@ -538,11 +538,11 @@ pub fn compress_frame(compression_type: u8, data: &[u8]) -> Result<Vec<u8>, Comp
 }
 
 /// Inflate a `ZipOStream` frame the way `ZipIStream` does
-/// (`zip_stream.cpp:124-184`), as the tests' independent read-back probe: a
-/// packed uncompressed length, a packed compressed length, then the zlib
-/// payload.
-#[cfg(test)]
-fn decompress_frame(frame: &[u8]) -> Result<Vec<u8>, CompressError> {
+/// (`zip_stream.cpp:124-184`): a packed uncompressed length, a packed
+/// compressed length, then the zlib payload. A `NONE` frame is the raw bytes
+/// behind its type byte. The declared uncompressed length bounds the output,
+/// the way `uncompress`'s `destLen` does.
+pub fn decompress_frame(frame: &[u8]) -> Result<Vec<u8>, CompressError> {
     let (&compression_type, rest) = frame
         .split_first()
         .ok_or(CompressError::InvalidCompressionType(0))?;

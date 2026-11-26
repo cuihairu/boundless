@@ -1,0 +1,12 @@
+sequence_entries	7
+sequence_field_checks	7
+sequence_threads	2
+deferred_removal	1
+cancellation_dropped	3
+resume_collected	1
+entry_overflow_budget	4
+entry_overflow_lost	2
+entry_overflow_watermark	4
+display_overflow_error	1
+stack_overflow_kept	64
+stack_overflow_lost	1

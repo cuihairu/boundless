@@ -19,7 +19,7 @@ use std::collections::BTreeSet;
 
 use foundation::math::{PlaneEq, Vector2, Vector3};
 
-use crate::flood::{AdjGridElt, FloodPhysics, MAX_HEIGHTS};
+use crate::flood::{AdjGridElt, MAX_HEIGHTS};
 use crate::view::{NavVertex, NavView};
 
 /// The generator-side chunk seam: `owns` is `Chunk::owns` for an
@@ -573,6 +573,32 @@ impl WaypointGenerator {
     /// `hgtGrids()` (`waypoint_generator.hpp:52`).
     pub fn hgt_grids_mut(&mut self) -> &mut [Vec<f32>] {
         &mut self.hgt_grids
+    }
+
+    /// `adjGrids` and `hgtGrids`, as `workflow::read_tga` and the port of
+    /// `ChunkWaypointGenerator::generate` need to fill them.
+    pub(crate) fn grids_mut(&mut self) -> (&mut [Vec<AdjGridElt>], &mut [Vec<f32>]) {
+        (&mut self.adj_grids, &mut self.hgt_grids)
+    }
+
+    /// `gridX_` (`waypoint_generator.hpp:191`).
+    pub(crate) fn grid_x(&self) -> u32 {
+        self.grid_x
+    }
+
+    /// `gridMin_` / `gridResolution_` (`waypoint_generator.hpp:193-194`).
+    pub(crate) fn grid_origin(&self) -> (Vector3, f32) {
+        (self.grid_min, self.grid_resolution)
+    }
+
+    /// `hgtGrids_` (`waypoint_generator.hpp:187`) read-only.
+    pub(crate) fn hgt_grids(&self) -> &[Vec<f32>] {
+        &self.hgt_grids
+    }
+
+    /// `gridZ_` (`waypoint_generator.hpp:192`).
+    pub(crate) fn grid_z(&self) -> u32 {
+        self.grid_z
     }
 
     /// `adjGrids()` (`waypoint_generator.hpp:51`).

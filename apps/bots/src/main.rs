@@ -71,12 +71,18 @@ fn run() -> i32 {
         ));
     }
     if let Some(report_path) = std::env::var("LOAD_REPORT").ok().filter(|p| !p.is_empty()) {
-        // The long-stability run saves the process resource series in the
-        // report (the wall-clock half that cannot travel in the
-        // reproducible stdout metrics) with its period and metric
+        // The long-stability and hotspot runs save the process resource
+        // series in the report (the wall-clock half that cannot travel in
+        // the reproducible stdout metrics) with its period and metric
         // definitions, per the BW-17-03-04 report contract.
-        if let SmokeRun::LongStability(ledger) = &smoke_run {
-            report_values.extend(ledger.resource_report_entries());
+        match &smoke_run {
+            SmokeRun::LongStability(ledger) => {
+                report_values.extend(ledger.resource_report_entries());
+            }
+            SmokeRun::Hotspot(ledger) => {
+                report_values.extend(ledger.resource_report_entries());
+            }
+            _ => {}
         }
         let topology = std::env::var("LOAD_TARGET")
             .ok()
