@@ -2907,7 +2907,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。
 - [ ] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。他席已交付未进 main：bw14-script-host `9a74213`+勾 `ea2d32a`（crates/profiler/tests/channel_gate_delta.rs 387 行——64 帧×8 Start/End 对走 runtime gate 半程启/禁对比+re-arm 腿：tick 5039ns→312ns ≈16× 省、Start/End 各省 ~22%，禁用路径零新增分配；契约断言=禁用丢弃已缓冲对、禁用半程逐条 no-op、闭帧视图冻结不重置、台账复跑恒等）；主席并入后按勾行态处理，本行保持开。
-- [ ] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。
+- [ ] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。他席已交付未进 main：bw14-script-host `f4fce4f`（crates/message_logger/tests/query_backpressure_interop.rs 211 行+crates/watcher/tests/backpressure_query_contract.rs 255 行——两通道各一套集成：背压面 UserSegmentWriter::is_full(budget) 64 条对 748 字节预算停首拒，算术边 20×38=760≥748/19×38=722<748 逐断；落地记录查询回读 time/priority/source/category 全等，args blob 重渲染原消息；工具互通=入 shipped QueryableLog+run_query 真过滤管线双向 walk（反向逐字镜像）+severity/source mask+include/exclude frame（手算幸存集 {11,13} 双向），类型错误路径 UnknownCategory 等+越界窗答空+反转窗双向空，证据 opt-12-01-03-backpressure-interop.md）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-13-01 冷构建、增量与编辑器加载
 
@@ -4471,7 +4471,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。
 - [ ] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。他席已交付未进 main：bw14-script-host `9a74213`+勾 `ea2d32a`（crates/profiler/tests/channel_gate_delta.rs 387 行——64 帧×8 Start/End 对走 runtime gate 半程启/禁对比+re-arm 腿：tick 5039ns→312ns ≈16× 省、Start/End 各省 ~22%，禁用路径零新增分配；契约断言=禁用丢弃已缓冲对、禁用半程逐条 no-op、闭帧视图冻结不重置、台账复跑恒等）；主席并入后按勾行态处理，本行保持开。
-- [ ] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。
+- [ ] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。他席已交付未进 main：bw14-script-host `f4fce4f`（crates/message_logger/tests/query_backpressure_interop.rs 211 行+crates/watcher/tests/backpressure_query_contract.rs 255 行——两通道各一套集成：背压面 UserSegmentWriter::is_full(budget) 64 条对 748 字节预算停首拒，算术边 20×38=760≥748/19×38=722<748 逐断；落地记录查询回读 time/priority/source/category 全等，args blob 重渲染原消息；工具互通=入 shipped QueryableLog+run_query 真过滤管线双向 walk（反向逐字镜像）+severity/source mask+include/exclude frame（手算幸存集 {11,13} 双向），类型错误路径 UnknownCategory 等+越界窗答空+反转窗双向空，证据 opt-12-01-03-backpressure-interop.md）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-13-01 冷构建、增量与编辑器加载
 
@@ -5996,7 +5996,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。
 - [ ] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。他席已交付未进 main：bw14-script-host `9a74213`+勾 `ea2d32a`（crates/profiler/tests/channel_gate_delta.rs 387 行——64 帧×8 Start/End 对走 runtime gate 半程启/禁对比+re-arm 腿：tick 5039ns→312ns ≈16× 省、Start/End 各省 ~22%，禁用路径零新增分配；契约断言=禁用丢弃已缓冲对、禁用半程逐条 no-op、闭帧视图冻结不重置、台账复跑恒等）；主席并入后按勾行态处理，本行保持开。
-- [ ] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。
+- [ ] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。他席已交付未进 main：bw14-script-host `f4fce4f`（crates/message_logger/tests/query_backpressure_interop.rs 211 行+crates/watcher/tests/backpressure_query_contract.rs 255 行——两通道各一套集成：背压面 UserSegmentWriter::is_full(budget) 64 条对 748 字节预算停首拒，算术边 20×38=760≥748/19×38=722<748 逐断；落地记录查询回读 time/priority/source/category 全等，args blob 重渲染原消息；工具互通=入 shipped QueryableLog+run_query 真过滤管线双向 walk（反向逐字镜像）+severity/source mask+include/exclude frame（手算幸存集 {11,13} 双向），类型错误路径 UnknownCategory 等+越界窗答空+反转窗双向空，证据 opt-12-01-03-backpressure-interop.md）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-13-01 冷构建、增量与编辑器加载
 
@@ -7521,7 +7521,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。
 - [ ] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。他席已交付未进 main：bw14-script-host `9a74213`+勾 `ea2d32a`（crates/profiler/tests/channel_gate_delta.rs 387 行——64 帧×8 Start/End 对走 runtime gate 半程启/禁对比+re-arm 腿：tick 5039ns→312ns ≈16× 省、Start/End 各省 ~22%，禁用路径零新增分配；契约断言=禁用丢弃已缓冲对、禁用半程逐条 no-op、闭帧视图冻结不重置、台账复跑恒等）；主席并入后按勾行态处理，本行保持开。
-- [ ] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。
+- [ ] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。他席已交付未进 main：bw14-script-host `f4fce4f`（crates/message_logger/tests/query_backpressure_interop.rs 211 行+crates/watcher/tests/backpressure_query_contract.rs 255 行——两通道各一套集成：背压面 UserSegmentWriter::is_full(budget) 64 条对 748 字节预算停首拒，算术边 20×38=760≥748/19×38=722<748 逐断；落地记录查询回读 time/priority/source/category 全等，args blob 重渲染原消息；工具互通=入 shipped QueryableLog+run_query 真过滤管线双向 walk（反向逐字镜像）+severity/source mask+include/exclude frame（手算幸存集 {11,13} 双向），类型错误路径 UnknownCategory 等+越界窗答空+反转窗双向空，证据 opt-12-01-03-backpressure-interop.md）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-13-01 冷构建、增量与编辑器加载
 
@@ -9085,7 +9085,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。
 - [ ] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。他席已交付未进 main：bw14-script-host `9a74213`+勾 `ea2d32a`（crates/profiler/tests/channel_gate_delta.rs 387 行——64 帧×8 Start/End 对走 runtime gate 半程启/禁对比+re-arm 腿：tick 5039ns→312ns ≈16× 省、Start/End 各省 ~22%，禁用路径零新增分配；契约断言=禁用丢弃已缓冲对、禁用半程逐条 no-op、闭帧视图冻结不重置、台账复跑恒等）；主席并入后按勾行态处理，本行保持开。
-- [ ] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。
+- [ ] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。他席已交付未进 main：bw14-script-host `f4fce4f`（crates/message_logger/tests/query_backpressure_interop.rs 211 行+crates/watcher/tests/backpressure_query_contract.rs 255 行——两通道各一套集成：背压面 UserSegmentWriter::is_full(budget) 64 条对 748 字节预算停首拒，算术边 20×38=760≥748/19×38=722<748 逐断；落地记录查询回读 time/priority/source/category 全等，args blob 重渲染原消息；工具互通=入 shipped QueryableLog+run_query 真过滤管线双向 walk（反向逐字镜像）+severity/source mask+include/exclude frame（手算幸存集 {11,13} 双向），类型错误路径 UnknownCategory 等+越界窗答空+反转窗双向空，证据 opt-12-01-03-backpressure-interop.md）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-13-01 冷构建、增量与编辑器加载
 
@@ -10610,7 +10610,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **OPT-12-01-01 记录各观测通道开销**。**验收** 分离日志、Watcher 和 Profiler。
 - [ ] **OPT-12-01-02 降低观测成本**。**验收** 报告启用和关闭时的差值。他席已交付未进 main：bw14-script-host `9a74213`+勾 `ea2d32a`（crates/profiler/tests/channel_gate_delta.rs 387 行——64 帧×8 Start/End 对走 runtime gate 半程启/禁对比+re-arm 腿：tick 5039ns→312ns ≈16× 省、Start/End 各省 ~22%，禁用路径零新增分配；契约断言=禁用丢弃已缓冲对、禁用半程逐条 no-op、闭帧视图冻结不重置、台账复跑恒等）；主席并入后按勾行态处理，本行保持开。
-- [ ] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。
+- [ ] **OPT-12-01-03 复跑背压与工具互通**。**验收** 查询及数据记录符合契约。他席已交付未进 main：bw14-script-host `f4fce4f`（crates/message_logger/tests/query_backpressure_interop.rs 211 行+crates/watcher/tests/backpressure_query_contract.rs 255 行——两通道各一套集成：背压面 UserSegmentWriter::is_full(budget) 64 条对 748 字节预算停首拒，算术边 20×38=760≥748/19×38=722<748 逐断；落地记录查询回读 time/priority/source/category 全等，args blob 重渲染原消息；工具互通=入 shipped QueryableLog+run_query 真过滤管线双向 walk（反向逐字镜像）+severity/source mask+include/exclude frame（手算幸存集 {11,13} 双向），类型错误路径 UnknownCategory 等+越界窗答空+反转窗双向空，证据 opt-12-01-03-backpressure-interop.md）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-13-01 冷构建、增量与编辑器加载
 
