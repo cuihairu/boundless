@@ -88,14 +88,20 @@ fn start_and_stop(role: &str, signal_name: &str) -> (ExitStatus, String) {
     });
 
     // Wait for the running line, bounded. It prints after every signal
-    // face is installed, so a signal delivered from here on is the
-    // face's to answer. A timeout keeps polling: the child may simply
-    // be slow under load.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // face is installed and the Mercury interface is up, so a signal
+    // delivered from here on is the face's to answer. The startup pays
+    // the machined query's two-second timeout on a machined-less host
+    // (`bwservice.hpp:113-119`), and the bound keeps polling: the child
+    // may simply be slow under load. Every line seen on the way -- the
+    // startup lines carry the interface observables -- is kept, not
+    // consumed by the wait.
+    let deadline = Instant::now() + Duration::from_secs(10);
     let mut started = false;
+    let mut startup_lines = Vec::new();
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(line) => {
+                startup_lines.push(line.clone());
                 if line.contains("is running") {
                     started = true;
                     break;
@@ -141,9 +147,10 @@ fn start_and_stop(role: &str, signal_name: &str) -> (ExitStatus, String) {
     };
 
     // The child has exited, so its stderr pipe is closed: the reader
-    // drains to EOF and disconnects. Join it, then collect every line.
+    // drains to EOF and disconnects. Join it, then collect every line --
+    // the startup lines the wait loop read first, then the rest.
     let _ = reader.join();
-    let stderr: String = rx.try_iter().collect();
+    let stderr: String = startup_lines.into_iter().chain(rx.try_iter()).collect();
     (status, stderr)
 }
 
@@ -162,6 +169,19 @@ fn every_role_starts_and_shuts_down_on_the_controlled_signal() {
         assert!(
             stderr.contains("dispatchSignal: SIGUSR1"),
             "{role}: missing the dispatch line:\n{stderr}"
+        );
+        // The interface joined the loop (bwservice.hpp:113-125): the
+        // machined query failed on this machined-less host, and the
+        // default interface name went to the socket. The reference logs
+        // both lines verbatim.
+        assert!(
+            stderr
+                .contains("bwMainT: Unable to determine internal interface via BWMachineD query."),
+            "{role}: missing the machined-query warning:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("Couldn't parse interface spec 'bwmachined' so using all interfaces"),
+            "{role}: the interface did not come up on the default name:\n{stderr}"
         );
         assert!(
             stderr.contains("has shut down."),
@@ -373,5 +393,38 @@ fn first_start_without_a_res_tree_logs_the_reference_failure() {
     assert!(
         stderr.contains("Could not find"),
         "the unlocated first start did not log the reference failure:\n{stderr}"
+    );
+}
+
+#[test]
+fn a_configured_internal_interface_takes_the_deprecation_warning() {
+    // `bwMainT` warns before the interface comes up when the option is
+    // set at all (bwservice.hpp:134-140): the setting is deprecated, and
+    // the default rides the broadcast route instead. The role still
+    // starts, and the socket follows the configured name -- here a name
+    // no such device answers to, so the fallback line proves the value
+    // was read from the role's own config section.
+    let res = std::env::temp_dir().join(format!("role-ii-{}", std::process::id()));
+    std::fs::create_dir_all(res.join("server")).expect("mkdir the res tree");
+    std::fs::write(
+        res.join("server/bw.xml"),
+        "<root>\n\t<baseApp>\n\t\t<internalInterface>eth9</internalInterface>\n\t</baseApp>\n</root>\n",
+    )
+    .expect("write the fixture bw.xml");
+
+    let stderr = first_start_stderr(Some(&res.to_string_lossy()));
+    let _ = std::fs::remove_dir_all(&res);
+
+    assert!(
+        stderr.contains("internalInterface set to 'eth9' in bw.xml."),
+        "the configured name takes the deprecation warning:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Couldn't parse interface spec 'eth9' so using all interfaces"),
+        "the socket went to the configured interface:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("has shut down."),
+        "the role still starts and stops cleanly:\n{stderr}"
     );
 }

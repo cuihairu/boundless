@@ -60,7 +60,7 @@ impl std::fmt::Display for TransportError {
 impl std::error::Error for TransportError {}
 
 /// The loopback address in the network order the socket layer takes.
-fn loopback_ip() -> u32 {
+pub(crate) fn loopback_ip() -> u32 {
     socket::inet_aton("127.0.0.1").expect("loopback is a valid dotted quad")
 }
 
