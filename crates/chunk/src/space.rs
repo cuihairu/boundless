@@ -671,6 +671,10 @@ impl ChunkSpace {
         // (`chunk.cpp:1072`): the chunk joins the blurred queue.
         self.notice_chunk(identifier);
 
+        // `pSpace_->noticeChunk( this )` (`chunk.cpp:1072`): the chunk is now
+        // bound and may be focused.
+        self.blurred_chunk(identifier);
+
         // Two-way: each neighbour whose portal we bound gets its matching
         // portal bound too (`Chunk::bind(Chunk*)`, chunk.cpp:1741-1774).
         let requester = identifier.to_string();
@@ -1261,5 +1265,341 @@ mod tests {
             &mut fdpt,
         );
         assert_eq!(dist, -1.0);
+    }
+
+    /// The six inward-facing bounds planes of a box (`chunk.cpp:695-806`):
+    /// the front side of every plane is the chunk interior.
+    fn inward_box_boundaries(bb: BoundBox) -> Vec<crate::boundary::ChunkBoundary> {
+        [
+            (Vector3::new(1.0, 0.0, 0.0), bb.min.x),
+            (Vector3::new(-1.0, 0.0, 0.0), -bb.max.x),
+            (Vector3::new(0.0, 1.0, 0.0), bb.min.y),
+            (Vector3::new(0.0, -1.0, 0.0), -bb.max.y),
+            (Vector3::new(0.0, 0.0, 1.0), bb.min.z),
+            (Vector3::new(0.0, 0.0, -1.0), -bb.max.z),
+        ]
+        .iter()
+        .map(|&(normal, d)| crate::boundary::ChunkBoundary {
+            plane: PlaneEq::new(normal, d),
+            bound_portals: Vec::new(),
+            unbound_portals: Vec::new(),
+        })
+        .collect()
+    }
+
+    /// A bound inside chunk with the given world bounding box and its
+    /// inward-facing hull border.
+    fn shell_in_space(space: &mut ChunkSpace, identifier: &str, bb: BoundBox) {
+        let mapping = identity_mapping();
+        let mut shell = Chunk::new(identifier, &mapping, &Matrix::identity());
+        shell.is_loaded = true;
+        shell.bounding_box = bb;
+        shell.boundaries = inward_box_boundaries(bb);
+        shell.bounds = vec![0, 1, 2, 3, 4, 5];
+        space.add_chunk(shell);
+        assert!(space.bind(identifier));
+    }
+
+    /// `Chunk::bind` ends with `noticeChunk` (`chunk.cpp:1072`): the bound
+    /// chunk joins the blur list, and `ServerChunkSpace::focus` pumps it
+    /// into the grid — every query then answers through the index.
+    #[test]
+    fn bind_blurs_the_chunk_and_focus_pumps_it_into_the_grid() {
+        let mut space = ChunkSpace::new(0, vec![identity_mapping()]);
+        for name in ["00000000o", "00010000o"] {
+            let mapping = identity_mapping();
+            let mut chunk = Chunk::new(name, &mapping, &Matrix::identity());
+            chunk.is_loaded = true;
+            space.add_chunk(chunk);
+            assert!(space.bind(name));
+        }
+        // Both bindings blurred their chunks.
+        assert_eq!(space.blurred, vec!["00000000o", "00010000o"]);
+        space.focus();
+
+        // Both are focussed and completed, and the blur list drained.
+        assert!(space.blurred.is_empty());
+        for name in ["00000000o", "00010000o"] {
+            let chunk = space.chunk(name).unwrap();
+            assert_eq!(chunk.focus_count, 1, "{name} focussed");
+            assert!(chunk.completed(), "{name} completed");
+        }
+        // The focused column has seen its chunk.
+        let column = space.column_at(&Vector3::new(50.0, 0.0, 50.0)).unwrap();
+        assert!(column.has_seen("00000000o"));
+
+        // Cross-chunk queries: each point answers its own chunk, through
+        // the other chunk's column or its own.
+        assert_eq!(
+            space
+                .find_chunk_from_point(&Vector3::new(50.0, 5.0, 50.0))
+                .unwrap()
+                .identifier,
+            "00000000o"
+        );
+        assert_eq!(
+            space
+                .find_chunk_from_point(&Vector3::new(150.0, 5.0, 50.0))
+                .unwrap()
+                .identifier,
+            "00010000o"
+        );
+        assert_eq!(
+            space
+                .find_outside_chunk_from_point(&Vector3::new(150.0, 5.0, 50.0))
+                .unwrap()
+                .identifier,
+            "00010000o"
+        );
+        // The exact face agrees while the chunks are completed.
+        assert_eq!(
+            space
+                .find_chunk_from_point_exact(&Vector3::new(50.0, 5.0, 50.0))
+                .unwrap()
+                .identifier,
+            "00000000o"
+        );
+
+        // A blank cell of the mapped area: never focused, no column, no
+        // chunk answers (`server_chunk_space.hpp:54-58`).
+        assert!(
+            space
+                .find_chunk_from_point(&Vector3::new(50.0, 5.0, 150.0))
+                .is_none()
+        );
+        assert!(
+            space
+                .find_outside_chunk_from_point(&Vector3::new(50.0, 5.0, 150.0))
+                .is_none()
+        );
+        // A point outside the span never answers either.
+        assert!(
+            space
+                .find_chunk_from_point(&Vector3::new(5000.0, 5.0, 50.0))
+                .is_none()
+        );
+    }
+
+    /// An inside chunk indexes by its hull: a point inside the hull answers
+    /// the shell (the first hull candidate replaces the outside chunk,
+    /// `base_chunk_space.cpp:582-583`), a point elsewhere in the cell
+    /// answers the outside chunk, and the outside-only face never sees the
+    /// shell.
+    #[test]
+    fn an_inside_hull_beats_the_outside_chunk_through_the_space_index() {
+        let mut space = ChunkSpace::new(0, vec![identity_mapping()]);
+        let mapping = identity_mapping();
+        let mut outside = Chunk::new("00000000o", &mapping, &Matrix::identity());
+        outside.is_loaded = true;
+        space.add_chunk(outside);
+        assert!(space.bind("00000000o"));
+        shell_in_space(
+            &mut space,
+            "00000000i",
+            BoundBox::new(Vector3::new(10.0, 0.0, 10.0), Vector3::new(20.0, 5.0, 20.0)),
+        );
+        space.focus();
+
+        // Inside the hull: the shell answers over the towering outside
+        // chunk.
+        assert_eq!(
+            space
+                .find_chunk_from_point(&Vector3::new(15.0, 2.0, 15.0))
+                .unwrap()
+                .identifier,
+            "00000000i"
+        );
+        // The same cell outside the hull: the outside chunk answers.
+        assert_eq!(
+            space
+                .find_chunk_from_point(&Vector3::new(80.0, 0.0, 50.0))
+                .unwrap()
+                .identifier,
+            "00000000o"
+        );
+        // The outside-only face never sees the shell.
+        assert_eq!(
+            space
+                .find_outside_chunk_from_point(&Vector3::new(15.0, 2.0, 15.0))
+                .unwrap()
+                .identifier,
+            "00000000o"
+        );
+    }
+
+    /// `Chunk::unbind` starts with `ignoreChunk` (`chunk.cpp:1335-1337`):
+    /// the 3x3 columns around the chunk centre are deleted, so no query
+    /// finds the chunk again; the chunk stays in the map, unfocused and
+    /// incomplete, and a later bind re-focuses through a fresh column.
+    #[test]
+    fn unbind_ignores_the_chunk_and_drops_its_columns() {
+        let mut space = ChunkSpace::new(0, vec![identity_mapping()]);
+        let mapping = identity_mapping();
+        let mut chunk = Chunk::new("00000000o", &mapping, &Matrix::identity());
+        chunk.is_loaded = true;
+        space.add_chunk(chunk);
+        assert!(space.bind("00000000o"));
+        space.focus();
+        assert!(
+            space
+                .find_chunk_from_point(&Vector3::new(50.0, 5.0, 50.0))
+                .is_some()
+        );
+
+        assert!(space.unbind("00000000o", false));
+        // The columns of the 3x3 around the centre are gone.
+        assert!(space.column_at(&Vector3::new(50.0, 0.0, 50.0)).is_none());
+        assert!(
+            space
+                .find_chunk_from_point(&Vector3::new(50.0, 5.0, 50.0))
+                .is_none()
+        );
+        // The chunk survives in the map, unfocused and incomplete.
+        let chunk = space.chunk("00000000o").unwrap();
+        assert_eq!(chunk.focus_count, 0);
+        assert!(!chunk.completed());
+        assert!(!chunk.is_bound);
+        // And it left the blur list.
+        assert!(!space.blurred.iter().any(|s| s == "00000000o"));
+
+        // Re-bind and re-focus: the pump recreates the column.
+        assert!(space.bind("00000000o"));
+        space.focus();
+        assert!(
+            space
+                .find_chunk_from_point(&Vector3::new(50.0, 5.0, 50.0))
+                .is_some()
+        );
+    }
+
+    /// `Chunk::smudge` (`chunk.cpp:1630-1641`) plus the inside-chunk sync
+    /// of `updateCompleted` (`chunk.cpp:1489-1512`): smudging the shell
+    /// drags its cover's completion flag down; a focus pass re-checks the
+    /// cover and restores it.
+    #[test]
+    fn smudge_drops_focus_requeues_and_syncs_the_cover() {
+        let mut space = ChunkSpace::new(0, vec![identity_mapping()]);
+        let mapping = identity_mapping();
+        let mut outside = Chunk::new("00000000o", &mapping, &Matrix::identity());
+        outside.is_loaded = true;
+        space.add_chunk(outside);
+        assert!(space.bind("00000000o"));
+        shell_in_space(
+            &mut space,
+            "00000000i",
+            BoundBox::new(Vector3::new(10.0, 0.0, 10.0), Vector3::new(20.0, 5.0, 20.0)),
+        );
+        space.focus();
+
+        // Both completed.
+        assert!(space.chunk("00000000i").unwrap().completed());
+        assert!(space.chunk("00000000o").unwrap().completed());
+
+        // Smudging the shell pulls its cover's flag down with it.
+        assert!(space.smudge_chunk("00000000i"));
+        assert_eq!(space.chunk("00000000i").unwrap().focus_count, 0);
+        assert!(!space.chunk("00000000i").unwrap().completed());
+        assert!(
+            !space.chunk("00000000o").unwrap().completed(),
+            "the incomplete shell drags its cover down"
+        );
+        // An unfocussed chunk does not smudge again; a missing one either.
+        assert!(!space.smudge_chunk("00000000i"));
+        assert!(!space.smudge_chunk("nosuchchunk"));
+        // The smudged chunk joined the blur list again.
+        assert!(space.blurred.iter().any(|s| s == "00000000i"));
+
+        // The focus pass restores both completions — the column was shut
+        // to the chunk, so it keeps its old holding and only the sync runs.
+        space.focus();
+        assert!(space.chunk("00000000i").unwrap().completed());
+        assert!(space.chunk("00000000o").unwrap().completed());
+        assert_eq!(space.chunk("00000000i").unwrap().focus_count, 1);
+    }
+
+    /// `ChunkSpace::ignoreChunk` refuses an unbound chunk
+    /// (`chunk_space.cpp:1311-1318`): nothing changes. A chunk not in the
+    /// map is a silent no-op too.
+    #[test]
+    fn ignore_chunk_refuses_an_unbound_chunk() {
+        let mut space = ChunkSpace::new(0, vec![identity_mapping()]);
+        let mapping = identity_mapping();
+        let mut chunk = Chunk::new("00000000o", &mapping, &Matrix::identity());
+        chunk.is_loaded = true;
+        space.add_chunk(chunk);
+        assert!(space.bind("00000000o"));
+        space.focus();
+
+        // A second, unbound chunk in the map.
+        let mut idle = Chunk::new("00000001o", &mapping, &Matrix::identity());
+        idle.is_bound = false;
+        space.add_chunk(idle);
+        space.ignore_chunk("00000001o");
+        assert!(space.column_at(&Vector3::new(50.0, 0.0, 50.0)).is_some());
+        assert!(
+            space
+                .find_chunk_from_point(&Vector3::new(50.0, 5.0, 50.0))
+                .is_some()
+        );
+
+        // Not in the map: silent no-op.
+        space.ignore_chunk("nosuchchunk");
+        assert!(space.column_at(&Vector3::new(50.0, 0.0, 50.0)).is_some());
+    }
+
+    /// `ServerChunkSpace::recalcGridBounds` (`server_chunk_space.cpp:135-141`):
+    /// the focus grid spans the mapping's world bounds, and a union when
+    /// several mappings share the space.
+    #[test]
+    fn recalc_grid_bounds_spans_the_mapping_union() {
+        let negative = GeometryMapping::new(
+            "space/",
+            100.0,
+            GridBounds {
+                min_l_grid_x: -3,
+                min_l_grid_y: -2,
+                max_l_grid_x: 1,
+                max_l_grid_y: 0,
+                min_grid_x: -3,
+                min_grid_y: -2,
+                max_grid_x: 1,
+                max_grid_y: 0,
+            },
+            false,
+        );
+        let space = ChunkSpace::new(0, vec![negative.clone()]);
+        assert_eq!(
+            (space.current_focus.x_begin(), space.current_focus.x_end()),
+            (-3, 2)
+        );
+        assert_eq!(
+            (space.current_focus.z_begin(), space.current_focus.z_end()),
+            (-2, 1)
+        );
+
+        let far = GeometryMapping::new(
+            "other/",
+            100.0,
+            GridBounds {
+                min_l_grid_x: 5,
+                min_l_grid_y: 0,
+                max_l_grid_x: 8,
+                max_l_grid_y: 1,
+                min_grid_x: 5,
+                min_grid_y: 0,
+                max_grid_x: 8,
+                max_grid_y: 1,
+            },
+            false,
+        );
+        let space = ChunkSpace::new(0, vec![negative, far]);
+        assert_eq!(
+            (space.current_focus.x_begin(), space.current_focus.x_end()),
+            (-3, 9)
+        );
+        assert_eq!(
+            (space.current_focus.z_begin(), space.current_focus.z_end()),
+            (-2, 2)
+        );
     }
 }

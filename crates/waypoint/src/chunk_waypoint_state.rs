@@ -470,6 +470,82 @@ mod tests {
     }
 
     #[test]
+    fn a_state_without_a_set_never_matches_a_goal_only_state() {
+        use crate::astar::AStarState;
+
+        let set = split_square();
+        let goal =
+            ChunkWaypointState::for_destination(Rc::clone(&set), Vector3::new(1.5, 0.5, 1.0));
+        let orphan = ChunkWaypointState::default();
+        // The goal-only arm with mismatched set presence: false, and the
+        // search key of a set-less state is the null-pointer slot.
+        assert!(!orphan.is_goal(&goal));
+        assert_eq!(orphan.search_key(), (0, 0), "the null set hashes as 0");
+    }
+
+    #[test]
+    fn a_label_to_an_unmounted_set_refuses_the_crossing() {
+        let set = split_square();
+        set.set_chunk_identity(0);
+        // wp0's edge 0 (absolute 0) is the chunk-adjacent north edge; a
+        // label there points at a set that never mounted a chunk.
+        let ghost = split_square();
+        set.edge_labels.borrow_mut().insert(
+            0,
+            super::super::chunk_waypoint_set::EdgeLabel {
+                set: Rc::clone(&ghost),
+                waypoint: 0,
+                entry_point: Vector3::new(0.5, 0.5, 2.0),
+            },
+        );
+
+        let state = state_on(&set, 0, 0.5, 1.0);
+        let goal =
+            ChunkWaypointState::for_destination(Rc::clone(&ghost), Vector3::new(0.5, 0.5, 1.0));
+        let mut neigh = ChunkWaypointState::default();
+        let mut data = ChunkWaypointStateSearchData::default();
+        assert!(!state.get_adjacency(0, &mut neigh, &goal, &mut data));
+    }
+
+    #[test]
+    fn a_goal_only_label_nudges_the_crossing_past_the_boundary() {
+        let set = split_square();
+        set.set_chunk_identity(0);
+        let ghost = split_square();
+        ghost.set_chunk_identity(1);
+        // The label's waypoint -1 is the goal-only marker: the crossing
+        // point is pushed 0.2 along the (normalised) direction to the goal
+        // so the neighbour lands inside the far waypoint.
+        set.edge_labels.borrow_mut().insert(
+            0,
+            super::super::chunk_waypoint_set::EdgeLabel {
+                set: Rc::clone(&ghost),
+                waypoint: -1,
+                entry_point: Vector3::new(0.5, 0.5, 2.0),
+            },
+        );
+
+        let state = state_on(&set, 0, 0.5, 1.0);
+        let goal =
+            ChunkWaypointState::for_destination(Rc::clone(&ghost), Vector3::new(0.5, 0.5, 3.0));
+        let mut neigh = ChunkWaypointState::default();
+        let mut data = ChunkWaypointStateSearchData::default();
+        assert!(state.get_adjacency(0, &mut neigh, &goal, &mut data));
+        assert_eq!(neigh.nav_loc().waypoint(), -1);
+        assert!(neigh.crossed_portal);
+        // src (0.5, 1.0) -> dst (0.5, 3.0) crosses the north edge
+        // z=2 straight on at (0.5, 2.0); the nudge moves it to z=2.2.
+        let p = neigh.nav_loc().point();
+        assert!((p.x - 0.5).abs() <= 1e-5, "x stays on the crossing");
+        assert!(
+            (p.z - 2.2).abs() <= 1e-5,
+            "z carries the 0.2 nudge, got {}",
+            p.z
+        );
+        assert!((p.y - 1.0).abs() <= 1e-5, "y rides the source maxHeight");
+    }
+
+    #[test]
     fn compare_orders_by_waypoint_within_a_set() {
         let set = split_square();
         let a = state_on(&set, 0, 0.5, 0.5);

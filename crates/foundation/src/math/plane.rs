@@ -4,7 +4,8 @@
 //! The plane equation is `normal · p = d`; after a normalised `init` the
 //! normal is unit length and `d` is the signed offset from the origin.
 
-use super::vector::Vector3;
+use super::lineeq::LineEq;
+use super::vector::{Vector2, Vector3, almost_equal, almost_zero};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlaneEq {
