@@ -2849,7 +2849,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
-- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。
+- [x] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。（本席 `a1d01f9`(钉测)+`001f716`(bench) 交付：广播量结构性钉测 the_dense_area_broadcast_volume_is_pinned——64 实体间距 5 密集网格（预算 2Mbit/s@10Hz 全队排干最坏面）：enter cycle 每实体 2 消息/16 字节（EnterAoI 8+CreateEntity 8，首实体 alias 254）、稳态 tick 每移动实体 1 消息/16 字节（alias 1+PackedXZ 3+YPR 12）、迁移波每实体 3 消息/24 字节（LeaveAoI 8+再 EnterAoI 8+CreateEntity 8）；64 实体合计 128 消息 1024B/64 消息 1024B/192 消息 1536B，另锁 alias 池守恒（持 64 互异、池余 191、零耗尽）零 warning；新 bench `dense_aoi` 三面读数（2026-11-26 本机热机负载 9-14 不入带）：tick 64=185.5µs(345Kelem/s)/512=4.57ms(112Kelem/s)、migration 64=163.6µs(391Kelem/s)/512=6.18ms(82.8Kelem/s)、offload_decision 64=619ns(103Melem/s)/512=3.43µs(149Melem/s)；诚实判读：tick/migration 每实体成本超线性（345→112，~3×）与 O(queue) 线性找前缀的队列扫形一致=OPT-08-01-02 的候选收益所在，offload 决策扫便宜（~6.6ns/real）迁移时延大头在 witness 侧三 flush 波不在决策面，广播量是协议地板由钉测锁死；1704 lib 全绿+load 156 全绿+clippy lib/benches 0 error+fmt 净；证据 docs/review/opt-08-01-01-dense-aoi-baseline.md+夹具 fixtures/opt-08-01-01-dense-aoi-report.json（`861f0c4`）。坑：批量进出后 re-enter alias 不复得原值（归还序跟队列堆向量 swap_remove 游走序走，单实体才复原）只锁池守恒；PackedXZ ±500 打包限幅会把漂移位置翻成 Detailed 投影 12B，基准用 ±0.25 往返位移钉 Relative 面；witness 的 AoI 成员由 harness 决定（add_to_aoi 调用方给）不按半径裁剪。）
 - [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。
 - [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。
 - [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。
@@ -4402,7 +4402,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
-- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。
+- [x] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。（本席 `a1d01f9`(钉测)+`001f716`(bench) 交付：广播量结构性钉测 the_dense_area_broadcast_volume_is_pinned——64 实体间距 5 密集网格（预算 2Mbit/s@10Hz 全队排干最坏面）：enter cycle 每实体 2 消息/16 字节（EnterAoI 8+CreateEntity 8，首实体 alias 254）、稳态 tick 每移动实体 1 消息/16 字节（alias 1+PackedXZ 3+YPR 12）、迁移波每实体 3 消息/24 字节（LeaveAoI 8+再 EnterAoI 8+CreateEntity 8）；64 实体合计 128 消息 1024B/64 消息 1024B/192 消息 1536B，另锁 alias 池守恒（持 64 互异、池余 191、零耗尽）零 warning；新 bench `dense_aoi` 三面读数（2026-11-26 本机热机负载 9-14 不入带）：tick 64=185.5µs(345Kelem/s)/512=4.57ms(112Kelem/s)、migration 64=163.6µs(391Kelem/s)/512=6.18ms(82.8Kelem/s)、offload_decision 64=619ns(103Melem/s)/512=3.43µs(149Melem/s)；诚实判读：tick/migration 每实体成本超线性（345→112，~3×）与 O(queue) 线性找前缀的队列扫形一致=OPT-08-01-02 的候选收益所在，offload 决策扫便宜（~6.6ns/real）迁移时延大头在 witness 侧三 flush 波不在决策面，广播量是协议地板由钉测锁死；1704 lib 全绿+load 156 全绿+clippy lib/benches 0 error+fmt 净；证据 docs/review/opt-08-01-01-dense-aoi-baseline.md+夹具 fixtures/opt-08-01-01-dense-aoi-report.json（`861f0c4`）。坑：批量进出后 re-enter alias 不复得原值（归还序跟队列堆向量 swap_remove 游走序走，单实体才复原）只锁池守恒；PackedXZ ±500 打包限幅会把漂移位置翻成 Detailed 投影 12B，基准用 ±0.25 往返位移钉 Relative 面；witness 的 AoI 成员由 harness 决定（add_to_aoi 调用方给）不按半径裁剪。）
 - [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。
 - [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。
 - [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。
@@ -5928,7 +5928,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
-- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。
+- [x] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。（本席 `a1d01f9`(钉测)+`001f716`(bench) 交付：广播量结构性钉测 the_dense_area_broadcast_volume_is_pinned——64 实体间距 5 密集网格（预算 2Mbit/s@10Hz 全队排干最坏面）：enter cycle 每实体 2 消息/16 字节（EnterAoI 8+CreateEntity 8，首实体 alias 254）、稳态 tick 每移动实体 1 消息/16 字节（alias 1+PackedXZ 3+YPR 12）、迁移波每实体 3 消息/24 字节（LeaveAoI 8+再 EnterAoI 8+CreateEntity 8）；64 实体合计 128 消息 1024B/64 消息 1024B/192 消息 1536B，另锁 alias 池守恒（持 64 互异、池余 191、零耗尽）零 warning；新 bench `dense_aoi` 三面读数（2026-11-26 本机热机负载 9-14 不入带）：tick 64=185.5µs(345Kelem/s)/512=4.57ms(112Kelem/s)、migration 64=163.6µs(391Kelem/s)/512=6.18ms(82.8Kelem/s)、offload_decision 64=619ns(103Melem/s)/512=3.43µs(149Melem/s)；诚实判读：tick/migration 每实体成本超线性（345→112，~3×）与 O(queue) 线性找前缀的队列扫形一致=OPT-08-01-02 的候选收益所在，offload 决策扫便宜（~6.6ns/real）迁移时延大头在 witness 侧三 flush 波不在决策面，广播量是协议地板由钉测锁死；1704 lib 全绿+load 156 全绿+clippy lib/benches 0 error+fmt 净；证据 docs/review/opt-08-01-01-dense-aoi-baseline.md+夹具 fixtures/opt-08-01-01-dense-aoi-report.json（`861f0c4`）。坑：批量进出后 re-enter alias 不复得原值（归还序跟队列堆向量 swap_remove 游走序走，单实体才复原）只锁池守恒；PackedXZ ±500 打包限幅会把漂移位置翻成 Detailed 投影 12B，基准用 ±0.25 往返位移钉 Relative 面；witness 的 AoI 成员由 harness 决定（add_to_aoi 调用方给）不按半径裁剪。）
 - [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。
 - [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。
 - [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。
@@ -7454,7 +7454,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
-- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。
+- [x] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。（本席 `a1d01f9`(钉测)+`001f716`(bench) 交付：广播量结构性钉测 the_dense_area_broadcast_volume_is_pinned——64 实体间距 5 密集网格（预算 2Mbit/s@10Hz 全队排干最坏面）：enter cycle 每实体 2 消息/16 字节（EnterAoI 8+CreateEntity 8，首实体 alias 254）、稳态 tick 每移动实体 1 消息/16 字节（alias 1+PackedXZ 3+YPR 12）、迁移波每实体 3 消息/24 字节（LeaveAoI 8+再 EnterAoI 8+CreateEntity 8）；64 实体合计 128 消息 1024B/64 消息 1024B/192 消息 1536B，另锁 alias 池守恒（持 64 互异、池余 191、零耗尽）零 warning；新 bench `dense_aoi` 三面读数（2026-11-26 本机热机负载 9-14 不入带）：tick 64=185.5µs(345Kelem/s)/512=4.57ms(112Kelem/s)、migration 64=163.6µs(391Kelem/s)/512=6.18ms(82.8Kelem/s)、offload_decision 64=619ns(103Melem/s)/512=3.43µs(149Melem/s)；诚实判读：tick/migration 每实体成本超线性（345→112，~3×）与 O(queue) 线性找前缀的队列扫形一致=OPT-08-01-02 的候选收益所在，offload 决策扫便宜（~6.6ns/real）迁移时延大头在 witness 侧三 flush 波不在决策面，广播量是协议地板由钉测锁死；1704 lib 全绿+load 156 全绿+clippy lib/benches 0 error+fmt 净；证据 docs/review/opt-08-01-01-dense-aoi-baseline.md+夹具 fixtures/opt-08-01-01-dense-aoi-report.json（`861f0c4`）。坑：批量进出后 re-enter alias 不复得原值（归还序跟队列堆向量 swap_remove 游走序走，单实体才复原）只锁池守恒；PackedXZ ±500 打包限幅会把漂移位置翻成 Detailed 投影 12B，基准用 ±0.25 往返位移钉 Relative 面；witness 的 AoI 成员由 harness 决定（add_to_aoi 调用方给）不按半径裁剪。）
 - [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。
 - [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。
 - [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。
@@ -9007,7 +9007,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
-- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。
+- [x] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。（本席 `a1d01f9`(钉测)+`001f716`(bench) 交付：广播量结构性钉测 the_dense_area_broadcast_volume_is_pinned——64 实体间距 5 密集网格（预算 2Mbit/s@10Hz 全队排干最坏面）：enter cycle 每实体 2 消息/16 字节（EnterAoI 8+CreateEntity 8，首实体 alias 254）、稳态 tick 每移动实体 1 消息/16 字节（alias 1+PackedXZ 3+YPR 12）、迁移波每实体 3 消息/24 字节（LeaveAoI 8+再 EnterAoI 8+CreateEntity 8）；64 实体合计 128 消息 1024B/64 消息 1024B/192 消息 1536B，另锁 alias 池守恒（持 64 互异、池余 191、零耗尽）零 warning；新 bench `dense_aoi` 三面读数（2026-11-26 本机热机负载 9-14 不入带）：tick 64=185.5µs(345Kelem/s)/512=4.57ms(112Kelem/s)、migration 64=163.6µs(391Kelem/s)/512=6.18ms(82.8Kelem/s)、offload_decision 64=619ns(103Melem/s)/512=3.43µs(149Melem/s)；诚实判读：tick/migration 每实体成本超线性（345→112，~3×）与 O(queue) 线性找前缀的队列扫形一致=OPT-08-01-02 的候选收益所在，offload 决策扫便宜（~6.6ns/real）迁移时延大头在 witness 侧三 flush 波不在决策面，广播量是协议地板由钉测锁死；1704 lib 全绿+load 156 全绿+clippy lib/benches 0 error+fmt 净；证据 docs/review/opt-08-01-01-dense-aoi-baseline.md+夹具 fixtures/opt-08-01-01-dense-aoi-report.json（`861f0c4`）。坑：批量进出后 re-enter alias 不复得原值（归还序跟队列堆向量 swap_remove 游走序走，单实体才复原）只锁池守恒；PackedXZ ±500 打包限幅会把漂移位置翻成 Detailed 投影 12B，基准用 ±0.25 往返位移钉 Relative 面；witness 的 AoI 成员由 harness 决定（add_to_aoi 调用方给）不按半径裁剪。）
 - [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。
 - [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。
 - [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。
@@ -10533,7 +10533,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
-- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。
+- [x] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。（本席 `a1d01f9`(钉测)+`001f716`(bench) 交付：广播量结构性钉测 the_dense_area_broadcast_volume_is_pinned——64 实体间距 5 密集网格（预算 2Mbit/s@10Hz 全队排干最坏面）：enter cycle 每实体 2 消息/16 字节（EnterAoI 8+CreateEntity 8，首实体 alias 254）、稳态 tick 每移动实体 1 消息/16 字节（alias 1+PackedXZ 3+YPR 12）、迁移波每实体 3 消息/24 字节（LeaveAoI 8+再 EnterAoI 8+CreateEntity 8）；64 实体合计 128 消息 1024B/64 消息 1024B/192 消息 1536B，另锁 alias 池守恒（持 64 互异、池余 191、零耗尽）零 warning；新 bench `dense_aoi` 三面读数（2026-11-26 本机热机负载 9-14 不入带）：tick 64=185.5µs(345Kelem/s)/512=4.57ms(112Kelem/s)、migration 64=163.6µs(391Kelem/s)/512=6.18ms(82.8Kelem/s)、offload_decision 64=619ns(103Melem/s)/512=3.43µs(149Melem/s)；诚实判读：tick/migration 每实体成本超线性（345→112，~3×）与 O(queue) 线性找前缀的队列扫形一致=OPT-08-01-02 的候选收益所在，offload 决策扫便宜（~6.6ns/real）迁移时延大头在 witness 侧三 flush 波不在决策面，广播量是协议地板由钉测锁死；1704 lib 全绿+load 156 全绿+clippy lib/benches 0 error+fmt 净；证据 docs/review/opt-08-01-01-dense-aoi-baseline.md+夹具 fixtures/opt-08-01-01-dense-aoi-report.json（`861f0c4`）。坑：批量进出后 re-enter alias 不复得原值（归还序跟队列堆向量 swap_remove 游走序走，单实体才复原）只锁池守恒；PackedXZ ±500 打包限幅会把漂移位置翻成 Detailed 投影 12B，基准用 ±0.25 往返位移钉 Relative 面；witness 的 AoI 成员由 harness 决定（add_to_aoi 调用方给）不按半径裁剪。）
 - [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。
 - [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。
 - [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。
