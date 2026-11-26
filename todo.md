@@ -2914,7 +2914,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化依赖缓存、并行转换和编辑器加载。比较冷构建、增量构建与大地图编辑时间，校验可复现产物。
 
 - [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。deliver 80c9b88 **FLAG 双交付未决**：bw14-script-host `1fd4739`+勾 `bb1e3ea`（crates/asset-pipeline/tests/build_baselines.rs 377 行+fixtures/baseline 固定资产集 12 文件 48293 字节——冷构建：shipped BatchCompiler+ConversionRule+计数 Converter，零失败/恰 12 次转换调用/12 输出字节等于源/每源 {source}.deps sidecar；增量：零改动重建计数器仍 12=零重转+输出与冷构建逐字节同（探针冷 17.85ms→增量 0.30ms ≈60× 只印不断言）；转换器调用计数器才是「converted」可观测面=管线汇总标签虚高发现）；主席择一，未决前行保持本勾态。
-- [ ] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。他席已交付未进 main：bw14-script-host `663dc8c`（前置 `604fe59` 修增量基线 fresh session）+勾 `97817db`（crates/asset-pipeline/tests/cache_concurrency_evaluation.rs 884 行——缓存六走共享一 cache：冷 12 转换缓存 36 entries/flip miss 12 重转 48 entries/restore hit 零转换零写，二级依赖 palette 改动走 hash miss 链；并发面+ContentAddressableCache 直驱；发现=fresh pipeline session 是增量基线正确性前提，探针 CACHE-EVAL 只印不断言）；主席并入后按勾行态处理，本行保持开。
+- [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。deliver fb80b66 **FLAG 双交付未决**：bw14-script-host `663dc8c`（前置 `604fe59` 修增量基线 fresh session）+勾 `97817db`（crates/asset-pipeline/tests/cache_concurrency_evaluation.rs 884 行——缓存六走共享一 cache：冷 12 转换缓存 36 entries/flip miss 12 重转 48 entries/restore hit 零转换零写，二级依赖 palette 改动走 hash miss 链；并发面+ContentAddressableCache 直驱；发现=fresh pipeline session 是增量基线正确性前提，探针 CACHE-EVAL 只印不断言）；主席择一，未决前行保持本勾态。
 - [ ] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。
 - [ ] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。
 
@@ -4478,7 +4478,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化依赖缓存、并行转换和编辑器加载。比较冷构建、增量构建与大地图编辑时间，校验可复现产物。
 
 - [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。deliver 80c9b88 **FLAG 双交付未决**：bw14-script-host `1fd4739`+勾 `bb1e3ea`（crates/asset-pipeline/tests/build_baselines.rs 377 行+fixtures/baseline 固定资产集 12 文件 48293 字节——冷构建：shipped BatchCompiler+ConversionRule+计数 Converter，零失败/恰 12 次转换调用/12 输出字节等于源/每源 {source}.deps sidecar；增量：零改动重建计数器仍 12=零重转+输出与冷构建逐字节同（探针冷 17.85ms→增量 0.30ms ≈60× 只印不断言）；转换器调用计数器才是「converted」可观测面=管线汇总标签虚高发现）；主席择一，未决前行保持本勾态。
-- [ ] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。他席已交付未进 main：bw14-script-host `663dc8c`（前置 `604fe59` 修增量基线 fresh session）+勾 `97817db`（crates/asset-pipeline/tests/cache_concurrency_evaluation.rs 884 行——缓存六走共享一 cache：冷 12 转换缓存 36 entries/flip miss 12 重转 48 entries/restore hit 零转换零写，二级依赖 palette 改动走 hash miss 链；并发面+ContentAddressableCache 直驱；发现=fresh pipeline session 是增量基线正确性前提，探针 CACHE-EVAL 只印不断言）；主席并入后按勾行态处理，本行保持开。
+- [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。deliver fb80b66 **FLAG 双交付未决**：bw14-script-host `663dc8c`（前置 `604fe59` 修增量基线 fresh session）+勾 `97817db`（crates/asset-pipeline/tests/cache_concurrency_evaluation.rs 884 行——缓存六走共享一 cache：冷 12 转换缓存 36 entries/flip miss 12 重转 48 entries/restore hit 零转换零写，二级依赖 palette 改动走 hash miss 链；并发面+ContentAddressableCache 直驱；发现=fresh pipeline session 是增量基线正确性前提，探针 CACHE-EVAL 只印不断言）；主席择一，未决前行保持本勾态。
 - [ ] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。
 - [ ] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。
 
@@ -6003,7 +6003,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化依赖缓存、并行转换和编辑器加载。比较冷构建、增量构建与大地图编辑时间，校验可复现产物。
 
 - [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。deliver 80c9b88 **FLAG 双交付未决**：bw14-script-host `1fd4739`+勾 `bb1e3ea`（crates/asset-pipeline/tests/build_baselines.rs 377 行+fixtures/baseline 固定资产集 12 文件 48293 字节——冷构建：shipped BatchCompiler+ConversionRule+计数 Converter，零失败/恰 12 次转换调用/12 输出字节等于源/每源 {source}.deps sidecar；增量：零改动重建计数器仍 12=零重转+输出与冷构建逐字节同（探针冷 17.85ms→增量 0.30ms ≈60× 只印不断言）；转换器调用计数器才是「converted」可观测面=管线汇总标签虚高发现）；主席择一，未决前行保持本勾态。
-- [ ] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。他席已交付未进 main：bw14-script-host `663dc8c`（前置 `604fe59` 修增量基线 fresh session）+勾 `97817db`（crates/asset-pipeline/tests/cache_concurrency_evaluation.rs 884 行——缓存六走共享一 cache：冷 12 转换缓存 36 entries/flip miss 12 重转 48 entries/restore hit 零转换零写，二级依赖 palette 改动走 hash miss 链；并发面+ContentAddressableCache 直驱；发现=fresh pipeline session 是增量基线正确性前提，探针 CACHE-EVAL 只印不断言）；主席并入后按勾行态处理，本行保持开。
+- [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。deliver fb80b66 **FLAG 双交付未决**：bw14-script-host `663dc8c`（前置 `604fe59` 修增量基线 fresh session）+勾 `97817db`（crates/asset-pipeline/tests/cache_concurrency_evaluation.rs 884 行——缓存六走共享一 cache：冷 12 转换缓存 36 entries/flip miss 12 重转 48 entries/restore hit 零转换零写，二级依赖 palette 改动走 hash miss 链；并发面+ContentAddressableCache 直驱；发现=fresh pipeline session 是增量基线正确性前提，探针 CACHE-EVAL 只印不断言）；主席择一，未决前行保持本勾态。
 - [ ] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。
 - [ ] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。
 
@@ -7528,7 +7528,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化依赖缓存、并行转换和编辑器加载。比较冷构建、增量构建与大地图编辑时间，校验可复现产物。
 
 - [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。deliver 80c9b88 **FLAG 双交付未决**：bw14-script-host `1fd4739`+勾 `bb1e3ea`（crates/asset-pipeline/tests/build_baselines.rs 377 行+fixtures/baseline 固定资产集 12 文件 48293 字节——冷构建：shipped BatchCompiler+ConversionRule+计数 Converter，零失败/恰 12 次转换调用/12 输出字节等于源/每源 {source}.deps sidecar；增量：零改动重建计数器仍 12=零重转+输出与冷构建逐字节同（探针冷 17.85ms→增量 0.30ms ≈60× 只印不断言）；转换器调用计数器才是「converted」可观测面=管线汇总标签虚高发现）；主席择一，未决前行保持本勾态。
-- [ ] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。他席已交付未进 main：bw14-script-host `663dc8c`（前置 `604fe59` 修增量基线 fresh session）+勾 `97817db`（crates/asset-pipeline/tests/cache_concurrency_evaluation.rs 884 行——缓存六走共享一 cache：冷 12 转换缓存 36 entries/flip miss 12 重转 48 entries/restore hit 零转换零写，二级依赖 palette 改动走 hash miss 链；并发面+ContentAddressableCache 直驱；发现=fresh pipeline session 是增量基线正确性前提，探针 CACHE-EVAL 只印不断言）；主席并入后按勾行态处理，本行保持开。
+- [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。deliver fb80b66 **FLAG 双交付未决**：bw14-script-host `663dc8c`（前置 `604fe59` 修增量基线 fresh session）+勾 `97817db`（crates/asset-pipeline/tests/cache_concurrency_evaluation.rs 884 行——缓存六走共享一 cache：冷 12 转换缓存 36 entries/flip miss 12 重转 48 entries/restore hit 零转换零写，二级依赖 palette 改动走 hash miss 链；并发面+ContentAddressableCache 直驱；发现=fresh pipeline session 是增量基线正确性前提，探针 CACHE-EVAL 只印不断言）；主席择一，未决前行保持本勾态。
 - [ ] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。
 - [ ] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。
 
@@ -9092,7 +9092,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化依赖缓存、并行转换和编辑器加载。比较冷构建、增量构建与大地图编辑时间，校验可复现产物。
 
 - [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。deliver 80c9b88 **FLAG 双交付未决**：bw14-script-host `1fd4739`+勾 `bb1e3ea`（crates/asset-pipeline/tests/build_baselines.rs 377 行+fixtures/baseline 固定资产集 12 文件 48293 字节——冷构建：shipped BatchCompiler+ConversionRule+计数 Converter，零失败/恰 12 次转换调用/12 输出字节等于源/每源 {source}.deps sidecar；增量：零改动重建计数器仍 12=零重转+输出与冷构建逐字节同（探针冷 17.85ms→增量 0.30ms ≈60× 只印不断言）；转换器调用计数器才是「converted」可观测面=管线汇总标签虚高发现）；主席择一，未决前行保持本勾态。
-- [ ] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。他席已交付未进 main：bw14-script-host `663dc8c`（前置 `604fe59` 修增量基线 fresh session）+勾 `97817db`（crates/asset-pipeline/tests/cache_concurrency_evaluation.rs 884 行——缓存六走共享一 cache：冷 12 转换缓存 36 entries/flip miss 12 重转 48 entries/restore hit 零转换零写，二级依赖 palette 改动走 hash miss 链；并发面+ContentAddressableCache 直驱；发现=fresh pipeline session 是增量基线正确性前提，探针 CACHE-EVAL 只印不断言）；主席并入后按勾行态处理，本行保持开。
+- [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。deliver fb80b66 **FLAG 双交付未决**：bw14-script-host `663dc8c`（前置 `604fe59` 修增量基线 fresh session）+勾 `97817db`（crates/asset-pipeline/tests/cache_concurrency_evaluation.rs 884 行——缓存六走共享一 cache：冷 12 转换缓存 36 entries/flip miss 12 重转 48 entries/restore hit 零转换零写，二级依赖 palette 改动走 hash miss 链；并发面+ContentAddressableCache 直驱；发现=fresh pipeline session 是增量基线正确性前提，探针 CACHE-EVAL 只印不断言）；主席择一，未决前行保持本勾态。
 - [ ] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。
 - [ ] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。
 
@@ -10617,7 +10617,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化依赖缓存、并行转换和编辑器加载。比较冷构建、增量构建与大地图编辑时间，校验可复现产物。
 
 - [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。deliver 80c9b88 **FLAG 双交付未决**：bw14-script-host `1fd4739`+勾 `bb1e3ea`（crates/asset-pipeline/tests/build_baselines.rs 377 行+fixtures/baseline 固定资产集 12 文件 48293 字节——冷构建：shipped BatchCompiler+ConversionRule+计数 Converter，零失败/恰 12 次转换调用/12 输出字节等于源/每源 {source}.deps sidecar；增量：零改动重建计数器仍 12=零重转+输出与冷构建逐字节同（探针冷 17.85ms→增量 0.30ms ≈60× 只印不断言）；转换器调用计数器才是「converted」可观测面=管线汇总标签虚高发现）；主席择一，未决前行保持本勾态。
-- [ ] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。他席已交付未进 main：bw14-script-host `663dc8c`（前置 `604fe59` 修增量基线 fresh session）+勾 `97817db`（crates/asset-pipeline/tests/cache_concurrency_evaluation.rs 884 行——缓存六走共享一 cache：冷 12 转换缓存 36 entries/flip miss 12 重转 48 entries/restore hit 零转换零写，二级依赖 palette 改动走 hash miss 链；并发面+ContentAddressableCache 直驱；发现=fresh pipeline session 是增量基线正确性前提，探针 CACHE-EVAL 只印不断言）；主席并入后按勾行态处理，本行保持开。
+- [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。deliver fb80b66 **FLAG 双交付未决**：bw14-script-host `663dc8c`（前置 `604fe59` 修增量基线 fresh session）+勾 `97817db`（crates/asset-pipeline/tests/cache_concurrency_evaluation.rs 884 行——缓存六走共享一 cache：冷 12 转换缓存 36 entries/flip miss 12 重转 48 entries/restore hit 零转换零写，二级依赖 palette 改动走 hash miss 链；并发面+ContentAddressableCache 直驱；发现=fresh pipeline session 是增量基线正确性前提，探针 CACHE-EVAL 只印不断言）；主席择一，未决前行保持本勾态。
 - [ ] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。
 - [ ] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。
 
