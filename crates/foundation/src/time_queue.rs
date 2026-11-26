@@ -392,22 +392,18 @@ impl<TS: Stamp> TimeQueueT<TS> {
                 break;
             }
 
+            // Pop the front and do the pre-callback bookkeeping in one
+            // borrow window: nothing between these mutations can run
+            // user code, and the callback that follows needs `inner`
+            // unborrowed so it may re-enter the queue.
             let node = {
                 let mut inner = self.inner.borrow_mut();
-                pop_heap_front(&mut inner.queue)
-            };
-            {
-                let mut inner = self.inner.borrow_mut();
-                inner.processing_node = Some(Rc::clone(&node));
-            }
-
-            if !is_cancelled(&node) {
-                num_fired += 1;
-                // The loop condition guarantees now >= time, so the
-                // subtraction never wraps.
-                let lateness = now - node.borrow().time;
-                {
-                    let mut inner = self.inner.borrow_mut();
+                let node = pop_heap_front(&mut inner.queue);
+                if !is_cancelled(&node) {
+                    num_fired += 1;
+                    // The loop condition guarantees now >= time, so the
+                    // subtraction never wraps.
+                    let lateness = now - node.borrow().time;
                     if lateness > inner.max_lateness {
                         inner.max_lateness = lateness;
                     }
@@ -415,25 +411,31 @@ impl<TS: Stamp> TimeQueueT<TS> {
                         inner.num_late_timers += 1;
                     }
                 }
+                inner.processing_node = Some(Rc::clone(&node));
+                node
+            };
+
+            if !is_cancelled(&node) {
                 trigger_timer(&node);
             }
 
-            if !is_cancelled(&node) {
-                // Still alive: schedule the next delivery.
-                let mut inner = self.inner.borrow_mut();
-                inner.queue.push(Rc::clone(&node));
-                push_heap_last(&mut inner.queue);
-            } else {
-                // The callback (or an earlier outside cancel) killed it.
-                let mut inner = self.inner.borrow_mut();
-                assert!(
-                    inner.num_cancelled > 0,
-                    "cancelled node must still be counted"
-                );
-                inner.num_cancelled -= 1;
-            }
+            // The second window: reschedule the live node (or settle
+            // the cancelled count) and clear the processing slot
+            // together.
             {
                 let mut inner = self.inner.borrow_mut();
+                if is_cancelled(&node) {
+                    // The callback (or an earlier outside cancel) killed it.
+                    assert!(
+                        inner.num_cancelled > 0,
+                        "cancelled node must still be counted"
+                    );
+                    inner.num_cancelled -= 1;
+                } else {
+                    // Still alive: schedule the next delivery.
+                    inner.queue.push(Rc::clone(&node));
+                    push_heap_last(&mut inner.queue);
+                }
                 inner.processing_node = None;
             }
         }
