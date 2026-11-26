@@ -45,6 +45,10 @@ fn main() -> ExitCode {
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_HEIGHT);
     let shot = arg_value(&args, "--shot").unwrap_or_else(|| DEFAULT_SHOT.to_string());
+    if frames == 0 || width == 0 || height == 0 {
+        eprintln!("boundless-client: --frames/--width/--height must be non-zero");
+        return ExitCode::from(2);
+    }
 
     let root = PathBuf::from(&res);
     let (space, items) = match load_space(&root) {
