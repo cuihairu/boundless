@@ -1,0 +1,21 @@
+rerun_per_row_tasks	512
+rerun_per_row_attempts	512
+rerun_per_row_wall_ms	1707.37
+rerun_per_row_ops_per_s	300
+rerun_per_64_tasks	8
+rerun_per_64_attempts	8
+rerun_per_64_wall_ms	562.32
+rerun_per_64_ops_per_s	911
+retry_lock_attempts	2
+retry_lock_retried_error	55P03 lock_timeout
+retry_lock_wall_ms	204.08
+retry_scripted_attempts	2
+retry_scripted_on_retry_calls	1
+rollback_surviving_rows	0
+rollback_rerun_attempts	8
+recovery_auto_recovered_puts	1
+recovery_manual_reconnects	1
+recovery_rerun_attempts	8
+restore_wiped_rows	512
+restore_tables	12
+restore_wall_ms	258.63
