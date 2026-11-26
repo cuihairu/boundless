@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "scenario": "dense-aoi",
+  "generator": "load 0.1.0",
+  "topology": "linux-offline-harness",
+  "seed": 271828,
+  "values": {
+    "bots": 4,
+    "density": 0.03999999910593033,
+    "avg_visible": 3,
+    "max_visible": 3
+  }
+}

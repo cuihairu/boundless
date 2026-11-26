@@ -10,5 +10,6 @@ repository.workspace = true
 db = { workspace = true }
 entitydef = { workspace = true }
 foundation = { workspace = true }
+mercury = { workspace = true }
 postgres = { workspace = true }
 serde_json = { workspace = true }

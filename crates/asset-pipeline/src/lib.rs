@@ -84,6 +84,11 @@
 //!   `ensureModelValid` judgement, the save/save-as flows and the metadata
 //!   block they refresh, against the `lib/model` read contract
 //!   (`tools/modeleditor_core/Models/`, `lib/gizmo/meta_data*`);
+//! - [`animation_exporter`] — the Max animation exporter's portable core:
+//!   the node tree, include munging and root sorting, the per-frame
+//!   sampling/decompose pipeline and the `.animation` binary writer
+//!   (type 1/4 node channels, type 6 cue track)
+//!   (`tools/animationexporter`, `lib/math/blend_transform.cpp`);
 //! - [`material_editor`] — the ModelEditor's material editing face: the
 //!   material/dye/tint census, mfm instantiation and overloading, the
 //!   clean/property/naming/feed/flag moves and the shader gates
@@ -94,10 +99,12 @@
 //!   groups, the `xyznuv`/`xyznuvi`/`xyznuvtb` vertex streams and the
 //!   `.visual` XML) with the Max-plugin host seams documented
 //!   (`tools/visualexporter/`);
-//! - [`animation_exporter`] — the Max animation exporter's portable
-//!   core: the settings read chain, the `preProcess` classification, the
-//!   `MFXNode` relative-transform keys and the `.animation` binary with
-//!   its cue channel (`tools/animationexporter/`);
+//! - [`maya_visual_exporter`] — the Maya visual exporter's portable core:
+//!   the exporter settings round-trip, the scene records the Maya
+//!   traversal produces, the mesh save chain into a `.visual` plus its
+//!   `.primitives`, the hierarchy/world-space handling, and the custom
+//!   hull and boundary faces
+//!   (`tools/mayavisualexporter/`);
 //! - [`world_machine_import`] — the World Machine height importer: the
 //!   `SpaceHelper` space.settings reader, the chunk `.cdata` height-map
 //!   decode and the `BWHeightImport` resample into a World Machine
@@ -128,7 +135,9 @@ pub mod hierarchical_config_converter;
 pub mod jit_compiler;
 pub mod material_editor;
 pub mod maya_exporter;
+pub mod maya_visual_exporter;
 pub mod model_editor;
+pub mod navmesh_processor;
 pub mod offline_processor;
 pub mod plugin_loader;
 pub mod primitive_file_structs;

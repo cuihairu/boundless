@@ -14,6 +14,12 @@ repository.workspace = true
 # port (BW-11-04-01).
 foundation = { workspace = true }
 resources = { workspace = true }
+# The client query faces (BW-10-07-04): `BigWorld.findDropPoint` runs
+# the chunk space obstacle sweep and `BigWorld.navigatePathPoints`
+# walks the waypoint graph through the navigator.
+chunk = { workspace = true }
+physics = { workspace = true }
+waypoint = { workspace = true }
 # Replay tick-data decompression (`CompressionIStream`/`ZipIStream` zlib
 # `uncompress`, `lib/connection/compression_stream.cpp`). rust_backend keeps it
 # pure Rust (miniz_oxide), so the workspace gate needs no system zlib.

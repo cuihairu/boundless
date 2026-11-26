@@ -1,42 +1,94 @@
-# OPT-08-01-01 记录密集 AOI 基线
+# OPT-08-01-01 — The dense-AoI baseline
 
-Acceptance: **保存 Tick、广播量和迁移耗时**。本行交付密集 AOI 的结构化广播量钉测 + 三面基准（tick / 迁移 / 跨边界 offload 决策），读数为 2026-11-26 本机热机值（负载 9-14，不入带）。
+The acceptance: **record Tick, broadcast volume, and migration time**
+(`保存 Tick、广播量和迁移耗时`). The baseline drives a live observer
+through dense blocks on the ported faces — the `RangeList` index with
+an AoI trigger, the `Witness` scheduler under a packet budget — and
+records the per-tick cost, the broadcast bytes, and the boundary
+migration window.
 
-## 广播量（结构性，`the_dense_area_broadcast_volume_is_pinned` 钉测）
+## The three legs
 
-64 实体、间距 5 密集网格、预算 2 Mbit/s@10Hz（`max_packet_size`=24972 字节/pass，整个队列每 pass 排干=密集最坏面）：
+1. **The index ladder.** A fixed 200×200 block holds
+   `side² = 49 / 100 / 196 / 400` stationary entities; an observer
+   walks `x = −600 → +800` at 8 units per tick (175 ticks) through
+   `z = 95`, its AoI trigger at `DEFAULT_AOI_RADIUS` (500) firing
+   enter/leave into a recorder. Every tick shuffles the observer's
+   node and is timed; every entity is entered and left exactly once
+   and the chains stay `is_sorted()` through the walk.
+2. **The scheduler.** The same walk on the densest block feeds a
+   `Witness` in lockstep: each crossing's enter runs the admission
+   handshake (`upsert_entity` → `add_to_aoi` → flush →
+   `request_entity_update` → flush), each leave releases the alias,
+   and `update()` spends the volatile budget every tick. The budget is
+   `bps_to_packet_size(50_000, 10) = 597` bytes per tick (50 kbps at
+   10 Hz).
+3. **The migration window.** The per-tick crossing schedule of the
+   same walk: when the boundary first reaches the block, when it
+   leaves it, and how many ticks carry churn.
 
-| 面 | 每实体消息 | 每实体 wire 字节 | 构成 |
-|---|---:|---:|---|
-| 首次观察（enter cycle） | 2 | **16** | EnterAoI(8) + CreateEntity(8)；首个实体拿 alias 254 |
-| 稳态 tick（全员移动） | 1 | **16** | EntityUpdate = alias(1) + PackedXZ 相对坐标(3) + YawPitchRoll(12) |
-| 迁移波（全体出界再入） | 3 | **24** | LeaveAoI(8) + 再 EnterAoI(8) + CreateEntity(8) |
+## The Tick cost
 
-64 实体合计：enter 128 消息/1024 字节、稳态 tick 64 消息/1024 字节、迁移波 192 消息/1536 字节。钉测另锁：迁移波后 alias 池守恒（持 64 个互异 alias、池恰余 191、无一耗尽）、全程零 warning。任何改动的带宽代价从此有对照。
+| Density | Build (ms) | Shuffle avg (ns/tick) | Shuffle max (ns) | Walk (ms, 175 ticks) |
+| --- | --- | --- | --- | --- |
+| d49 | 0.739 | 2 302 | 9 641 | 0.442 |
+| d100 | 3.118 | 3 944 | 33 821 | 0.735 |
+| d196 | 11.824 | 4 374 | 37 250 | 0.824 |
+| d400 | 39.046 | 4 806 | 36 262 | 0.898 |
 
-## Tick / 迁移 / 决策耗时（`dense_aoi` bench，2026-11-26 本机）
+The per-tick shuffle stays flat against density (2.3 → 4.8 µs from 49
+to 400 entities): the trigger only touches the two chains it crosses,
+so the index cost is log-kinetic, not population-proportional. The
+one-off build is the population-proportional face (0.7 → 39 ms).
 
-| 面 | 64 | 512 | 说明 |
-|---|---:|---:|---|
-| `tick` | 185.5 µs（345 Kelem/s） | 4.57 ms（112 Kelem/s） | 全员移动 + 全队排干的 update pass；含 harness 喂移动（快照克隆+upsert）成本 |
-| `migration` | 163.6 µs（391 Kelem/s） | 6.18 ms（82.8 Kelem/s） | 整波 leave→re-enter→create 三 flush |
-| `offload_decision` | 619 ns（103 Melem/s） | 3.43 µs（149 Melem/s） | `collect_offloads` 跨 x=100 边界决策扫，恰好半数迁移 |
+## The broadcast volume
 
-诚实判读：
-- **tick 与 migration 每实体成本超线性增长**（345→112 Kelem/s，~3×），与实现的 O(queue) 全队列扫形一致——`queue_front`/`queue_pop` 是线性找前缀（`Vec` 无堆不变式），这正是 OPT-08-01-02（AOI 索引与 Witness 调度评估）的候选收益所在。
-- **offload 决策扫本身便宜**（~6.6ns/real @512，BSP 两叶），迁移的时延大头在 witness 侧的 leave/re-enter 波（每实体 3 消息 + 三遍队列扫），不在决策面。
-- 广播量面是协议地板（参考路由语义：每移动实体恰一条 16 字节更新、每迁移恰 24 字节），由钉测锁死；减量必丢更新或丢迁移事件。
-- 本机读数、负载 9-14 下采集，只作相对量级；跨机不可比（钉测的结构数字才是跨机契约）。
+| Face | Value |
+| --- | --- |
+| Budget | 597 bytes/tick (50 kbps @ 10 Hz) |
+| Admission handshake | 1 200 messages / 9 600 bytes — **3 messages, 24 bytes per entity**, outside the budget |
+| Volatile updates | 12 094 messages / 29 474 bytes over 175 ticks |
+| Max tick | 276 messages / 601 bytes |
+| Warnings | 0 |
 
-## 门禁
+The admission handshake rides outside the volatile budget (the
+`EnterAoI`/`CreateEntity`/`LeaveAoI` forms), so the 597-byte gate only
+constrains the update pass. The max tick lands at **601 bytes — four
+over the budget**: the pass checks the budget *before* each send
+(`witness.cpp`'s pre-send gate), so one in-flight element may land
+after the cut; the harness pins the overshoot to be within the
+budget plus that tick's largest message. Per entity, the whole pass
+costs ≈ 74 bytes of volatile traffic.
 
-- `cargo test -p server-runtime --lib`：**1704 passed / 0 failed / 1 ignored**（新钉测含内）。
-- `cargo clippy -p server-runtime --lib --benches -- -D warnings`：0 error。
-- `cargo fmt --check`：净。
-- `cargo test -p load --lib`：156 passed / 0 failed（场景面不动）。
+**Cross-face pin: the witness's event-ledger digest equals the d400
+index digest (`49bf554c6f1c96b7`)** — the scheduler admitted and
+released exactly the crossings the index fired, byte for byte.
 
-## 坑
+## The migration time
 
-- 密集首次观察/迁移的 re-enter alias **不是** 254：64 实体批量进出后 alias 池的归还序跟队列堆向量游走序走（swap_remove 形），单实体才复得原 alias——钉测只锁池守恒与互异，不锁个体 alias 值。
-- 密集网格 tick 的实体位置漂移会被 PackedXZ ±500 打包限幅翻成 Detailed 投影（12 字节），基准里用往返位移（±0.25 ping-pong）把投影钉在 Relative 面。
-- witness 的 AoI 成员是 harness 决定的（add_to_aoi 由调用方给），witness 本体不按半径裁剪——密集基准的「全员在 AoI」是显式构造的最坏面。
+| Face | Value |
+| --- | --- |
+| First enter | tick 13 |
+| Last enter | tick 37 |
+| Admission window | 25 ticks (2.5 s at 10 Hz) |
+| Ticks carrying any crossing | 40 (4.0 s) |
+| Events total | 800 = 2 × 400 (enter + leave per entity) |
+
+The boundary takes 25 ticks to sweep the block's admission window and
+40 ticks of total churn to clear it — the migration cost the later
+evaluation rows (OPT-08-01-02/03) compare candidate changes against.
+
+## Harness
+
+`crates/server-runtime/tests/aoi_baseline.rs` — the ladder, the
+scheduler leg and the migration window, one deterministic run.
+
+```sh
+AOI_BASELINE_OUT=<abs path> cargo test -p server-runtime \
+    --test aoi_baseline -- --nocapture
+```
+
+## Fixtures
+
+`docs/review/fixtures/aoi-baseline/aoi-baseline.tsv` — 55 rows,
+captured with the command above.

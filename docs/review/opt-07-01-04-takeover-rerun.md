@@ -1,28 +1,66 @@
-# OPT-07-01-04 复跑接管
+# OPT-07-01-04 — The takeover rerun
 
-Acceptance: **恢复实体和共享状态正确**。本行是复跑行（零代码改动）：把接管（BaseApp/管理器死亡→恢复）两半的测试族全量复跑，核对每条结果与记录的参考契约一致。
+The acceptance: **restored entities and shared state correct**
+(`恢复实体和共享状态正确`). The drill re-runs the takeover with the
+whole cluster in place — the compression-wrapped backup transport
+(OPT-07-01-02), the quantified shared-data propagation (OPT-07-01-03) —
+and verifies both halves:
 
-## 复跑面与结果（2026-11-26 本机）
+## The drill
 
-### 实体恢复（备份接管 + 归档重启 + offload 恢复）
+One run drives, in order:
 
-- `base_backup.rs` 恢复族：`a_stored_backup_restores_matching_properties`（存下的备份重建出属性一致的实体）、`only_the_dead_apps_backups_are_restored`（只恢复失联 app 的备份）、`a_truncated_backup_fails_the_restore`（截断备份恢复失败）、`the_standard_entity_backup_has_a_pinned_wire_size`（181 wire 字节+回读重建）。
-- `offloaded_backup.rs`：`a_death_clears_every_backup`、`a_death_of_an_unknown_app_still_clears`（死亡清账两臂）。
-- `archiver.rs`：`restart_recovers_the_persisted_state`（重启从 ArchiveStore 读回重建）、`an_unpersisted_id_has_nothing_to_restore`。
-- `offload_recovery.rs` 13 测全绿（`a_lost_target_recovers_to_a_consistent_role_and_message_state`、`the_remaining_ghosts_repoint_at_the_restored_real`、`restoring_onto_the_dead_cell_is_rejected` 等一致角色/消息状态恢复面）。
+1. **The BaseApp death.** Every backed-up entity rebuilds on the holder
+   through the wrapped frames (`BackupReceiver::restore_wrapped`,
+   `backed_up_base_app.cpp:176`); each type ships at its
+   `internalNetworkCompressionType` choice (`Account` → zip speed,
+   `Mailbox` → zip best).
+2. **The CellApp death.** The `DeadCellApps` walk re-points every base
+   whose cell part was on the dead app to its space's new CellApp
+   (`dead_cell_apps.cpp:234`); bases elsewhere stay untouched.
+3. **The archive rebuild.** Every persisted entity rebuilds through the
+   compressed archive bytes (`restore_archived_with_compression`,
+   `createBaseFromStream`, `baseapp.cpp:2589`).
+4. **The manager restart.** Both managers' authoritative maps come back
+   through the recovery stream (`recoverSharedDataFromStream`,
+   `baseappmgr.cpp:1249`), and a replacement CellApp and BaseApp join
+   the recovered managers: the per-entry fill carries the whole
+   authoritative set, and the batched sync carries the same state in
+   **one** message (the OPT-07-01-03 form).
 
-### 共享状态恢复（管理器死亡 + 权威 map + 传播序）
+## The verdict
 
-- `baseappmgr.rs`：`recovery_restores_the_authoritative_maps`（死亡后权威 map 从流恢复）、`shared_data_reaches_every_base_app`、`shared_data_is_kept_for_new_apps`（迟入 app 同步）、`del_shared_data_follows_the_same_order`（删除同序传播）、`the_shared_data_message_volume_is_one_per_subscriber`（消息量台账，每订阅者恰一条不变）。
-- `cellappmgr.rs`：`recovery_restores_the_authoritative_maps`（CELL_APP/GLOBAL 权威恢复同形）。
-- 附加 `dbappmgr::recover_db_app_keeps_ids`（DBApp id 保持）。
+| Face | Result |
+| --- | --- |
+| Dead BaseApp's entities restored | 24/24, each equal to the live entity |
+| Dead CellApp's bases re-pointed | 24/24 to the space's new CellApp; 72 untouched |
+| Archived entities rebuilt | 96/96, each equal to the live entity |
+| Recovered maps equal pre-death | CELL_APP 24, BASE_APP 12, GLOBAL 16 — exact |
+| Replacement CellApp join | fill 40 messages, batch **1** |
+| Replacement BaseApp join | fill 28 messages, batch **1** |
+| Rerun equality | entity digest `0395ae5ba2899fa5`, shared digest `1998c4d915699085` — both runs identical |
 
-## 行为一致判读
+**Correctness holds end to end**: the wrapped backup frames, the
+re-point walk, the compressed archive bytes and the recovery stream all
+rebuild the exact pre-death state (lossless per entity, asserted field
+by field through the shared projection), and a replacement app joining
+a recovered manager rebuilds the authoritative maps from one batched
+message. The rerun produces the same entity and shared-state digests —
+the takeover is deterministic, so rerunning it is safe.
 
-接管两半全部复跑与交付时记录的参考契约逐条一致：实体半（备份字节回读重建同一实体、只恢复失联 app、截断拒绝）与共享半（权威 map 流恢复、迟入同步、每订阅者恰一条、删除同序）。`read_backup_data`/`restore` 路径在 OPT-07-01-02 单遍化后行为测全不动（字节等价既有测全绿），复跑再证零回归。**零代码改动、零回归**。
+## Harness
 
-## 门禁
+`crates/server-runtime/tests/takeover_rerun.rs` — the baseline load (4
+BaseApps × 24 entities, alternating types, cell parts on 4 CellApps
+across 3 spaces), both deaths, both rebuilds, the manager restart and
+the replacement joins, run twice.
 
-- `cargo test -p server-runtime --lib`：**1703 passed / 0 failed / 1 ignored**。
-- 过滤族：`-- backup recovery shared_data restart` 63/63、`-- restart recovery shared_data offloaded` 37/37（族交集覆盖上述全部测名）。
-- `--test el7_mixed_deploy -- --ignored the_mixed_deploy_rerun_passes_all_legs`：**1/1 绿**（EL7 原版二进制双向 5 腿集群级恢复面）。
+```sh
+TAKEOVER_RERUN_OUT=<abs path> cargo test -p server-runtime \
+    --test takeover_rerun -- --nocapture
+```
+
+## Fixtures
+
+`docs/review/fixtures/takeover-rerun/takeover-rerun.tsv` — 42 rows,
+captured with the command above.

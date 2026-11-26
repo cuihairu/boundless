@@ -1,57 +1,177 @@
-# OPT-03-01-01 测量 Python 桥接基线
+# OPT-03-01-01 / OPT-03-01-02 — Python bridge baseline measurements
 
-对应 todo.md OPT-03-01-01：**测量 Python 桥接基线。验收：保存转换、GIL 和回调耗时。**
+The acceptance saves conversion, GIL and callback timing baselines for the
+embedded Python bridge (OPT-03-01-01), then verifies a hot-path change by a
+before/after comparison on the same harness (OPT-03-01-02, the server timer
+fire path).
 
-交付面：
-- `crates/python-host/tests/bridge_baseline.rs`：一个集成 target（`the_bridge_baseline_records_all_faces`），对真 CPython（crate 手声明 C API 所链的 3.x 解释器）测四族桥接面的每操作耗时，结构断言随行（每面往返精确值、回调返回和、post 顺序与完成数）——是测试不是探针。
-- 记录 TSV：`docs/review/fixtures/python-baseline/bridge-baseline.tsv`（PYTHON_BRIDGE_OUT 落盘，追加式）。
+## Harness
 
-## 方法
+`crates/python-host/tests/bridge_baseline.rs` runs four legs in a fixed
+order against one embedded interpreter (`Script::init` → legs → `Script::fini`):
 
-单操作 C API 成本在几十纳秒量级，逐操作 Instant 计时的自身开销比操作本身还大，不诚实。因此每面按**窗测**：固定 1000 次背靠背操作整窗计时，窗口除以次数得每操作摊派值，50 窗（回调族 10 窗）取 p50/p90/p99/max。debug build，Linux 本机，数字机器相关只记录不设带。
+1. **Conversion** — 20,000 round-trips per family: int
+   (`PyLong_FromLong`/`PyLong_AsLongLong`), float
+   (`PyFloat_FromDouble`/`PyFloat_AsDouble`) and str
+   (`PyUnicode_FromStringAndSize`/`PyUnicode_AsUTF8AndSize`). Every
+   round-trip asserts the value it read equals the value it wrote; the
+   timed sample is the full there-and-back pair.
+2. **Callback** — a Python `noop()` is defined through `PyRun_SimpleString`,
+   fetched once from `__main__` with `PyObject_GetAttrString`, then called
+   5,000 times through `PyObject_CallNoArgs`. Each call's result is dropped
+   via `Py_DecRef` so the reference count returns to its starting value.
+3. **GIL queue** — a poster thread sends 2,000 closures through
+   `gil::post`; the GIL-owning thread drains them in `gil::process()`
+   passes. Every callback reports its own post→run time through a channel;
+   the leg asserts all 2,000 reported, `pending() == 0`, and `clear() == 0`.
+4. **Timer fire** (added with the OPT-03-01-02 comparison) — 32 repeating
+   timers registered from script (`BigWorld.addTimer(on_fire, 0.1, 0.1, 9)`)
+   driven by 64 `timers::tick(0.1)` steps on the `cell` component; 2,048
+   fires are asserted before the numbers are recorded, so a broken fire
+   path cannot produce a timing row at all. A counting global allocator
+   (the foundation `alloc_counts` pattern) wraps the tick loop to count
+   the calling thread's Rust allocations per fire. The timers are
+   cancelled after their window so the tick-driven leg that follows
+   measures only its own Python work.
+5. **Frequent-task walk** (added with the OPT-03-01-03 comparison) — 32
+   no-argument tasks registered from script
+   (`BigWorld.addFrequentTask(on_frequent)`), driven by the same 64
+   `timers::tick(0.1)` steps; 2,048 calls asserted. This is the
+   no-argument cross-language callback every registered task pays once
+   per tick (`ScriptFrequentTask::update`).
 
-| 族 | 面 | 每操作 p50 / p99（ns） |
-|---|---|---|
-| native→Python | `PyLong_FromLong` | 17 / 37 |
-| | `PyFloat_FromDouble` | 34 / 65 |
-| | `PyUnicode_FromStringAndSize`（35B） | 115 / 486 |
-| | `PyTuple_New`+3×SetItem | 206 / 3249 |
-| Python→native | `PyLong_AsLongLong` | 25 / 44 |
-| | `PyFloat_AsDouble` | 25 / 46 |
-| | `PyUnicode_AsUTF8AndSize` | 32 / 199 |
-| | `PyTuple_Size`+`GetItem`+`AsLongLong` | 43 / 147 |
-| 句柄层 | `PyRef::clone`+drop（INCREF/DECREF 对） | 96 / 698 |
-| GIL 括号 | `release_lock`+`acquire_lock`（无竞争对） | 230 / 6497 |
-| 回调 | `PyObject_CallNoArgs`（probe） | 111 / 215 |
-| | `PyObject_CallObject`（3 参 sum） | 116 / 1737 |
-| 主线程任务 | `gil::post`×500 后单次 `process` 摊派 | 160 / 2446 |
-
-## 结论
-
-1. **标量转换是真实零开销量级**：int/float 双向 17–34ns，比 GIL 括号（230ns）和回调（111–116ns）都便宜一个数量级——OPT-03-01-02「优化转换」的收益上限在标量面上极薄，真正值得动的是**字符串/复合对象面**（115–206ns，含 UTF-8 转码/容器分配）与句柄层（96ns 的 INCREF/DECREF 对已是下限附近）。
-2. **回调开销不在调用本身**：`PyObject_CallObject` 3 参 116ns 与 noargs 111ns 几乎持平——参数打包（build tuple+3×FromLong）不在测量内的话调用面已贴 CPython 下限；OPT-03-01-03「跨语言回调」的优化空间在**排队/调度侧**（post+drain 摊派 160ns，其中 process 快照+catch_unwind 包装是 port 侧新增成本）而非 C API 调用侧。
-3. **GIL 括号 230ns 无竞争**：参考引擎的 main-thread idle 对（SaveThread/RestoreThread）本身极便宜，尾延迟（p99 6.5µs）来自偶发调度抖动；有竞争场景未测（本面无第二线程状态面，`PyThreadState_New` 不在 capi 面）。
-4. 结构断言全绿：八面往返精确值、回调返回 6、500 post 全部按序完成、`pending()==0` 收尾。
-5. 首跑/复跑形态一致（三连跑 0.09–0.14s），结构性断言逐跑恒等，墙钟数字按窗分布同量级。
-
-## 复跑命令（canonical）
+Structural assertions run on every execution. Wall-clock numbers are
+**recorded, never asserted tight** — raw nanoseconds are machine-dependent,
+as with the OPT-02 network baseline. The record sink writes
+`metric<TAB>value` rows to stdout and, when `BRIDGE_BASELINE_OUT` is set,
+appends to that path in the network/load fixture format:
 
 ```sh
-PYTHON_BRIDGE_OUT=<绝对路径> cargo test -p python-host \
-    --test bridge_baseline the_bridge_baseline_records_all_faces -- --exact
+BRIDGE_BASELINE_OUT=<abs path> cargo test -p python-host \
+    --test bridge_baseline the_python_bridge_baseline_runs_all_legs -- --exact
 ```
 
-TSV 追加落盘，重跑前先清文件。
+## OPT-03-01-01 baseline record
 
-## 门禁（全绿后落账）
+The before record (with the timer leg at its pre-change fire path) is the
+fixture at commit `e10ccbd`; key rows: int p50 88 ns / float p50 96 ns /
+str p50 273 ns / `noop()` p50 134 ns / GIL drain 1,193 ns per callback /
+**timer fire 10,096.8 ns per fire**. No acceptance band is set on any
+wall-clock row.
 
-- `cargo test -p python-host`：全 target 绿（含 crate 自带场景进程族）。
-- clippy `-D warnings`、rustfmt `--edition 2024 --check`：净（workspace manifest 的 blowfish 未用警告是继承债）。
+## OPT-03-01-02 — timer fire conversion, before/after
 
-## 坑集（复现与规避）
+The change (reference: `app_script_timers.cpp`, `handleTimeout` —
+`PyObject_CallFunction(pObject, "ik", id, uintptr(pUser))`): the port used
+to build the fire arguments by hand — two `PyLong` conversions, a
+`PyTuple_New`, two `PyTuple_SetItem`s, then `PyObject_CallObject` and a
+`Py_DecRef` of the tuple — six C-API entries per fire. It now fires
+through a single `PyObject_CallFunction("ik", id, user_arg)`, the way the
+reference does; the arguments tuple is built inside the call.
 
-- **逐操作 Instant 对几十 ns 的面是假数**：窗口整批计时再摊派，p50/p99 才是可信量级。
-- **`PyObject_CallNoArgs` 不是零参万能调用**：被调函数必须真无参——对 `add3(a,b,c)` 用它拿到 null 返回且报错滞留到解释器关闭才喷（"Exception ignored on threading shutdown"）；备一个 `probe()` 无参函数专用。
-- **`PyTuple_SetItem` 偷引用**：复合面循环装填时每元素先 INCREF 再 SetItem，否则窗口循环把元素引用计数打穿。
-- **解释器每进程一次**：集成 target 只放一个测试函数，本进程独占解释器，不需要 bw_profile 那套子进程场景编排。
-- **to_python 各面的 decref 就在计时环里**：产品逐个 `Py_DecRef` 是测量的一部分（~10ns，要承认它计入了）；想剥出去就得攒一批环外统一清理，本面选择承认它。
+Before/after comparison, same machine, same toolchain, 2026-11-26:
+
+| Window | Before ns/fire | After ns/fire | Δ |
+|---|---:|---:|---:|
+| Canonical fixture run (committed) | 10,096.8 | 5,049.4 | −50% |
+| Two quiet-machine runs | — | 5,621.4 / 5,787.4 | ≈ −44% |
+| 9 interleaved pairs, one pinned core, machine load 46–53 | median 6,495.3 | median 5,930.6 | −9%, after lower in 6/9 pairs |
+
+Disclosure: this machine carried a heavy concurrent fleet load (qemu,
+parallel crate builds — 1-minute load 40–53) for most of the session, so
+the quiet-window gap is the honest magnitude and the interleaved pairs are
+the honest same-load comparison; their spread (before 3,983.8–12,478.7,
+after 3,628.4–17,011.6) is the noise floor of that load. No band is
+asserted on any wall-clock row. The deterministic faces are structural and
+hold on every run: the fired count must equal timers × ticks (2,048), and
+the fire path crosses its arguments as one call.
+
+Allocation contract: the counting allocator recorded **0.00 Rust
+allocations per fire on both sides** — CPython's pymalloc serves the
+object-level allocations (the `PyLong`s, the tuple) from its own arenas,
+which are invisible to the Rust global allocator. The before path's extra
+Rust-side work is call and reference-count bookkeeping, not Rust heap
+traffic; the alloc counter is therefore a boundary finding (the fire path
+allocates nothing through Rust on either side, worth knowing for the
+OPT-01 allocation family), not a discriminator between the two paths.
+
+## OPT-03-01-03 — frequent-task call, GIL occupancy and tail
+
+The GIL-queue leg now also reports **GIL occupancy**: the share of the
+drain window the owning thread spends inside `gil::process()` (servicing
+posted callbacks plus the polling between them) — `gil_occupancy_pct`.
+Tail latency stays the `gil_e2e` p90/p99/max rows. First record under
+fleet load: occupancy 28.3%, e2e p50 869 µs / p99 1.86 ms.
+
+The frequent-task walk (`ScriptFrequentTask::update`) is the row's
+optimization face. The reference builds the call as
+`Script::ask(pCallback.newRef(), PyTuple_New(0))` — an empty tuple
+allocated, passed and dropped for every task on every tick — and the
+port mirrors it. The change fires the no-argument callback through
+`PyObject_CallNoArgs` (the CPython zero-argument fast path the harness's
+callback leg already benchmarks): no tuple object is created, the
+semantic contract is unchanged (same callable, no arguments, truthy
+result still deregisters, failure still prints and the task stays).
+
+Before record (with the walk still on the tuple path), fleet load:
+**2,384.0 ns per call**; the Rust allocator counts 0.00 per call — the
+tuple lives in pymalloc, like every object on this bridge.
+
+After record (the same harness, walk on `PyObject_CallNoArgs`):
+canonical run **543.1 ns per call** (a second run: 521.2), occupancy
+97.2%.
+
+Instrument disclosure — the wall-clock ratio is **not** claimable as a
+speedup. Under this session's fleet load (1-minute load 40–77) two runs
+of a byte-identical binary measured 6,555.9 and 498.5 ns per call, so
+per-run wall-clock swings 13× on identical code. A batched CPU-time
+comparison (100 runs per side, interleaved batches of 20, `%U` summed to
+defeat the 10 ms tick quantization) measured median ratio 1.07 with
+rounds 0.91–1.12 — no CPU-side difference distinguishable at this noise
+floor. That is consistent with the tuple living in pymalloc: the change
+removes one object create-and-destroy per task per tick and moves to the
+C fast call entry (`PyObject_CallNoArgs`, the shape the callback leg
+benchmarks at 82 ns p50) — work neither wall-clock under load nor `%U`
+at this scale can resolve. The honest faces this row reports are the
+acceptance's own: **GIL occupancy** (28.3% / 97.2% across the two
+records — the drain-window share under a flat-out poster, load-dependent)
+and **tail latency** (the `gil_e2e` p50/p90/p99/max rows, plus
+`frequent_ns_per_call` for the walk itself), all recorded, none gated.
+
+## OPT-03-01-04 — rerun of the reference, exception and reload cases
+
+After the two hot-path changes (01-02, 01-03), the case families that pin
+the bridge's behavior were rerun on the optimized tree; the acceptance is
+identical behavior, and these assertions encode those contracts, so
+unchanged green is the evidence:
+
+- **Reference** — the `pyref` unit tests (8: adopt/borrow/clone and the
+  empty-handle ownership rules), the scenario family's reference faces
+  (`scenario_a_handle_owns_one_reference`,
+  `scenario_the_cache_holds_one_reference_per_identity`, the keep-alive
+  and pin reference scenarios), and the baseline harness's per-value
+  identity asserts on every conversion round-trip.
+- **Exception** — `scenario_the_bigworld_timers_behave_like_the_reference`
+  (a timer callback raising `RuntimeError` prints and reschedules — the
+  OPT-03-01-02 path — and a failing frequent task stays registered — the
+  OPT-03-01-03 path), `scenario_a_raising_listener_fails_the_trigger_\
+and_contributes_none`, and the billing exception scenarios.
+- **Reload** — `scenario_a_failed_reload_leaves_the_old_definitions_\
+callable`, `scenario_replacing_a_script_class_updates_existing_instances`,
+  `scenario_swapping_in_a_module_window_keeps_sys_and_main`,
+  `scenario_migrate_reports_the_hook_success_and_failure`, plus the 12
+  `reload_*` unit tests.
+
+Rerun (2026-11-26, post-`2d67612`): `every_scenario_exits_cleanly` ok —
+all 104 interpreter scenarios, each in its own process — plus `reload_*`
+12 passed and `pyref` 8 passed. Zero failures, no assertion changed.
+
+## Current fixture record
+
+`docs/review/fixtures/python-bridge-baseline/bridge-baseline.tsv` is a
+rolling canonical record: each delivery commit re-records it with the
+harness as it stands, and the other side of every comparison lives in the
+commit cited in the section above (e10ccbd for the OPT-03-01-01/02
+before, this commit for the OPT-03-01-03 before). Rows moved between
+records with the machine load as expected — same code, differing load;
+they are snapshots, not regressions.

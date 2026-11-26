@@ -1,95 +1,328 @@
-//! OPT-03-01-01: the Python bridge baseline — conversion, GIL and callback
-//! timings against the real CPython the crate links, one interpreter, one
-//! process.
+//! OPT-03-01-01 / OPT-03-01-02 / OPT-03-01-03: the Python bridge baseline
+//! measurements.
 //!
-//! The single-op C-API faces cost tens of nanoseconds, below the resolution
-//! an honest `Instant`-per-op report could carry, so every face is measured
-//! as windows: a fixed count of back-to-back operations timed together, the
-//! window divided into a per-op figure, percentiles taken across the
-//! windows. Structural assertions ride along — every conversion face
-//! round-trips its exact value, the callback returns the sum, the posted
-//! callbacks run in posted order — so the binary is a test, not just a
-//! probe.
+//! The acceptance saves five record families — native↔Python conversion
+//! timing, cross-language callback timing, GIL-queue occupancy, the
+//! server timer fire path, and the frequent-task walk — against the
+//! embedded interpreter the way the engine runs it: the main thread owns
+//! the lock from `Script::init` and the posted-task queue is drained by
+//! the thread that owns the GIL.
 //!
-//! Timings are machine-dependent and are recorded, never banded: with
-//! `PYTHON_BRIDGE_OUT` set to an absolute path the records are appended as
-//! `key\tvalue` lines (clear the file before a rerun — append mode):
+//! Structural invariants are asserted on every run: every conversion
+//! round-trip must return the value it was given, every callback must
+//! produce its object, every posted callback must complete, and the
+//! queue must drain to empty. The wall-clock numbers are only recorded
+//! (never asserted tight — like the network baseline, the raw
+//! nanoseconds are machine-dependent) and pass through
+//! `BRIDGE_BASELINE_OUT` as a `metric<TAB>value` TSV when set, matching
+//! the network/load fixture format. The canonical record comes from the
+//! runner leg alone:
 //!
 //! ```sh
-//! PYTHON_BRIDGE_OUT=<absolute path> cargo test -p python-host \
-//!     --test bridge_baseline the_bridge_baseline_records_all_faces \
-//!     -- --exact --nocapture
+//! BRIDGE_BASELINE_OUT=<abs path> cargo test -p python-host \
+//!     --test bridge_baseline the_python_bridge_baseline_runs_all_legs -- --exact
 //! ```
 
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::io::Write as _;
-use std::os::raw::{c_char, c_long};
-use std::time::{Duration, Instant};
+use std::path::PathBuf;
+use std::sync::mpsc::{Sender, channel};
+use std::time::Instant;
 
 use python_host::capi;
-use python_host::gil;
+use python_host::import_paths;
 use python_host::interpreter::{InitConfig, Interpreter};
 use python_host::pyref::PyRef;
 
-/// Marker text the string faces convert; long enough that the copy is a
-/// real cost, short enough to stay trivial.
-const MARKER: &[u8] = b"bridge baseline marker 0123456789";
+// ---------------------------------------------------------------------------
+// The counting allocator (the foundation alloc_counts pattern)
+// ---------------------------------------------------------------------------
 
-/// The tuple index the subscript face reads: component 0.
-const SUBSCRIPT_INDEX: c_long = 0;
+thread_local! {
+    /// const-init: the flag and counters never allocate, so turning
+    /// tracking on inside the allocator cannot recurse.
+    static TRACKING: Cell<bool> = const { Cell::new(false) };
+    static ALLOCS: Cell<usize> = const { Cell::new(0) };
+    static BYTES: Cell<usize> = const { Cell::new(0) };
+}
 
-/// The tuple face's payload.
-const TUPLE_VALUES: (i64, i64, i64) = (42, -7, 1000);
+struct Counting;
 
-/// Conversions per timed window. Fifty windows give the percentiles fifty
-/// per-op figures.
-const WINDOW_OPS: usize = 1_000;
-const WINDOWS: usize = 50;
-
-/// Calls per window for the faces that cost more than a bare conversion.
-const CALL_WINDOW_OPS: usize = 1_000;
-const CALL_WINDOWS: usize = 10;
-
-/// Posted callbacks per drain pass.
-const POSTED_PER_PASS: usize = 500;
-const DRAIN_PASSES: usize = 10;
-
-/// Callbacks the tail-latency face posts from its poster thread.
-const TAIL_POSTS: usize = 5_000;
-
-/// One frame at 60 fps, the budget the occupancy figures divide by.
-const FRAME_60FPS_NS: f64 = 16_666_666.0;
-
-/// One face: a name, and a closure that runs `ops` back-to-back operations.
-/// The return is the window's wall time.
-type Face<'a> = (&'a str, usize, Box<dyn FnMut() + 'a>);
-
-/// Runs `face` and appends its per-op percentiles, in nanoseconds, to
-/// `records`.
-fn measure(face: Face, records: &mut Vec<(String, String)>) {
-    let (name, ops, mut run) = face;
-    let mut figures = Vec::with_capacity(WINDOWS);
-    for _ in 0..WINDOWS {
-        let started = Instant::now();
-        for _ in 0..ops {
-            run();
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if TRACKING.with(Cell::get) {
+            ALLOCS.with(|c| c.set(c.get() + 1));
+            BYTES.with(|c| c.set(c.get() + layout.size()));
         }
-        figures.push(started.elapsed() / ops as u32);
+        unsafe { System.alloc(layout) }
     }
-    figures.sort();
-    let at = |q: f64| figures[((figures.len() - 1) as f64 * q).round() as usize];
-    for (label, value) in [
-        ("p50", at(0.50)),
-        ("p90", at(0.90)),
-        ("p99", at(0.99)),
-        ("max", figures[figures.len() - 1]),
-    ] {
-        records.push((format!("{name}_{label}_ns"), value.as_nanos().to_string()));
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) }
     }
 }
 
-/// The init config with a throw-away resource root, so `Script::init`'s own
-/// `import bw_site` finds a module (`script.cpp:617`).
-fn scenario_config() -> InitConfig {
+#[global_allocator]
+static GLOBAL: Counting = Counting;
+
+/// What one measurement window counted.
+struct Count {
+    /// The calling thread's allocation calls.
+    allocs: usize,
+    /// Their cumulative requested size.
+    bytes: usize,
+}
+
+/// Count the calling thread's allocations inside `body`. Everything the
+/// window touches runs on this thread — the tick loop, the timer fires,
+/// and the interpreter calls they make — so the count covers the whole
+/// fire path and is exactly reproducible on a given toolchain.
+fn measure<T>(body: impl FnOnce() -> T) -> (Count, T) {
+    TRACKING.with(|t| {
+        ALLOCS.with(|c| c.set(0));
+        BYTES.with(|c| c.set(0));
+        t.set(true);
+    });
+    let out = body();
+    TRACKING.with(|t| t.set(false));
+    let count = TRACKING.with(|_| Count {
+        allocs: ALLOCS.with(Cell::get),
+        bytes: BYTES.with(Cell::get),
+    });
+    (count, out)
+}
+
+/// Round-trips per conversion family.
+const CONVERT_ROUNDS: usize = 20_000;
+/// No-argument Python calls timed.
+const CALLBACK_CALLS: usize = 5_000;
+/// Callbacks posted cross-thread and drained on the GIL thread.
+const POSTED_CALLBACKS: usize = 2_000;
+
+// ---------------------------------------------------------------------------
+// The record sink
+// ---------------------------------------------------------------------------
+
+/// Collected `metric<TAB>value` rows. Printed to stdout on flush and
+/// written to `$BRIDGE_BASELINE_OUT` when set (the network/load fixture
+/// format).
+#[derive(Default)]
+struct Record(Vec<(String, String)>);
+
+impl Record {
+    fn put(&mut self, metric: &str, value: impl std::fmt::Display) {
+        self.0.push((metric.to_string(), value.to_string()));
+    }
+
+    fn flush(&self) {
+        let mut text = String::new();
+        for (k, v) in &self.0 {
+            text.push_str(&format!("{k}\t{v}\n"));
+        }
+        print!("{text}");
+        if let Ok(path) = std::env::var("BRIDGE_BASELINE_OUT") {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .and_then(|mut f| f.write_all(text.as_bytes()))
+                .expect("write BRIDGE_BASELINE_OUT");
+            println!("record: {path}");
+        }
+        let _ = std::io::stdout().flush();
+    }
+}
+
+/// The p50/p90/p99/max/min summary of a sample set, in nanoseconds.
+fn summarize(samples: &mut [f64]) -> [f64; 5] {
+    samples.sort_by(|a, b| a.total_cmp(b));
+    let pick = |p: f64| {
+        let idx = ((p * samples.len() as f64).ceil() as usize).clamp(1, samples.len()) - 1;
+        samples[idx]
+    };
+    [
+        pick(0.50),
+        pick(0.90),
+        pick(0.99),
+        samples[samples.len() - 1],
+        samples[0],
+    ]
+}
+
+/// Records one family's summary under `prefix_{p50,p90,p99,max,min}_ns`.
+fn put_summary(record: &mut Record, prefix: &str, summary: [f64; 5]) {
+    let names = ["p50", "p90", "p99", "max", "min"];
+    for (name, value) in names.iter().zip(summary) {
+        record.put(&format!("{prefix}_{name}_ns"), format!("{value:.1}"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The legs
+// ---------------------------------------------------------------------------
+
+/// Leg 1: native→Python→native round-trips for the int, float and str
+/// families. Every round-trip is checked for identity; the timed sample
+/// is the full there-and-back pair.
+fn conversion_leg(record: &mut Record) {
+    let mut int_samples = Vec::with_capacity(CONVERT_ROUNDS);
+    let mut float_samples = Vec::with_capacity(CONVERT_ROUNDS);
+    let mut str_samples = Vec::with_capacity(CONVERT_ROUNDS);
+
+    for i in 0..CONVERT_ROUNDS as i64 {
+        // int: PyLong_FromLong → PyLong_AsLongLong.
+        let started = Instant::now();
+        let number = unsafe { capi::PyLong_FromLong(i) };
+        assert!(!number.is_null(), "PyLong_FromLong failed");
+        let read = unsafe { capi::PyLong_AsLongLong(number) };
+        unsafe { capi::Py_DecRef(number) };
+        assert_eq!(read, i, "the int round-trip must return its input");
+        int_samples.push(started.elapsed().as_nanos() as f64);
+
+        // float: PyFloat_FromDouble → PyFloat_AsDouble.
+        let value = i as f64 + 0.5;
+        let started = Instant::now();
+        let number = unsafe { capi::PyFloat_FromDouble(value) };
+        assert!(!number.is_null(), "PyFloat_FromDouble failed");
+        let read = unsafe { capi::PyFloat_AsDouble(number) };
+        unsafe { capi::Py_DecRef(number) };
+        assert_eq!(read, value, "the float round-trip must return its input");
+        float_samples.push(started.elapsed().as_nanos() as f64);
+
+        // str: PyUnicode_FromStringAndSize → PyUnicode_AsUTF8AndSize.
+        let text = format!("bot-{i}");
+        let started = Instant::now();
+        let unicode = unsafe {
+            capi::PyUnicode_FromStringAndSize(text.as_ptr().cast(), text.len() as capi::PySsize)
+        };
+        assert!(!unicode.is_null(), "PyUnicode_FromStringAndSize failed");
+        let mut size: capi::PySsize = 0;
+        let chars = unsafe { capi::PyUnicode_AsUTF8AndSize(unicode, &mut size) };
+        assert!(!chars.is_null(), "PyUnicode_AsUTF8AndSize failed");
+        let read = unsafe { std::ffi::CStr::from_ptr(chars).to_bytes() };
+        assert_eq!(
+            read,
+            text.as_bytes(),
+            "the str round-trip must return its input"
+        );
+        unsafe { capi::Py_DecRef(unicode) };
+        str_samples.push(started.elapsed().as_nanos() as f64);
+    }
+
+    record.put("convert_round_trips", CONVERT_ROUNDS);
+    put_summary(record, "convert_int", summarize(&mut int_samples));
+    put_summary(record, "convert_float", summarize(&mut float_samples));
+    put_summary(record, "convert_str", summarize(&mut str_samples));
+}
+
+/// Leg 2: a Python `noop()` defined through `PyRun_SimpleString`, then
+/// called from the native side through `PyObject_CallNoArgs`. The
+/// reference cross-language call shape: fetch the callable once, call it
+/// many times, drop each result.
+fn callback_leg(record: &mut Record, interpreter: &Interpreter) {
+    assert!(
+        interpreter.run_simple_string("def noop():\n    pass\n"),
+        "defining the callback failed"
+    );
+    let module = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+    assert!(!module.is_null(), "fetching __main__ failed");
+    // `PyImport_AddModule` returns a borrowed reference; the attribute
+    // fetch hands back a new one.
+    let holder = PyRef::borrowed(module);
+    let function = unsafe { capi::PyObject_GetAttrString(holder.as_ptr(), c"noop".as_ptr()) };
+    let function = PyRef::from_owned(function).expect("fetching noop failed");
+
+    let mut samples = Vec::with_capacity(CALLBACK_CALLS);
+    for _ in 0..CALLBACK_CALLS {
+        let started = Instant::now();
+        let result = unsafe { capi::PyObject_CallNoArgs(function.as_ptr()) };
+        assert!(!result.is_null(), "the noop call failed");
+        unsafe { capi::Py_DecRef(result) };
+        samples.push(started.elapsed().as_nanos() as f64);
+    }
+
+    record.put("callback_calls", CALLBACK_CALLS);
+    put_summary(record, "callback_noarg", summarize(&mut samples));
+}
+
+/// Leg 3: GIL-queue occupancy. A poster thread runs flat-out posting
+/// [`POSTED_CALLBACKS`] callbacks through [`python_host::gil::post`]
+/// while the GIL thread drains them in `process()` passes. Recorded per
+/// callback: the post→run end-to-end latency, and the drain throughput
+/// over the whole window.
+fn gil_leg(record: &mut Record) {
+    let (sender, receiver) = channel::<(Instant, Instant)>();
+    let poster = std::thread::spawn(move || {
+        for _ in 0..POSTED_CALLBACKS {
+            let posted = Instant::now();
+            // The closure runs on the GIL thread; it reports its own run
+            // time back to the measurer.
+            let report: Sender<(Instant, Instant)> = sender.clone();
+            python_host::gil::post(move || {
+                let _ = report.send((posted, Instant::now()));
+            });
+        }
+    });
+
+    let started = Instant::now();
+    let mut busy = std::time::Duration::ZERO;
+    let mut completed = 0;
+    while completed < POSTED_CALLBACKS {
+        // Safe: this is the thread that owns the GIL, and the posted
+        // closures only touch the report channel.
+        let pass = Instant::now();
+        let ran = unsafe { python_host::gil::process() };
+        busy += pass.elapsed();
+        completed += ran;
+    }
+    let drained = started.elapsed();
+
+    poster.join().expect("the poster thread");
+    assert_eq!(
+        python_host::gil::pending(),
+        0,
+        "the queue must drain to empty"
+    );
+
+    let mut latencies = receiver
+        .try_iter()
+        .map(|(posted, ran)| ran.duration_since(posted).as_nanos() as f64)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        latencies.len(),
+        POSTED_CALLBACKS,
+        "every posted callback must report a run time"
+    );
+
+    record.put("gil_posted", POSTED_CALLBACKS);
+    put_summary(record, "gil_e2e", summarize(&mut latencies));
+    // GIL occupancy: the share of the drain window the owning thread
+    // spends inside `process()` — servicing posted callbacks plus the
+    // polling between them. Under a flat-out poster this is the
+    // saturated-queue occupancy; an idle host spends most of its window
+    // outside `process()`.
+    record.put(
+        "gil_occupancy_pct",
+        format!(
+            "{:.1}",
+            busy.as_nanos() as f64 / drained.as_nanos() as f64 * 100.0
+        ),
+    );
+    record.put(
+        "gil_drain_ns_per_callback",
+        format!("{:.1}", drained.as_nanos() as f64 / POSTED_CALLBACKS as f64),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The runner leg
+// ---------------------------------------------------------------------------
+
+/// A throw-away resource root laid out the way the engine ships its
+/// scripts, so `Script::init`'s `bw_site` import finds its tree (the
+/// billing scenarios' shape).
+fn temp_resource_root() -> PathBuf {
     let root = std::env::temp_dir().join(format!(
         "boundless-python-host-bridge-baseline-{}",
         std::process::id()
@@ -101,548 +334,202 @@ fn scenario_config() -> InitConfig {
         "import sys\nsys.bw_site_imported = True\n",
     )
     .expect("write bw_site");
-    let mut config = InitConfig::default();
-    config.import_paths.add_res_path(
-        &[root.to_str().expect("a UTF-8 root")],
-        python_host::import_paths::COMMON_PATH,
-    );
-    config
+    root
 }
 
-/// Defines the callback faces' functions in `__main__`: a no-argument
-/// callable and the three-argument sum. Returns the borrowed `add3`.
-fn define_callbacks() -> *mut capi::PyObject {
-    // SAFETY: only called while the interpreter is up; the definitions run
-    // on the thread that owns the GIL.
-    unsafe {
-        let source = c"def probe():\n    return None\n\n\
-                       def add3(a, b, c):\n    return a + b + c\n";
-        if capi::PyRun_SimpleString(source.as_ptr()) != 0 {
-            panic!("the callback definitions did not run");
-        }
-        let module = capi::PyImport_AddModule(c"__main__".as_ptr());
-        let dictionary = capi::PyModule_GetDict(module);
-        capi::PyDict_GetItemString(dictionary, c"add3".as_ptr())
-    }
-}
+/// Leg 4: the server timer fire path — the native→Python conversion a
+/// running cell pays on every fire of every repeating timer. `K`
+/// repeating timers are registered from script and driven by the
+/// engine tick; each fire carries `(id, userArg)` across the bridge,
+/// so the aggregate per-fire cost includes the conversion block the
+/// fire path builds. The fired count is asserted; the per-fire
+/// nanoseconds are recorded.
+fn timer_fire_leg(record: &mut Record, interpreter: &Interpreter) {
+    const TIMERS: usize = 32;
+    const TICKS: usize = 64;
+    const FIRES: usize = TIMERS * TICKS;
 
-#[test]
-fn the_bridge_baseline_records_all_faces() {
-    let interpreter = Interpreter::init(&scenario_config()).expect("Script::init");
-    let mut records: Vec<(String, String)> = vec![
-        ("window_ops".into(), WINDOW_OPS.to_string()),
-        ("windows".into(), WINDOWS.to_string()),
-        ("call_window_ops".into(), CALL_WINDOW_OPS.to_string()),
-        ("call_windows".into(), CALL_WINDOWS.to_string()),
-        ("posted_per_pass".into(), POSTED_PER_PASS.to_string()),
-    ];
-
-    // ---- conversion, native -> Python ------------------------------------
-    // The products of the building faces are held and released after the
-    // timed loops, so a face measures its conversion and not the decref.
-    let mut to_python: Vec<Face> = vec![
-        (
-            "to_python_int",
-            WINDOW_OPS,
-            Box::new(|| {
-                let object = unsafe { capi::PyLong_FromLong(42 as c_long) };
-                assert!(!object.is_null());
-                unsafe { capi::Py_DecRef(object) };
-            }),
+    assert!(
+        interpreter.run_simple_string(
+            "import BigWorld\n\
+             fire_count = [0]\n\
+             timer_handles = []\n\
+             def on_fire(id, userArg):\n\
+             \x20   fire_count[0] += 1\n\
+             for _ in range(32):\n\
+             \x20   timer_handles.append(BigWorld.addTimer(on_fire, 0.1, 0.1, 9))\n\
+             ",
         ),
-        (
-            "to_python_float",
-            WINDOW_OPS,
-            Box::new(|| {
-                let object = unsafe { capi::PyFloat_FromDouble(std::f64::consts::PI) };
-                assert!(!object.is_null());
-                unsafe { capi::Py_DecRef(object) };
-            }),
-        ),
-        (
-            "to_python_string",
-            WINDOW_OPS,
-            Box::new(|| {
-                let object = unsafe {
-                    capi::PyUnicode_FromStringAndSize(
-                        MARKER.as_ptr() as *const c_char,
-                        MARKER.len() as _,
-                    )
-                };
-                assert!(!object.is_null());
-                unsafe { capi::Py_DecRef(object) };
-            }),
-        ),
-    ];
-    // The tuple face needs its elements first, and a fresh tuple each op.
-    // SetItem steals the references, so each built tuple increfs the three
-    // elements once.
-    let elements = [
-        PyRef::from_owned(unsafe { capi::PyLong_FromLong(TUPLE_VALUES.0 as c_long) })
-            .expect("the first element"),
-        PyRef::from_owned(unsafe { capi::PyLong_FromLong(TUPLE_VALUES.1 as c_long) })
-            .expect("the second element"),
-        PyRef::from_owned(unsafe { capi::PyLong_FromLong(TUPLE_VALUES.2 as c_long) })
-            .expect("the third element"),
-    ];
-    to_python.push((
-        "to_python_tuple3",
-        WINDOW_OPS,
-        Box::new(move || {
-            let tuple = unsafe { capi::PyTuple_New(3) };
-            assert!(!tuple.is_null());
-            for (index, element) in elements.iter().enumerate() {
-                unsafe { capi::Py_IncRef(element.as_ptr()) };
-                assert_eq!(
-                    unsafe { capi::PyTuple_SetItem(tuple, index as _, element.as_ptr()) },
-                    0
-                );
-            }
-            unsafe { capi::Py_DecRef(tuple) };
-        }),
-    ));
-
-    // ---- conversion, Python -> native ------------------------------------
-    let int_object =
-        PyRef::from_owned(unsafe { capi::PyLong_FromLong(42 as c_long) }).expect("an int object");
-    let float_object = PyRef::from_owned(unsafe { capi::PyFloat_FromDouble(std::f64::consts::PI) })
-        .expect("a float object");
-    let string_object = PyRef::from_owned(unsafe {
-        capi::PyUnicode_FromStringAndSize(MARKER.as_ptr() as *const c_char, MARKER.len() as _)
-    })
-    .expect("a string object");
-    let tuple_object = PyRef::from_owned({
-        let tuple = unsafe { capi::PyTuple_New(3) };
-        assert!(!tuple.is_null());
-        let (a, b, c) = TUPLE_VALUES;
-        for (index, value) in [a, b, c].into_iter().enumerate() {
-            let item = unsafe { capi::PyLong_FromLong(value as c_long) };
-            assert!(!item.is_null());
-            assert_eq!(unsafe { capi::PyTuple_SetItem(tuple, index as _, item) }, 0);
-        }
-        tuple
-    })
-    .expect("a tuple object");
-
-    // Each extraction face asserts its exact value once, before the timed
-    // loop; the loop itself re-extracts.
-    assert_eq!(unsafe { capi::PyLong_AsLongLong(int_object.as_ptr()) }, 42);
-    assert_eq!(
-        unsafe { capi::PyFloat_AsDouble(float_object.as_ptr()) },
-        std::f64::consts::PI
-    );
-    {
-        let mut size = 0;
-        let text = unsafe { capi::PyUnicode_AsUTF8AndSize(string_object.as_ptr(), &mut size) };
-        let text = unsafe { std::slice::from_raw_parts(text as *const u8, size as usize) };
-        assert_eq!(text, MARKER);
-    }
-    assert_eq!(unsafe { capi::PyTuple_Size(tuple_object.as_ptr()) }, 3);
-    assert_eq!(
-        unsafe { capi::PyLong_AsLongLong(capi::PyTuple_GetItem(tuple_object.as_ptr(), 1)) },
-        -7
+        "registering the timers failed"
     );
 
-    let mut from_python: Vec<Face> = vec![
-        (
-            "from_python_int",
-            WINDOW_OPS,
-            Box::new(|| {
-                assert_eq!(unsafe { capi::PyLong_AsLongLong(int_object.as_ptr()) }, 42);
-            }),
-        ),
-        (
-            "from_python_float",
-            WINDOW_OPS,
-            Box::new(|| {
-                assert_eq!(
-                    unsafe { capi::PyFloat_AsDouble(float_object.as_ptr()) },
-                    std::f64::consts::PI
-                );
-            }),
-        ),
-        (
-            "from_python_string",
-            WINDOW_OPS,
-            Box::new(|| {
-                let mut size = 0;
-                let text =
-                    unsafe { capi::PyUnicode_AsUTF8AndSize(string_object.as_ptr(), &mut size) };
-                assert!(!text.is_null());
-                assert_eq!(size as usize, MARKER.len());
-            }),
-        ),
-        (
-            "from_python_tuple3",
-            WINDOW_OPS,
-            Box::new(|| {
-                assert_eq!(unsafe { capi::PyTuple_Size(tuple_object.as_ptr()) }, 3);
-                assert_eq!(
-                    unsafe {
-                        capi::PyLong_AsLongLong(capi::PyTuple_GetItem(tuple_object.as_ptr(), 2))
-                    },
-                    TUPLE_VALUES.2
-                );
-            }),
-        ),
-    ];
-
-    // ---- handle layer ------------------------------------------------------
-    let mut handle: Vec<Face> = vec![(
-        "handle_clone_drop",
-        WINDOW_OPS,
-        Box::new(|| {
-            let cloned = int_object.clone();
-            assert_eq!(cloned.as_ptr(), int_object.as_ptr());
-            drop(cloned);
-        }),
-    )];
-
-    // ---- GIL bracket -------------------------------------------------------
-    // The reference's main-thread idle pair: release, then take it back.
-    // The empty-drain face is the poll-side steady state: a pass over a
-    // queue that has nothing waiting, which every frame pays whether or
-    // not anything was posted. The queue is empty here — nothing has been
-    // posted yet — and the pass must report zero.
-    let mut gil_faces: Vec<Face> = vec![
-        (
-            "gil_release_acquire",
-            CALL_WINDOW_OPS,
-            Box::new(|| {
-                unsafe { gil::release_lock().expect("release") };
-                unsafe { gil::acquire_lock() };
-            }),
-        ),
-        (
-            "drain_empty",
-            CALL_WINDOW_OPS,
-            Box::new(|| {
-                // SAFETY: the test thread owns the GIL.
-                assert_eq!(unsafe { gil::process() }, 0);
-            }),
-        ),
-    ];
-
-    // ---- callbacks ---------------------------------------------------------
-    let add3 = define_callbacks();
-    assert!(!add3.is_null(), "the callback was not found");
-    // The noargs face calls `probe`, which needs no arguments.
-    let probe = unsafe {
-        let module = capi::PyImport_AddModule(c"__main__".as_ptr());
-        let dictionary = capi::PyModule_GetDict(module);
-        capi::PyDict_GetItemString(dictionary, c"probe".as_ptr())
-    };
-    assert!(!probe.is_null(), "the noargs callback was not found");
-    let noargs_result = unsafe { capi::PyObject_CallNoArgs(probe) };
-    assert!(!noargs_result.is_null());
-    unsafe { capi::Py_DecRef(noargs_result) };
-
-    let call_args = PyRef::from_owned({
-        let tuple = unsafe { capi::PyTuple_New(3) };
-        assert!(!tuple.is_null());
-        let (a, b, c) = (1, 2, 3);
-        for (index, value) in [a, b, c].into_iter().enumerate() {
-            let item = unsafe { capi::PyLong_FromLong(value as c_long) };
-            assert!(!item.is_null());
-            assert_eq!(unsafe { capi::PyTuple_SetItem(tuple, index as _, item) }, 0);
-        }
-        tuple
-    })
-    .expect("the argument tuple");
-    let call_result = unsafe { capi::PyObject_CallObject(add3, call_args.as_ptr()) };
-    assert!(!call_result.is_null(), "the callback did not run");
-    assert_eq!(unsafe { capi::PyLong_AsLongLong(call_result) }, 6);
-    unsafe { capi::Py_DecRef(call_result) };
-
-    let mut callback_faces: Vec<Face> = vec![
-        (
-            "call_noargs",
-            CALL_WINDOW_OPS,
-            Box::new(|| {
-                let result = unsafe { capi::PyObject_CallNoArgs(probe) };
-                assert!(!result.is_null());
-                unsafe { capi::Py_DecRef(result) };
-            }),
-        ),
-        (
-            "call_3args",
-            CALL_WINDOW_OPS,
-            Box::new(|| {
-                let result = unsafe { capi::PyObject_CallObject(add3, call_args.as_ptr()) };
-                assert!(!result.is_null());
-                unsafe { capi::Py_DecRef(result) };
-            }),
-        ),
-    ];
-
-    for face in to_python.drain(..) {
-        measure(face, &mut records);
-    }
-    for face in from_python.drain(..) {
-        measure(face, &mut records);
-    }
-    for face in handle.drain(..) {
-        measure(face, &mut records);
-    }
-    for face in gil_faces.drain(..) {
-        measure(face, &mut records);
-    }
-    for face in callback_faces.drain(..) {
-        measure(face, &mut records);
-    }
-
-    // ---- cross-thread post -> run tail latency -----------------------------
-    // A second thread posts `TAIL_POSTS` callbacks, each carrying its post
-    // `Instant`; this thread — the script thread, GIL held — pumps passes in
-    // a tight loop. The latency of one callback is run time minus post
-    // time: the handoff through the queue, not OS scheduling (a pumped
-    // queue never sleeps). Asserts every posted callback ran exactly once.
-    assert_eq!(gil::pending(), 0, "the tail face needs an empty queue");
-    let latencies = std::sync::Arc::new(std::sync::Mutex::new(Vec::with_capacity(TAIL_POSTS)));
-    let ran = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    {
-        // The poster owns its clones under other names: the pump loop below
-        // keeps the originals, so `ran` stays readable after the spawn.
-        let poster_latencies = std::sync::Arc::clone(&latencies);
-        let poster_ran = std::sync::Arc::clone(&ran);
-        let poster = std::thread::spawn(move || {
-            for _ in 0..TAIL_POSTS {
-                // Fresh clones per post: the move closure takes the loop
-                // locals, the captured Arcs stay put for the next pass.
-                let posted_latencies = std::sync::Arc::clone(&poster_latencies);
-                let posted_ran = std::sync::Arc::clone(&poster_ran);
-                let posted = Instant::now();
-                gil::post(move || {
-                    posted_latencies.lock().unwrap().push(posted.elapsed());
-                    posted_ran.fetch_add(1, std::sync::atomic::Ordering::Release);
-                });
-            }
-        });
-        while ran.load(std::sync::atomic::Ordering::Acquire) < TAIL_POSTS {
-            // SAFETY: the test thread owns the GIL; posted callbacks only
-            // touch the shared vectors.
-            unsafe { gil::process() };
-        }
-        poster.join().expect("the poster thread");
-    }
-    let mut latencies = std::sync::Arc::try_unwrap(latencies)
-        .unwrap_or_else(|_| panic!("the poster held a reference"))
-        .into_inner()
-        .unwrap();
-    assert_eq!(latencies.len(), TAIL_POSTS);
-    assert_eq!(ran.load(std::sync::atomic::Ordering::Acquire), TAIL_POSTS);
-    assert_eq!(gil::pending(), 0);
-    latencies.sort();
-    for (label, value) in [("p50", 0.50), ("p90", 0.90), ("p99", 0.99), ("max", 1.00)] {
-        let at = latencies[((latencies.len() - 1) as f64 * value).round() as usize];
-        records.push((
-            format!("post_run_latency_{label}_ns"),
-            at.as_nanos().to_string(),
-        ));
-    }
-
-    // ---- posted main-thread callbacks -------------------------------------
-    // `gil::post` is the cross-thread entry; the drain pass is the script
-    // thread's cost. Each pass asserts the posted count and the order.
-    let mut drain_figures = Vec::with_capacity(DRAIN_PASSES);
-    for _ in 0..DRAIN_PASSES {
-        let order = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        for index in 0..POSTED_PER_PASS {
-            let order = std::sync::Arc::clone(&order);
-            gil::post(move || order.lock().unwrap().push(index));
-        }
-        assert_eq!(gil::pending(), POSTED_PER_PASS);
+    // One tick of 0.1s at the 10 Hz server clock advances the queue one
+    // step, so each timer fires once per tick. The tick loop is also the
+    // allocation-count window: wall-clock nanoseconds are machine and
+    // load dependent (the fleet's compile load makes them swing), and
+    // the alloc count turns out to record a boundary, not a
+    // discriminator — CPython's pymalloc serves the fire path's object
+    // allocations from its own arenas, invisible to the Rust allocator,
+    // so both fire paths count 0.00 here and the number documents where
+    // the allocations live rather than which path is cheaper.
+    let (count, elapsed) = measure(|| {
         let started = Instant::now();
-        let completed = unsafe { gil::process() };
-        drain_figures.push(started.elapsed());
-        assert_eq!(completed, POSTED_PER_PASS);
-        assert_eq!(gil::pending(), 0);
-        assert_eq!(
-            order.lock().unwrap().clone(),
-            (0..POSTED_PER_PASS).collect::<Vec<_>>()
-        );
-    }
-    let per_callback: Vec<Duration> = drain_figures
-        .iter()
-        .map(|d| *d / POSTED_PER_PASS as u32)
-        .collect();
-    for (label, value) in [("p50", 0.50), ("p90", 0.90), ("p99", 0.99)] {
-        let mut sorted = per_callback.clone();
-        sorted.sort();
-        let at = sorted[((sorted.len() - 1) as f64 * value).round() as usize];
-        records.push((
-            format!("post_drain_per_callback_{label}_ns"),
-            at.as_nanos().to_string(),
-        ));
-    }
-
-    // ---- GIL occupancy ------------------------------------------------------
-    // The pass cost against a 60 fps frame budget: a frame that drains 500
-    // callbacks occupies the GIL for that share of the budget, and the
-    // empty pass is the floor every idle frame pays. Derived from the
-    // figures above so the TSV carries the report rows.
-    let record_value = |records: &[(String, String)], key: &str| -> f64 {
-        records
-            .iter()
-            .find(|(k, _)| k == key)
-            .unwrap_or_else(|| panic!("the {key} record is missing"))
-            .1
-            .parse()
-            .unwrap_or_else(|_| panic!("the {key} record is numeric"))
-    };
-    let per_callback_p50 = record_value(&records, "post_drain_per_callback_p50_ns");
-    records.push((
-        "gil_occupancy_500cb_pct_60fps".into(),
-        format!(
-            "{:.3}",
-            per_callback_p50 * POSTED_PER_PASS as f64 / FRAME_60FPS_NS * 100.0
-        ),
-    ));
-    let empty_pass_p50 = record_value(&records, "drain_empty_p50_ns");
-    records.push((
-        "gil_occupancy_empty_pass_pct_60fps".into(),
-        format!("{:.4}", empty_pass_p50 / FRAME_60FPS_NS * 100.0),
-    ));
-
-    // ---- port-level conversion: the Math.Matrix translation faces --------
-    // `m.translation = (1, 2, 3)` and `m.translation` are the engine's
-    // hottest conversion paths: every assignment walks the type check and
-    // the tuple parse, every read builds a Vector3 back. The round trip is
-    // asserted once, before the timed loops.
-    let matrix = {
-        // SAFETY: only called while the interpreter is up.
-        unsafe {
-            let module = capi::PyImport_ImportModule(c"Math".as_ptr());
-            assert!(!module.is_null(), "the Math module did not import");
-            let dictionary = capi::PyModule_GetDict(module);
-            let type_ = capi::PyDict_GetItemString(dictionary, c"Matrix".as_ptr());
-            assert!(!type_.is_null(), "the Matrix type was not found");
-            let instance = capi::PyObject_CallNoArgs(type_);
-            assert!(!instance.is_null(), "the Matrix instance was not built");
-            instance
+        for _ in 0..TICKS {
+            python_host::timers::tick(0.1);
         }
-    };
-    // The setter's value is a live Vector3, the engine's hottest shape: the
-    // assignment walks `check_type` against the registered type object and
-    // takes the fast body copy (`script_math.cpp` accessor set shape).
-    let vector3 = PyRef::from_owned({
-        let type_ = unsafe {
-            let module = capi::PyImport_AddModule(c"Math".as_ptr());
-            let dictionary = capi::PyModule_GetDict(module);
-            capi::PyDict_GetItemString(dictionary, c"Vector3".as_ptr())
-        };
-        assert!(!type_.is_null(), "the Vector3 type was not found");
-        let arguments = unsafe {
-            let tuple = capi::PyTuple_New(3);
-            assert!(!tuple.is_null());
-            for (index, value) in [1.0f64, 2.0, 3.0].into_iter().enumerate() {
-                let item = capi::PyFloat_FromDouble(value);
-                assert!(!item.is_null());
-                assert_eq!(capi::PyTuple_SetItem(tuple, index as _, item), 0);
-            }
-            tuple
-        };
-        let instance = unsafe { capi::PyObject_CallObject(type_, arguments) };
-        unsafe { capi::Py_DecRef(arguments) };
-        assert!(!instance.is_null(), "the Vector3 instance was not built");
-        instance
-    })
-    .expect("the translation vector");
-    // SAFETY: the interpreter is up; `matrix` and `vector3` are live.
-    unsafe {
-        assert_eq!(
-            capi::PyObject_SetAttrString(matrix, c"translation".as_ptr(), vector3.as_ptr()),
-            0,
-            "the translation assignment was refused"
-        );
-        let read = capi::PyObject_GetAttrString(matrix, c"translation".as_ptr());
-        assert!(!read.is_null(), "the translation read failed");
-        assert!(
-            !std::ptr::eq(read, vector3.as_ptr()),
-            "the getter must hand back a fresh copy"
-        );
-        assert_eq!(capi::PySequence_Size(read), 3);
-        for (index, expected) in [1.0f64, 2.0, 3.0].into_iter().enumerate() {
-            let component = capi::PySequence_GetItem(read, index as _);
-            assert!(!component.is_null());
-            assert_eq!(capi::PyFloat_AsDouble(component), expected);
-            capi::Py_DecRef(component);
-        }
-        capi::Py_DecRef(read);
-        let component =
-            capi::PySequence_GetItem(vector3.as_ptr(), SUBSCRIPT_INDEX as capi::PySsize);
-        assert_eq!(
-            capi::PyFloat_AsDouble(component),
-            1.0,
-            "the subscript read failed"
-        );
-        capi::Py_DecRef(component);
-    }
-    let mut math_faces: Vec<Face> = vec![
-        (
-            "matrix_set_translation",
-            WINDOW_OPS,
-            Box::new(|| {
-                // SAFETY: the interpreter is up; the operands are live.
-                assert_eq!(
-                    unsafe {
-                        capi::PyObject_SetAttrString(
-                            matrix,
-                            c"translation".as_ptr(),
-                            vector3.as_ptr(),
-                        )
-                    },
-                    0
-                );
-            }),
-        ),
-        (
-            "matrix_get_translation",
-            WINDOW_OPS,
-            Box::new(|| {
-                // SAFETY: the interpreter is up; the operand is live.
-                let read = unsafe { capi::PyObject_GetAttrString(matrix, c"translation".as_ptr()) };
-                assert!(!read.is_null());
-                unsafe { capi::Py_DecRef(read) };
-            }),
-        ),
-        (
-            "vector3_getitem",
-            WINDOW_OPS,
-            Box::new(|| {
-                // SAFETY: the interpreter is up; the operand is live.
-                let component =
-                    unsafe { capi::PySequence_GetItem(vector3.as_ptr(), SUBSCRIPT_INDEX as _) };
-                assert!(!component.is_null());
-                unsafe { capi::Py_DecRef(component) };
-            }),
-        ),
-    ];
-    for face in math_faces.drain(..) {
-        measure(face, &mut records);
-    }
+        started.elapsed()
+    });
 
-    records.push((
-        "faces_measured".into(),
-        "to_python 4, from_python 4, handle 1, gil 2, callback 2, tail 1, post_drain 1, occupancy 2, math 3".into(),
-    ));
+    // Read the fired count back out of __main__ through the probe the
+    // interpreter scenarios use.
+    assert!(
+        interpreter.run_simple_string("__probe = fire_count[0]\n"),
+        "probing the fired count failed"
+    );
+    let module = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+    assert!(!module.is_null(), "fetching __main__ failed");
+    let holder = PyRef::borrowed(module);
+    let probe = unsafe { capi::PyObject_GetAttrString(holder.as_ptr(), c"__probe".as_ptr()) };
+    let probe = PyRef::from_owned(probe).expect("fetching __probe failed");
+    let fired = unsafe { capi::PyLong_AsLongLong(probe.as_ptr()) };
+    assert_eq!(
+        fired, FIRES as i64,
+        "every timer must fire exactly once per tick"
+    );
 
-    if let Ok(path) = std::env::var("PYTHON_BRIDGE_OUT") {
-        let mut text = String::new();
-        for (key, value) in &records {
-            text.push_str(key);
-            text.push('\t');
-            text.push_str(value);
-            text.push('\n');
+    // Cancel the timers so the legs that tick after this one (the
+    // frequent-task walk) measure their own Python work only. The
+    // measure window above already finished, so the cancel does not
+    // touch the recorded fire numbers.
+    assert!(
+        interpreter.run_simple_string(
+            "for h in timer_handles:\n\
+             \x20   BigWorld.delTimer(h)\n\
+             ",
+        ),
+        "cancelling the timers failed"
+    );
+
+    record.put("timer_fire_count", FIRES);
+    record.put(
+        "timer_fire_allocs_per_fire",
+        format!("{:.2}", count.allocs as f64 / FIRES as f64),
+    );
+    record.put(
+        "timer_fire_bytes_per_fire",
+        format!("{:.2}", count.bytes as f64 / FIRES as f64),
+    );
+    record.put(
+        "timer_fire_ns_per_fire",
+        format!("{:.1}", elapsed.as_nanos() as f64 / FIRES as f64),
+    );
+    record.put(
+        "timer_fire_ticks_s",
+        format!("{:.3}", elapsed.as_secs_f64()),
+    );
+}
+
+/// Leg 5: the frequent-task walk — the no-argument cross-language
+/// callback every registered task pays once per server tick
+/// (`ScriptFrequentTask::update`, `script_frequent_tasks.cpp:43-63`).
+/// `K` no-argument tasks are registered from script and driven by the
+/// same engine tick as the timers; a `None` result keeps a task
+/// registered, so the walk sees all of them every tick. The call count
+/// is asserted; the per-call nanoseconds are recorded.
+fn frequent_call_leg(record: &mut Record, interpreter: &Interpreter) {
+    const TASKS: usize = 32;
+    const TICKS: usize = 64;
+    const CALLS: usize = TASKS * TICKS;
+
+    assert!(
+        interpreter.run_simple_string(
+            "import BigWorld\n\
+             freq_count = [0]\n\
+             def on_frequent():\n\
+             \x20   freq_count[0] += 1\n\
+             \x20   return None\n\
+             for _ in range(32):\n\
+             \x20   BigWorld.addFrequentTask(on_frequent)\n\
+             ",
+        ),
+        "registering the frequent tasks failed"
+    );
+
+    let (count, elapsed) = measure(|| {
+        let started = Instant::now();
+        for _ in 0..TICKS {
+            python_host::timers::tick(0.1);
         }
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .expect("open the record file")
-            .write_all(text.as_bytes())
-            .expect("write the records");
+        started.elapsed()
+    });
+
+    assert!(
+        interpreter.run_simple_string("__probe = freq_count[0]\n"),
+        "probing the frequent call count failed"
+    );
+    let module = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+    assert!(!module.is_null(), "fetching __main__ failed");
+    let holder = PyRef::borrowed(module);
+    let probe = unsafe { capi::PyObject_GetAttrString(holder.as_ptr(), c"__probe".as_ptr()) };
+    let probe = PyRef::from_owned(probe).expect("fetching __probe failed");
+    let calls = unsafe { capi::PyLong_AsLongLong(probe.as_ptr()) };
+    assert_eq!(
+        calls, CALLS as i64,
+        "every frequent task must run exactly once per tick"
+    );
+
+    record.put("frequent_calls", CALLS);
+    record.put(
+        "frequent_allocs_per_call",
+        format!("{:.2}", count.allocs as f64 / CALLS as f64),
+    );
+    record.put(
+        "frequent_bytes_per_call",
+        format!("{:.2}", count.bytes as f64 / CALLS as f64),
+    );
+    record.put(
+        "frequent_ns_per_call",
+        format!("{:.1}", elapsed.as_nanos() as f64 / CALLS as f64),
+    );
+    record.put("frequent_ticks_s", format!("{:.3}", elapsed.as_secs_f64()));
+}
+
+/// `Script::init`'s config with the fixture root in the path list and
+/// the `cell` component, which carries the server timer table the fire
+/// leg drives.
+fn baseline_config() -> InitConfig {
+    let root = temp_resource_root();
+    let root_path = root.to_str().expect("a UTF-8 root").to_owned();
+    let mut paths = InitConfig::default().import_paths;
+    paths.add_res_path(&[&root_path], import_paths::COMMON_PATH);
+    InitConfig {
+        import_paths: paths,
+        component: "cell".to_owned(),
+        ..InitConfig::default()
     }
+}
+
+/// Runs every leg in fixed order against one interpreter.
+#[test]
+fn the_python_bridge_baseline_runs_all_legs() {
+    let mut record = Record::default();
+
+    // The main thread owns the GIL from here on; every leg below relies
+    // on that.
+    let interpreter = Interpreter::init(&baseline_config()).expect("Script::init");
+
+    conversion_leg(&mut record);
+    callback_leg(&mut record, &interpreter);
+    timer_fire_leg(&mut record, &interpreter);
+    frequent_call_leg(&mut record, &interpreter);
+    gil_leg(&mut record);
+
+    assert_eq!(
+        python_host::gil::clear(),
+        0,
+        "nothing may be left behind after the legs drain"
+    );
 
     interpreter.fini();
+    record.flush();
 }

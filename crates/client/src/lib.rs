@@ -81,6 +81,7 @@ pub mod local_entity;
 pub mod material;
 pub mod minimap;
 pub mod movement_filter;
+pub mod navigation;
 pub mod particle;
 pub mod particle_editor;
 pub mod particle_system;

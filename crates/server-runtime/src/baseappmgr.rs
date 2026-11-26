@@ -18,7 +18,9 @@ use std::collections::BTreeMap;
 
 use crate::entity_creator::EntityMailBoxRef;
 use crate::services_map::ServicesMap;
-use crate::shared_data::{SharedDataMessage, SharedDataOutcome, read_shared_section};
+use crate::shared_data::{
+    SharedDataMessage, SharedDataOutcome, SharedDataSync, read_shared_section,
+};
 use foundation::stream::{BinaryStream, StreamError};
 
 /// `BaseAppMgrInterface::CreateEntityError::CREATE_ENTITY_ERROR_NO_BASEAPPS`.
@@ -588,7 +590,30 @@ impl BaseAppScheduler {
                 },
             ));
         }
+        for (key, value) in &self.shared_global_data {
+            out.push((
+                addr_for_cells,
+                ToBaseApp::SetSharedData {
+                    data_type: SHARED_DATA_TYPE_GLOBAL,
+                    key: key.clone(),
+                    value: value.clone(),
+                    original_src: (0, 0),
+                },
+            ));
+        }
         out
+    }
+
+    /// The batched join-sync of the authoritative maps (base-app data
+    /// first, then global data): the optimization form of the per-entry
+    /// fill, one message instead of one per entry.
+    pub fn join_sync(&self) -> SharedDataSync {
+        SharedDataSync::from_maps(
+            SHARED_DATA_TYPE_BASE_APP,
+            &self.shared_base_app_data,
+            SHARED_DATA_TYPE_GLOBAL,
+            &self.shared_global_data,
+        )
     }
 
     /// `BaseAppMgr::del` / `onBaseAppDeath`: remove a ready app.
@@ -1138,6 +1163,34 @@ mod tests {
     // ------------------------------------------------------------------
     // BW-05-03-01 登记与移除 BaseApp
     // ------------------------------------------------------------------
+
+    /// The synchronize fill streams base-app data ahead of global data
+    /// (`baseappmgr.cpp:1414-1430`), one `setSharedData` message per
+    /// entry, exactly the batched join-sync's expansion.
+    #[test]
+    fn the_synchronize_fill_carries_both_maps() {
+        let mut scheduler = ready_scheduler();
+        scheduler.set_shared_data(SHARED_DATA_TYPE_BASE_APP, "b", "1", (0, 0));
+        scheduler.set_shared_data(SHARED_DATA_TYPE_GLOBAL, "g", "2", (0, 0));
+
+        let addr = cell_addr(0);
+        assert!(matches!(
+            scheduler.register(addr, client_addr(0), false, 10),
+            RegisterOutcome::Registered(_)
+        ));
+        let fill = scheduler.finished_init(addr);
+        let shared: Vec<_> = fill
+            .into_iter()
+            .filter_map(|(_, m)| match m {
+                ToBaseApp::SetSharedData { data_type, key, .. } => Some((data_type, key)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(shared.len(), 2);
+        assert_eq!(shared[0], (SHARED_DATA_TYPE_BASE_APP, "b".to_string()));
+        assert_eq!(shared[1], (SHARED_DATA_TYPE_GLOBAL, "g".to_string()));
+        assert_eq!(shared.len(), scheduler.join_sync().entries.len());
+    }
 
     /// Registration parks the app in the pending set; `finishedInit` moves
     /// it to the ready set.

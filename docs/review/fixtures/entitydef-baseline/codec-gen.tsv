@@ -1,0 +1,92 @@
+ser_rounds_per_face	20000
+ser_properties	21
+ser_unsupported_kinds	0
+ser_codec_generation_us	7
+ser_STRING_interp_encode_p50	110.0
+ser_STRING_interp_encode_p90	178.0
+ser_STRING_gen_encode_p50	104.0
+ser_STRING_gen_encode_p90	164.0
+ser_STRING_interp_decode_p50	179.0
+ser_STRING_interp_decode_p90	277.0
+ser_STRING_gen_decode_p50	173.0
+ser_STRING_gen_decode_p90	258.0
+ser_INT32_interp_encode_p50	171.0
+ser_INT32_interp_encode_p90	250.0
+ser_INT32_gen_encode_p50	163.0
+ser_INT32_gen_encode_p90	225.0
+ser_INT32_interp_decode_p50	266.0
+ser_INT32_interp_decode_p90	385.0
+ser_INT32_gen_decode_p50	252.0
+ser_INT32_gen_decode_p90	361.0
+ser_FIXED_DICT props x:(FLOAT32), y:(FLOAT32)_interp_encode_p50	263.0
+ser_FIXED_DICT props x:(FLOAT32), y:(FLOAT32)_interp_encode_p90	356.0
+ser_FIXED_DICT props x:(FLOAT32), y:(FLOAT32)_gen_encode_p50	295.0
+ser_FIXED_DICT props x:(FLOAT32), y:(FLOAT32)_gen_encode_p90	388.0
+ser_FIXED_DICT props x:(FLOAT32), y:(FLOAT32)_interp_decode_p50	491.0
+ser_FIXED_DICT props x:(FLOAT32), y:(FLOAT32)_interp_decode_p90	618.0
+ser_FIXED_DICT props x:(FLOAT32), y:(FLOAT32)_gen_decode_p50	542.0
+ser_FIXED_DICT props x:(FLOAT32), y:(FLOAT32)_gen_decode_p90	663.0
+ser_ARRAY of (STRING)_interp_encode_p50	68.0
+ser_ARRAY of (STRING)_interp_encode_p90	85.0
+ser_ARRAY of (STRING)_gen_encode_p50	62.0
+ser_ARRAY of (STRING)_gen_encode_p90	84.0
+ser_ARRAY of (STRING)_interp_decode_p50	128.0
+ser_ARRAY of (STRING)_interp_decode_p90	166.0
+ser_ARRAY of (STRING)_gen_decode_p50	119.0
+ser_ARRAY of (STRING)_gen_decode_p90	152.0
+ser_UINT8_interp_encode_p50	168.0
+ser_UINT8_interp_encode_p90	216.0
+ser_UINT8_gen_encode_p50	164.0
+ser_UINT8_gen_encode_p90	201.0
+ser_UINT8_interp_decode_p50	248.0
+ser_UINT8_interp_decode_p90	317.0
+ser_UINT8_gen_decode_p50	239.0
+ser_UINT8_gen_decode_p90	303.0
+ser_UINT32_interp_encode_p50	180.0
+ser_UINT32_interp_encode_p90	311.0
+ser_UINT32_gen_encode_p50	174.0
+ser_UINT32_gen_encode_p90	280.0
+ser_UINT32_interp_decode_p50	266.0
+ser_UINT32_interp_decode_p90	448.0
+ser_UINT32_gen_decode_p50	254.0
+ser_UINT32_gen_decode_p90	433.0
+ser_FLOAT64_interp_encode_p50	116.0
+ser_FLOAT64_interp_encode_p90	135.0
+ser_FLOAT64_gen_encode_p50	110.0
+ser_FLOAT64_gen_encode_p90	129.0
+ser_FLOAT64_interp_decode_p50	126.0
+ser_FLOAT64_interp_decode_p90	144.0
+ser_FLOAT64_gen_decode_p50	119.0
+ser_FLOAT64_gen_decode_p90	137.0
+ser_ARRAY of (UINT8)_interp_encode_p50	76.0
+ser_ARRAY of (UINT8)_interp_encode_p90	123.0
+ser_ARRAY of (UINT8)_gen_encode_p50	68.0
+ser_ARRAY of (UINT8)_gen_encode_p90	123.0
+ser_ARRAY of (UINT8)_interp_decode_p50	147.0
+ser_ARRAY of (UINT8)_interp_decode_p90	232.0
+ser_ARRAY of (UINT8)_gen_decode_p50	135.0
+ser_ARRAY of (UINT8)_gen_decode_p90	204.0
+ser_FIXED_DICT props r:(UINT8), g:(UINT8), b:(UINT8)_interp_encode_p50	572.0
+ser_FIXED_DICT props r:(UINT8), g:(UINT8), b:(UINT8)_interp_encode_p90	958.0
+ser_FIXED_DICT props r:(UINT8), g:(UINT8), b:(UINT8)_gen_encode_p50	594.0
+ser_FIXED_DICT props r:(UINT8), g:(UINT8), b:(UINT8)_gen_encode_p90	990.0
+ser_FIXED_DICT props r:(UINT8), g:(UINT8), b:(UINT8)_interp_decode_p50	953.0
+ser_FIXED_DICT props r:(UINT8), g:(UINT8), b:(UINT8)_interp_decode_p90	1637.0
+ser_FIXED_DICT props r:(UINT8), g:(UINT8), b:(UINT8)_gen_decode_p50	967.0
+ser_FIXED_DICT props r:(UINT8), g:(UINT8), b:(UINT8)_gen_decode_p90	1606.0
+ser_INT16_interp_encode_p50	166.0
+ser_INT16_interp_encode_p90	200.0
+ser_INT16_gen_encode_p50	158.0
+ser_INT16_gen_encode_p90	191.0
+ser_INT16_interp_decode_p50	260.0
+ser_INT16_interp_decode_p90	314.0
+ser_INT16_gen_decode_p50	245.0
+ser_INT16_gen_decode_p90	292.0
+ser_INT8_interp_encode_p50	171.0
+ser_INT8_interp_encode_p90	242.0
+ser_INT8_gen_encode_p50	164.0
+ser_INT8_gen_encode_p90	222.0
+ser_INT8_interp_decode_p50	266.0
+ser_INT8_interp_decode_p90	373.0
+ser_INT8_gen_decode_p50	252.0
+ser_INT8_gen_decode_p90	356.0
