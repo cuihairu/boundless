@@ -2938,7 +2938,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。（2026-11-26 lane/bw14-script-host bfde122：crates/client/tests/query_cache_opt.rs 双腿——导航=六单点集 permissive 链全 outside chunk，缓存面 find_path ReadWriteCache 骑成员 NavigatorCache 逐跳 vs 重算面 navigate_path_points/findFullPath 每调 scratch 缓存，同一批起点；碰撞=find_drop_point 打 BW-10-07-04 clientquery 夹具世界六 RAY 探针×40 重复；报告 docs/review/opt-10-01-03-query-cache-opt.md——缓存填跳 47 allocs 后四跳各 8 allocs（set path 尺寸 [6,5,4,3,2] 弹尽=命中臂逐跳行使），缓存总 79 vs 重算总 281（3.6× 省），复跑账 [47,8,8,8,8] 精确恒等；碰撞尾 p50 1.7-6.8µs/p99 至 26.3µs（GHOLED 格走查跨柱界），40 重复逐探针位级恒等（距离/落点/三角形/miss）；结构断言：逐跳进一格、末跳答终点、重算路线=共享穿越序列+隐藏穿越+裁剪终点（面发现：findPath 末跳换原始 dst 藏终点集穿越 vs findFullPath 保留+裁剪，两面对比共享序列各钉自己终点）、缓存侧分配严格更少；墙钟 probe 只印不断言；client 门禁 868 绿）
   - main 已收（台账席，2026-11-26）：本席 `bfde122`→main `fafbe51`（逐字节镜像），本席勾保持。
 - [x] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。（2026-11-26 lane/bw14-script-host eb163d4：crates/client/tests/map_rerun_fixtures.rs 双腿复跑——路径=BW-10-07-03 genmap 双 chunk 世界按真相绑序重绑，五条 XPATH 探针对走 find_path ReadWriteCache 缓存步进面，源集侧逐跳钉在真相链上有序子序列（平滑可抽直不可绕），终点=真相解析终点（ACROSS 绕洞/RAMP 上坡/AROUND/SEAM A 侧 [wp0,wp4,wp3]+终点 B wp7/SEAMBA 终点 A wp3），五条复跑恒等；碰撞=chunk_space 夹具图走 OPT-10-01-02 缓存解析面 load_and_bind 绑 6 文件+参考地形 slab 过 focussed 门，100 探针格走客户端 findDropPoint 全部 40m 处止 10m 板±1e-3+格心解析属主 chunk，第二遍位级恒等；面发现两条：远侧跳=walk 面自有 for_destination 目标解析可落在原始 A* 链外邻点（源集侧才是夹具实质故严钉）、TOUR 不入走查（XPATHNONE 钉一次性 A* 面=genmap_load 已复放，walk 面每调只跨一门按构造可合法走完）——见 docs/review/opt-10-01-04-map-rerun-fixtures.md；client 门禁 870 绿）
-  - 本席 lane-only 交付（`eb163d4`）待主席并入；main 侧行保持开。
+  - main 已收（台账席，2026-11-26）：本席 `eb163d4`→main `93a1576`（逐字节镜像），本席勾保持。
+
 
 ### OPT-11-01 三端固定镜头基线
 
@@ -4571,7 +4572,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。（2026-11-26 lane/bw14-script-host bfde122：crates/client/tests/query_cache_opt.rs 双腿——导航=六单点集 permissive 链全 outside chunk，缓存面 find_path ReadWriteCache 骑成员 NavigatorCache 逐跳 vs 重算面 navigate_path_points/findFullPath 每调 scratch 缓存，同一批起点；碰撞=find_drop_point 打 BW-10-07-04 clientquery 夹具世界六 RAY 探针×40 重复；报告 docs/review/opt-10-01-03-query-cache-opt.md——缓存填跳 47 allocs 后四跳各 8 allocs（set path 尺寸 [6,5,4,3,2] 弹尽=命中臂逐跳行使），缓存总 79 vs 重算总 281（3.6× 省），复跑账 [47,8,8,8,8] 精确恒等；碰撞尾 p50 1.7-6.8µs/p99 至 26.3µs（GHOLED 格走查跨柱界），40 重复逐探针位级恒等（距离/落点/三角形/miss）；结构断言：逐跳进一格、末跳答终点、重算路线=共享穿越序列+隐藏穿越+裁剪终点（面发现：findPath 末跳换原始 dst 藏终点集穿越 vs findFullPath 保留+裁剪，两面对比共享序列各钉自己终点）、缓存侧分配严格更少；墙钟 probe 只印不断言；client 门禁 868 绿）
   - main 已收（台账席，2026-11-26）：本席 `bfde122`→main `fafbe51`（逐字节镜像），本席勾保持。
 - [x] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。（2026-11-26 lane/bw14-script-host eb163d4：crates/client/tests/map_rerun_fixtures.rs 双腿复跑——路径=BW-10-07-03 genmap 双 chunk 世界按真相绑序重绑，五条 XPATH 探针对走 find_path ReadWriteCache 缓存步进面，源集侧逐跳钉在真相链上有序子序列（平滑可抽直不可绕），终点=真相解析终点（ACROSS 绕洞/RAMP 上坡/AROUND/SEAM A 侧 [wp0,wp4,wp3]+终点 B wp7/SEAMBA 终点 A wp3），五条复跑恒等；碰撞=chunk_space 夹具图走 OPT-10-01-02 缓存解析面 load_and_bind 绑 6 文件+参考地形 slab 过 focussed 门，100 探针格走客户端 findDropPoint 全部 40m 处止 10m 板±1e-3+格心解析属主 chunk，第二遍位级恒等；面发现两条：远侧跳=walk 面自有 for_destination 目标解析可落在原始 A* 链外邻点（源集侧才是夹具实质故严钉）、TOUR 不入走查（XPATHNONE 钉一次性 A* 面=genmap_load 已复放，walk 面每调只跨一门按构造可合法走完）——见 docs/review/opt-10-01-04-map-rerun-fixtures.md；client 门禁 870 绿）
-  - 本席 lane-only 交付（`eb163d4`）待主席并入；main 侧行保持开。
+  - main 已收（台账席，2026-11-26）：本席 `eb163d4`→main `93a1576`（逐字节镜像），本席勾保持。
+
 
 ### OPT-11-01 三端固定镜头基线
 
@@ -6165,7 +6167,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。（2026-11-26 lane/bw14-script-host bfde122：crates/client/tests/query_cache_opt.rs 双腿——导航=六单点集 permissive 链全 outside chunk，缓存面 find_path ReadWriteCache 骑成员 NavigatorCache 逐跳 vs 重算面 navigate_path_points/findFullPath 每调 scratch 缓存，同一批起点；碰撞=find_drop_point 打 BW-10-07-04 clientquery 夹具世界六 RAY 探针×40 重复；报告 docs/review/opt-10-01-03-query-cache-opt.md——缓存填跳 47 allocs 后四跳各 8 allocs（set path 尺寸 [6,5,4,3,2] 弹尽=命中臂逐跳行使），缓存总 79 vs 重算总 281（3.6× 省），复跑账 [47,8,8,8,8] 精确恒等；碰撞尾 p50 1.7-6.8µs/p99 至 26.3µs（GHOLED 格走查跨柱界），40 重复逐探针位级恒等（距离/落点/三角形/miss）；结构断言：逐跳进一格、末跳答终点、重算路线=共享穿越序列+隐藏穿越+裁剪终点（面发现：findPath 末跳换原始 dst 藏终点集穿越 vs findFullPath 保留+裁剪，两面对比共享序列各钉自己终点）、缓存侧分配严格更少；墙钟 probe 只印不断言；client 门禁 868 绿）
   - main 已收（台账席，2026-11-26）：本席 `bfde122`→main `fafbe51`（逐字节镜像），本席勾保持。
 - [x] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。（2026-11-26 lane/bw14-script-host eb163d4：crates/client/tests/map_rerun_fixtures.rs 双腿复跑——路径=BW-10-07-03 genmap 双 chunk 世界按真相绑序重绑，五条 XPATH 探针对走 find_path ReadWriteCache 缓存步进面，源集侧逐跳钉在真相链上有序子序列（平滑可抽直不可绕），终点=真相解析终点（ACROSS 绕洞/RAMP 上坡/AROUND/SEAM A 侧 [wp0,wp4,wp3]+终点 B wp7/SEAMBA 终点 A wp3），五条复跑恒等；碰撞=chunk_space 夹具图走 OPT-10-01-02 缓存解析面 load_and_bind 绑 6 文件+参考地形 slab 过 focussed 门，100 探针格走客户端 findDropPoint 全部 40m 处止 10m 板±1e-3+格心解析属主 chunk，第二遍位级恒等；面发现两条：远侧跳=walk 面自有 for_destination 目标解析可落在原始 A* 链外邻点（源集侧才是夹具实质故严钉）、TOUR 不入走查（XPATHNONE 钉一次性 A* 面=genmap_load 已复放，walk 面每调只跨一门按构造可合法走完）——见 docs/review/opt-10-01-04-map-rerun-fixtures.md；client 门禁 870 绿）
-  - 本席 lane-only 交付（`eb163d4`）待主席并入；main 侧行保持开。
+  - main 已收（台账席，2026-11-26）：本席 `eb163d4`→main `93a1576`（逐字节镜像），本席勾保持。
+
 
 ### OPT-11-01 三端固定镜头基线
 
@@ -7759,7 +7762,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。（2026-11-26 lane/bw14-script-host bfde122：crates/client/tests/query_cache_opt.rs 双腿——导航=六单点集 permissive 链全 outside chunk，缓存面 find_path ReadWriteCache 骑成员 NavigatorCache 逐跳 vs 重算面 navigate_path_points/findFullPath 每调 scratch 缓存，同一批起点；碰撞=find_drop_point 打 BW-10-07-04 clientquery 夹具世界六 RAY 探针×40 重复；报告 docs/review/opt-10-01-03-query-cache-opt.md——缓存填跳 47 allocs 后四跳各 8 allocs（set path 尺寸 [6,5,4,3,2] 弹尽=命中臂逐跳行使），缓存总 79 vs 重算总 281（3.6× 省），复跑账 [47,8,8,8,8] 精确恒等；碰撞尾 p50 1.7-6.8µs/p99 至 26.3µs（GHOLED 格走查跨柱界），40 重复逐探针位级恒等（距离/落点/三角形/miss）；结构断言：逐跳进一格、末跳答终点、重算路线=共享穿越序列+隐藏穿越+裁剪终点（面发现：findPath 末跳换原始 dst 藏终点集穿越 vs findFullPath 保留+裁剪，两面对比共享序列各钉自己终点）、缓存侧分配严格更少；墙钟 probe 只印不断言；client 门禁 868 绿）
   - main 已收（台账席，2026-11-26）：本席 `bfde122`→main `fafbe51`（逐字节镜像），本席勾保持。
 - [x] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。（2026-11-26 lane/bw14-script-host eb163d4：crates/client/tests/map_rerun_fixtures.rs 双腿复跑——路径=BW-10-07-03 genmap 双 chunk 世界按真相绑序重绑，五条 XPATH 探针对走 find_path ReadWriteCache 缓存步进面，源集侧逐跳钉在真相链上有序子序列（平滑可抽直不可绕），终点=真相解析终点（ACROSS 绕洞/RAMP 上坡/AROUND/SEAM A 侧 [wp0,wp4,wp3]+终点 B wp7/SEAMBA 终点 A wp3），五条复跑恒等；碰撞=chunk_space 夹具图走 OPT-10-01-02 缓存解析面 load_and_bind 绑 6 文件+参考地形 slab 过 focussed 门，100 探针格走客户端 findDropPoint 全部 40m 处止 10m 板±1e-3+格心解析属主 chunk，第二遍位级恒等；面发现两条：远侧跳=walk 面自有 for_destination 目标解析可落在原始 A* 链外邻点（源集侧才是夹具实质故严钉）、TOUR 不入走查（XPATHNONE 钉一次性 A* 面=genmap_load 已复放，walk 面每调只跨一门按构造可合法走完）——见 docs/review/opt-10-01-04-map-rerun-fixtures.md；client 门禁 870 绿）
-  - 本席 lane-only 交付（`eb163d4`）待主席并入；main 侧行保持开。
+  - main 已收（台账席，2026-11-26）：本席 `eb163d4`→main `93a1576`（逐字节镜像），本席勾保持。
+
 
 ### OPT-11-01 三端固定镜头基线
 
@@ -9392,7 +9396,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。（2026-11-26 lane/bw14-script-host bfde122：crates/client/tests/query_cache_opt.rs 双腿——导航=六单点集 permissive 链全 outside chunk，缓存面 find_path ReadWriteCache 骑成员 NavigatorCache 逐跳 vs 重算面 navigate_path_points/findFullPath 每调 scratch 缓存，同一批起点；碰撞=find_drop_point 打 BW-10-07-04 clientquery 夹具世界六 RAY 探针×40 重复；报告 docs/review/opt-10-01-03-query-cache-opt.md——缓存填跳 47 allocs 后四跳各 8 allocs（set path 尺寸 [6,5,4,3,2] 弹尽=命中臂逐跳行使），缓存总 79 vs 重算总 281（3.6× 省），复跑账 [47,8,8,8,8] 精确恒等；碰撞尾 p50 1.7-6.8µs/p99 至 26.3µs（GHOLED 格走查跨柱界），40 重复逐探针位级恒等（距离/落点/三角形/miss）；结构断言：逐跳进一格、末跳答终点、重算路线=共享穿越序列+隐藏穿越+裁剪终点（面发现：findPath 末跳换原始 dst 藏终点集穿越 vs findFullPath 保留+裁剪，两面对比共享序列各钉自己终点）、缓存侧分配严格更少；墙钟 probe 只印不断言；client 门禁 868 绿）
   - main 已收（台账席，2026-11-26）：本席 `bfde122`→main `fafbe51`（逐字节镜像），本席勾保持。
 - [x] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。（2026-11-26 lane/bw14-script-host eb163d4：crates/client/tests/map_rerun_fixtures.rs 双腿复跑——路径=BW-10-07-03 genmap 双 chunk 世界按真相绑序重绑，五条 XPATH 探针对走 find_path ReadWriteCache 缓存步进面，源集侧逐跳钉在真相链上有序子序列（平滑可抽直不可绕），终点=真相解析终点（ACROSS 绕洞/RAMP 上坡/AROUND/SEAM A 侧 [wp0,wp4,wp3]+终点 B wp7/SEAMBA 终点 A wp3），五条复跑恒等；碰撞=chunk_space 夹具图走 OPT-10-01-02 缓存解析面 load_and_bind 绑 6 文件+参考地形 slab 过 focussed 门，100 探针格走客户端 findDropPoint 全部 40m 处止 10m 板±1e-3+格心解析属主 chunk，第二遍位级恒等；面发现两条：远侧跳=walk 面自有 for_destination 目标解析可落在原始 A* 链外邻点（源集侧才是夹具实质故严钉）、TOUR 不入走查（XPATHNONE 钉一次性 A* 面=genmap_load 已复放，walk 面每调只跨一门按构造可合法走完）——见 docs/review/opt-10-01-04-map-rerun-fixtures.md；client 门禁 870 绿）
-  - 本席 lane-only 交付（`eb163d4`）待主席并入；main 侧行保持开。
+  - main 已收（台账席，2026-11-26）：本席 `eb163d4`→main `93a1576`（逐字节镜像），本席勾保持。
+
 
 ### OPT-11-01 三端固定镜头基线
 
@@ -10986,7 +10991,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-10-01-03 优化碰撞或导航查询**。**验收** 报告缓存和尾延迟。（2026-11-26 lane/bw14-script-host bfde122：crates/client/tests/query_cache_opt.rs 双腿——导航=六单点集 permissive 链全 outside chunk，缓存面 find_path ReadWriteCache 骑成员 NavigatorCache 逐跳 vs 重算面 navigate_path_points/findFullPath 每调 scratch 缓存，同一批起点；碰撞=find_drop_point 打 BW-10-07-04 clientquery 夹具世界六 RAY 探针×40 重复；报告 docs/review/opt-10-01-03-query-cache-opt.md——缓存填跳 47 allocs 后四跳各 8 allocs（set path 尺寸 [6,5,4,3,2] 弹尽=命中臂逐跳行使），缓存总 79 vs 重算总 281（3.6× 省），复跑账 [47,8,8,8,8] 精确恒等；碰撞尾 p50 1.7-6.8µs/p99 至 26.3µs（GHOLED 格走查跨柱界），40 重复逐探针位级恒等（距离/落点/三角形/miss）；结构断言：逐跳进一格、末跳答终点、重算路线=共享穿越序列+隐藏穿越+裁剪终点（面发现：findPath 末跳换原始 dst 藏终点集穿越 vs findFullPath 保留+裁剪，两面对比共享序列各钉自己终点）、缓存侧分配严格更少；墙钟 probe 只印不断言；client 门禁 868 绿）
   - main 已收（台账席，2026-11-26）：本席 `bfde122`→main `fafbe51`（逐字节镜像），本席勾保持。
 - [x] **OPT-10-01-04 复跑地图结果**。**验收** 路径点和碰撞结果满足原版夹具。（2026-11-26 lane/bw14-script-host eb163d4：crates/client/tests/map_rerun_fixtures.rs 双腿复跑——路径=BW-10-07-03 genmap 双 chunk 世界按真相绑序重绑，五条 XPATH 探针对走 find_path ReadWriteCache 缓存步进面，源集侧逐跳钉在真相链上有序子序列（平滑可抽直不可绕），终点=真相解析终点（ACROSS 绕洞/RAMP 上坡/AROUND/SEAM A 侧 [wp0,wp4,wp3]+终点 B wp7/SEAMBA 终点 A wp3），五条复跑恒等；碰撞=chunk_space 夹具图走 OPT-10-01-02 缓存解析面 load_and_bind 绑 6 文件+参考地形 slab 过 focussed 门，100 探针格走客户端 findDropPoint 全部 40m 处止 10m 板±1e-3+格心解析属主 chunk，第二遍位级恒等；面发现两条：远侧跳=walk 面自有 for_destination 目标解析可落在原始 A* 链外邻点（源集侧才是夹具实质故严钉）、TOUR 不入走查（XPATHNONE 钉一次性 A* 面=genmap_load 已复放，walk 面每调只跨一门按构造可合法走完）——见 docs/review/opt-10-01-04-map-rerun-fixtures.md；client 门禁 870 绿）
-  - 本席 lane-only 交付（`eb163d4`）待主席并入；main 侧行保持开。
+  - main 已收（台账席，2026-11-26）：本席 `eb163d4`→main `93a1576`（逐字节镜像），本席勾保持。
+
 
 ### OPT-11-01 三端固定镜头基线
 
