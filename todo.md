@@ -2947,13 +2947,13 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。；deliver 96009f9（main）；**FLAG 双交付未决**：main `96009f9`（asset-pipeline tests/dependency_rebuild_baseline.rs 203 行集成测）与本席 `d11c3d2`（`ci/build-baseline.sh` fanout+冷/增量双腿 shell 测量：foundation 19 依赖者、release 冷 220.59s/增量 96.25s、debug 冷 53.47s/增量 3.81s、touch foundation 重编 11 crate 全闭包）互补非冲突——main 面是测试内基线，本席面是可复跑 CI 入口；本席勾行已自纠退回开（revert `6d07099`），证据 `docs/review/opt-16-01-01-build-baseline.md`，待主席择一/并认。
 - [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171（main `8c37171`，time_queue 拆分评估 rebuild 25→7 crate fan-out 24→6；吸收自 origin/main `7ff40ee` 勾行，本席未重做）。
-- [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
+- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。deliver 870ad04（main，asset-pipeline install_path_recheck.rs 289 行（res_packer install+双端 PackedSection 载回对照）；吸收自 origin/main，本席未重做）。
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
 
-- [ ] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。
+- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。deliver 38b99db（main，观测通道采集关/开长稳基线；吸收自 origin/main，本席未重做）。
 - [ ] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。
 - [ ] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。
 
@@ -4527,13 +4527,13 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。；deliver 96009f9（main）；**FLAG 双交付未决**：main `96009f9`（asset-pipeline tests/dependency_rebuild_baseline.rs 203 行集成测）与本席 `d11c3d2`（`ci/build-baseline.sh` fanout+冷/增量双腿 shell 测量：foundation 19 依赖者、release 冷 220.59s/增量 96.25s、debug 冷 53.47s/增量 3.81s、touch foundation 重编 11 crate 全闭包）互补非冲突——main 面是测试内基线，本席面是可复跑 CI 入口；本席勾行已自纠退回开（revert `6d07099`），证据 `docs/review/opt-16-01-01-build-baseline.md`，待主席择一/并认。
 - [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171（main `8c37171`，time_queue 拆分评估 rebuild 25→7 crate fan-out 24→6；吸收自 origin/main `7ff40ee` 勾行，本席未重做）。
-- [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
+- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。deliver 870ad04（main，asset-pipeline install_path_recheck.rs 289 行（res_packer install+双端 PackedSection 载回对照）；吸收自 origin/main，本席未重做）。
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
 
-- [ ] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。
+- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。deliver 38b99db（main，观测通道采集关/开长稳基线；吸收自 origin/main，本席未重做）。
 - [ ] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。
 - [ ] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。
 
@@ -6068,13 +6068,13 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。；deliver 96009f9（main）；**FLAG 双交付未决**：main `96009f9`（asset-pipeline tests/dependency_rebuild_baseline.rs 203 行集成测）与本席 `d11c3d2`（`ci/build-baseline.sh` fanout+冷/增量双腿 shell 测量：foundation 19 依赖者、release 冷 220.59s/增量 96.25s、debug 冷 53.47s/增量 3.81s、touch foundation 重编 11 crate 全闭包）互补非冲突——main 面是测试内基线，本席面是可复跑 CI 入口；本席勾行已自纠退回开（revert `6d07099`），证据 `docs/review/opt-16-01-01-build-baseline.md`，待主席择一/并认。
 - [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171（main `8c37171`，time_queue 拆分评估 rebuild 25→7 crate fan-out 24→6；吸收自 origin/main `7ff40ee` 勾行，本席未重做）。
-- [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
+- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。deliver 870ad04（main，asset-pipeline install_path_recheck.rs 289 行（res_packer install+双端 PackedSection 载回对照）；吸收自 origin/main，本席未重做）。
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
 
-- [ ] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。
+- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。deliver 38b99db（main，观测通道采集关/开长稳基线；吸收自 origin/main，本席未重做）。
 - [ ] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。
 - [ ] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。
 
@@ -7609,13 +7609,13 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。；deliver 96009f9（main）；**FLAG 双交付未决**：main `96009f9`（asset-pipeline tests/dependency_rebuild_baseline.rs 203 行集成测）与本席 `d11c3d2`（`ci/build-baseline.sh` fanout+冷/增量双腿 shell 测量：foundation 19 依赖者、release 冷 220.59s/增量 96.25s、debug 冷 53.47s/增量 3.81s、touch foundation 重编 11 crate 全闭包）互补非冲突——main 面是测试内基线，本席面是可复跑 CI 入口；本席勾行已自纠退回开（revert `6d07099`），证据 `docs/review/opt-16-01-01-build-baseline.md`，待主席择一/并认。
 - [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171（main `8c37171`，time_queue 拆分评估 rebuild 25→7 crate fan-out 24→6；吸收自 origin/main `7ff40ee` 勾行，本席未重做）。
-- [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
+- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。deliver 870ad04（main，asset-pipeline install_path_recheck.rs 289 行（res_packer install+双端 PackedSection 载回对照）；吸收自 origin/main，本席未重做）。
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
 
-- [ ] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。
+- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。deliver 38b99db（main，观测通道采集关/开长稳基线；吸收自 origin/main，本席未重做）。
 - [ ] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。
 - [ ] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。
 
@@ -9189,13 +9189,13 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。；deliver 96009f9（main）；**FLAG 双交付未决**：main `96009f9`（asset-pipeline tests/dependency_rebuild_baseline.rs 203 行集成测）与本席 `d11c3d2`（`ci/build-baseline.sh` fanout+冷/增量双腿 shell 测量：foundation 19 依赖者、release 冷 220.59s/增量 96.25s、debug 冷 53.47s/增量 3.81s、touch foundation 重编 11 crate 全闭包）互补非冲突——main 面是测试内基线，本席面是可复跑 CI 入口；本席勾行已自纠退回开（revert `6d07099`），证据 `docs/review/opt-16-01-01-build-baseline.md`，待主席择一/并认。
 - [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171（main `8c37171`，time_queue 拆分评估 rebuild 25→7 crate fan-out 24→6；吸收自 origin/main `7ff40ee` 勾行，本席未重做）。
-- [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
+- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。deliver 870ad04（main，asset-pipeline install_path_recheck.rs 289 行（res_packer install+双端 PackedSection 载回对照）；吸收自 origin/main，本席未重做）。
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
 
-- [ ] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。
+- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。deliver 38b99db（main，观测通道采集关/开长稳基线；吸收自 origin/main，本席未重做）。
 - [ ] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。
 - [ ] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。
 
@@ -10730,13 +10730,13 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-16-01-01 采集依赖与增量构建基线**。**验收** 定位重编源及耗时。；deliver 96009f9（main）；**FLAG 双交付未决**：main `96009f9`（asset-pipeline tests/dependency_rebuild_baseline.rs 203 行集成测）与本席 `d11c3d2`（`ci/build-baseline.sh` fanout+冷/增量双腿 shell 测量：foundation 19 依赖者、release 冷 220.59s/增量 96.25s、debug 冷 53.47s/增量 3.81s、touch foundation 重编 11 crate 全闭包）互补非冲突——main 面是测试内基线，本席面是可复跑 CI 入口；本席勾行已自纠退回开（revert `6d07099`），证据 `docs/review/opt-16-01-01-build-baseline.md`，待主席择一/并认。
 - [x] **OPT-16-01-02 评估拆分高耦合模块**。**验收** 同修改前后重编耗时可比。deliver 8c37171（main `8c37171`，time_queue 拆分评估 rebuild 25→7 crate fan-out 24→6；吸收自 origin/main `7ff40ee` 勾行，本席未重做）。
-- [ ] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。
+- [x] **OPT-16-01-03 复跑加载和安装路径**。**验收** 外部接口与产物兼容。deliver 870ad04（main，asset-pipeline install_path_recheck.rs 289 行（res_packer install+双端 PackedSection 载回对照）；吸收自 origin/main，本席未重做）。
 
 ### OPT-23-01 关闭及开启采集的长稳基线
 
 比较长稳压测中开启与关闭采集时的 CPU、内存、tick 尾延迟和丢失记录，优化采集和导出开销。
 
-- [ ] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。
+- [x] **OPT-23-01-01 测量关闭及开启采集的长稳基线**。**验收** 留存 CPU、RSS、Tick 及丢事件数。deliver 38b99db（main，观测通道采集关/开长稳基线；吸收自 origin/main，本席未重做）。
 - [ ] **OPT-23-01-02 评估采集缓冲和导出**。**验收** 按同场景报告开销变化。
 - [ ] **OPT-23-01-03 回归采集完整性**。**验收** 预期序列、取消及溢出统计正确。
 
