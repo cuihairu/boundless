@@ -1,0 +1,32 @@
+# Registered build-variant difference for this run
+
+The reference tree ships no license credential (`server/bigworld.key`), and it
+cannot be fabricated (repo rule). The credential is consumed by exactly one
+translation unit: `server/baseapp/ping_manager.cpp`, whose whole `PingManager`
+is gated on `#ifdef USE_OPENSSL`, and `baseapp.cpp:408` aborts startup when
+`PingManager::init()` fails. `ping_manager.cpp` is listed only in
+`server/baseapp/Makefile.rules`, so the license check exists in `baseapp`
+alone; cellapp/dbapp/loginapp/serviceapp never call `PingManager::init`.
+
+This run used the operator-side license-free baseapp produced by the reference
+tree's own helper `scripts/cluster-smoke/build_license_free_baseapp.sh`:
+`ping_manager.o` recompiled with `useOpenSSL=0` (the `PingManager` stub whose
+`init()` returns true), then baseapp relinked with the normal OpenSSL flags.
+Verified on the shipped binary: `strings baseapp | grep -c bigworld.key` -> 0
+(and the same for cellapp/dbapp/loginapp/serviceapp, which never had it).
+
+Why a whole-tree `make useOpenSSL=0` rebuild does not work (verified, not
+assumed): the build fails at `lib/network/symmetric_block_cipher.cpp:15`
+(`error: 'BlockCipherPtr' does not name a type`). That file carries a
+`#if !defined(USE_OPENSSL)` branch that upstream has never compiled, and it is
+broken: `SymmetricBlockCipher` is declared inside `namespace Mercury`
+(`symmetric_block_cipher.hpp:11-14`) while the non-OpenSSL branch defines
+`SymmetricBlockCipher::create` at `BW::` scope only, so `BlockCipherPtr`
+(from `network/block_cipher.hpp`, also in `namespace Mercury`) is not visible
+in the return-type lookup. Second reason from the helper's own header comment:
+`baseapp` still links OpenSSL (`openssl.c` does TLS), so a whole-binary
+`useOpenSSL=0` fails at link time anyway.
+
+Everything else in this run is the unmodified reference build (commit
+a62f3433 tree, `Version: 14.4.1. Config: hybrid`), same el7 binaries the BW-00
+baseline inventory used.

@@ -1,0 +1,35 @@
+# python callback sequences from the live run 2026-11-24 (session 59631)
+
+## baseapp.log (base entity lifecycle, grep -n preserved)
+189:INFO: ClientAvatar.onClientDeath: 2
+191:INFO: Base::~Base(2): ClientAvatar
+192:INFO: Base::Base(3): ClientAvatar
+193:INFO: ClientAvatar.__init__: {'prop1': 1} 0
+199:INFO: ClientAvatar.onEntitiesEnabled: 3
+201:TRACE: Proxy::onClientDeath: Client id 3 has disconnected (Requested by client)
+203:INFO: ClientAvatar.onClientDeath: 3
+205:INFO: Base::~Base(3): ClientAvatar
+
+## cellapp.log (cell entity lifecycle)
+134:INFO: [Config]   cellApp/throttle/scaleBackTime     = 1
+135:INFO: [Config]   cellApp/throttle/min               = 0.1
+164:TRACE: PluginLibrary: Loading extension /home/cui/workspaces/BigWorld/game/bin/server/el7/server/cellapp-extensions/cellapp_example.so
+194:INFO: ClientAvatar.__init__: {}
+198:INFO: ClientAvatar.__init__: {}
+199:INFO: RealEntity::enableWitness: adding witness for 2
+200:INFO: RealEntity::disableWitness: 2
+204:INFO: ClientAvatar.__init__: {}
+
+## client.log (connection-level callbacks driving the above)
+13:TRACE: SmartServerConnection::logOnTo: transport = UDP
+14:TRACE: [Connection] ServerConnection::logOnBegin: Using server: 127.0.0.1, transport: UDP, username: MyAccount 
+15:DEBUG: LoginHandler::start: LoginApp@127.0.0.1:20013 over UDP (# requests: 10, retry interval: 1.0s, timeout interval: 8.0s)
+16:DEBUG: LoginRequest::onTransportConnect: Attempt #1 to LoginApp 127.0.0.1:20013;  took 0.0s, time left = 8.0s
+17:TRACE: LoginHandler::sendNextRequest: From 192.168.5.188:59631, attempt #1 / 10 to LoginApp 127.0.0.1:20013
+21:TRACE: LoginRequest::handleMessage: Attempt #1: Received reply from 127.0.0.1:20013 (after 0.6s)
+22:DEBUG: LoginHandler::onLoginAppLoginSuccess: BaseApp@192.168.5.188:50463 over UDP (# requests: 10, retry interval:1.0s, timeout interval: 8.0s)
+23:DEBUG: LoginRequest::onTransportConnect: Attempt #1 to BaseApp 192.168.5.188:50463;  took 0.0s, time left = 8.0s
+24:TRACE: LoginHandler::sendNextRequest: From 192.168.5.188:59631, attempt #1 / 10 to BaseApp 192.168.5.188:50463
+25:TRACE: LoginRequest::handleMessage: Attempt #1: Received reply from 192.168.5.188:50463 (after 0.1s)
+26:DEBUG: LoginHandler::onBaseAppLoginSuccess: Got reply from BaseApp channel udp:192.168.5.188:50463
+27:DEBUG: [Connection] ServerConnection::logOn: status==LOGGED_ON

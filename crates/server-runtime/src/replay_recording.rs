@@ -45,6 +45,25 @@
 //!   `SignedChunkLength` field plus the payload from the previous block's
 //!   signature.
 //!
+//! The file half (BW-07-05-04):
+//! * `RecordingFile` is `IBackgroundFileWriter`'s deterministic stand-in
+//!   (`lib/network/background_file_writer.*`): queued writes, seeks and
+//!   chmods performed one at a time, each write completion carrying the
+//!   position the write started at and its `userArg`.
+//! * `ReplayRecorder::on_background_file_writing_complete`
+//!   (`replay_data_file_writer.cpp:460-507`) accounts a completed chunk —
+//!   `numTicksWritten_`, `lastChunkPosition_`/`lastChunkLength_` — and only
+//!   then erases the ticks it covered; `finalise` (`:529-556`) signs the
+//!   last chunk, queues the `numTicks` rewrite at
+//!   [`ReplayHeader::num_ticks_field_offset`] and the read-only chmod; and
+//!   once finalising with nothing left to write, `closeWriter`
+//!   (`:558-572`) leaves the active set, keeping the file only on error.
+//! * `RecordingRecoveryData` (`baseapp/recording_recovery_data.hpp`) carries
+//!   `recoveryData()` (`:731-748`) to [`ReplayRecorder::recover_recording`],
+//!   and the listener face (`ReplayDataFileWriterListener`,
+//!   `replay_data_file_writer.hpp:52-65`) reports errors, completions and
+//!   destruction.
+//!
 //! The signature scheme is the reference's `ChecksumScheme` face
 //! (`cstdmf/checksum_stream.cpp:222-360`): a size, a signature over the bytes
 //! read so far, and the chaining primitives `reset()`/`readBlob()` that make
@@ -55,7 +74,8 @@
 //! private key, `connection/replay_checksum_scheme.cpp`) is not modelled, and
 //! takes the same trait position.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
+use std::rc::Rc;
 
 use md5::{Digest as _, Md5 as Md5Core};
 
@@ -288,7 +308,14 @@ fn packed_string_size(s: &str) -> u32 {
 /// `writePackedInt` (`:254-268`): one length byte below 255, otherwise
 /// `0xFF` plus the three low little-endian bytes of the value.
 fn append_packed_string(out: &mut Vec<u8>, s: &str) {
-    let n = s.len();
+    append_packed_bytes(out, s.as_bytes());
+}
+
+/// The same packed length prefix around raw bytes, for the recovery data's
+/// signature string (`RecordingRecoveryData::addToStream`,
+/// `recording_recovery_data.hpp:70-74`).
+fn append_packed_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    let n = bytes.len();
     if n >= 255 {
         debug_assert!(n < (1 << 24), "a packed length holds 24 bits");
         out.push(0xFF);
@@ -296,7 +323,7 @@ fn append_packed_string(out: &mut Vec<u8>, s: &str) {
     } else {
         out.push(n as u8);
     }
-    out.extend_from_slice(s.as_bytes());
+    out.extend_from_slice(bytes);
 }
 
 /// `ReplayMetaData` (`connection/replay_metadata.hpp:19`).
@@ -691,6 +718,9 @@ pub enum AddTickDataOutcome {
     DroppedAlreadyWritten,
     /// The first tick arrived with no data and was ignored (`:206-216`).
     IgnoredEmptyFirstTick,
+    /// The writer is finalising and takes no more tick data
+    /// (`addTickData`'s `isFinalising_` guard, `:182-190`).
+    IgnoredWhileFinalising,
 }
 
 /// The tick-writing half of `ReplayDataFileWriter`
@@ -720,6 +750,32 @@ pub struct ReplayRecorder {
     queued_chunks: Vec<SignedChunk>,
     /// `pChecksumScheme_`.
     scheme: Box<dyn ReplaySignatureScheme>,
+    /// The scheme's stream size, for the chunk framing and the file
+    /// accounting.
+    signature_size: usize,
+    // ---- the file half (BW-07-05-04) ----
+    /// `path_`.
+    path: String,
+    /// `pWriter_`, absent for a bare tick half that was never opened onto a
+    /// file.
+    file: Option<RecordingFile>,
+    /// `lastTickWritten_`.
+    last_tick_written: u32,
+    /// `numTicksWritten_`.
+    num_ticks_written: u32,
+    /// `lastChunkPosition_`.
+    last_chunk_position: u64,
+    /// `lastChunkLength_`.
+    last_chunk_length: usize,
+    /// `isFinalising_`.
+    is_finalising: bool,
+    /// Whether `path_` still sits in `s_activeWriters_`.
+    in_active_set: bool,
+    /// Whether the writer was released on close without an error
+    /// (`closeWriter` keeps `pWriter_` when the file has one, `:547-559`).
+    writer_released: bool,
+    /// `listeners_`.
+    listeners: Vec<Rc<dyn ReplayWriterListener>>,
 }
 
 impl ReplayRecorder {
@@ -730,6 +786,7 @@ impl ReplayRecorder {
         compression_type: u8,
         num_ticks_to_sign: usize,
     ) -> Self {
+        let signature_size = scheme.signature_size();
         Self {
             scheme,
             compression_type,
@@ -739,6 +796,17 @@ impl ReplayRecorder {
             last_signature: Vec::new(),
             buffered: BTreeMap::new(),
             queued_chunks: Vec::new(),
+            signature_size,
+            path: String::new(),
+            file: None,
+            last_tick_written: 0,
+            num_ticks_written: 0,
+            last_chunk_position: 0,
+            last_chunk_length: 0,
+            is_finalising: false,
+            in_active_set: false,
+            writer_released: false,
+            listeners: Vec::new(),
         }
     }
 
@@ -754,6 +822,11 @@ impl ReplayRecorder {
     /// `ReplayDataFileWriter::addTickData`
     /// (`replay_data_file_writer.cpp:179-271`).
     pub fn add_tick_data(&mut self, tick: u32, num_cells: u32, blob: &[u8]) -> AddTickDataOutcome {
+        if self.is_finalising {
+            // NOTICE: "Already finalising for %s" (`:182-190`).
+            return AddTickDataOutcome::IgnoredWhileFinalising;
+        }
+
         if tick < self.current_tick {
             // A new cell entering a space can report one extra tick's count;
             // the reference drops the data (TODO in the original, `:192-210`).
@@ -869,6 +942,11 @@ impl ReplayRecorder {
 
             let mut bytes = region;
             bytes.extend_from_slice(&signature);
+            if let Some(file) = self.file.as_mut() {
+                // queueWrite(fileData, userData = int(lastTickPendingWrite_))
+                // (`:398-403`).
+                file.queue_write(bytes.clone(), self.last_tick_pending_write as i32);
+            }
             self.queued_chunks.push(SignedChunk {
                 bytes,
                 last_tick: self.last_tick_pending_write,
@@ -916,6 +994,613 @@ impl ReplayRecorder {
     /// `bufferedTickData_` (`replay_data_file_writer.hpp:111`).
     pub fn buffered(&self) -> &BTreeMap<u32, TickReplayData> {
         &self.buffered
+    }
+
+    /// The writing constructor (`replay_data_file_writer.cpp:40-87`): open
+    /// the recording's file, stream the header, prime the chain from its
+    /// signature for the meta-data block, stream the meta-data, and queue
+    /// the two blocks as the file's first write.
+    // The reference constructor takes the same nine arguments.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_recording(
+        path: &str,
+        scheme: Box<dyn ReplaySignatureScheme>,
+        compression_type: u8,
+        num_ticks_to_sign: usize,
+        digest: [u8; 16],
+        game_update_frequency: u8,
+        timestamp: u32,
+        nonce: [u8; NONCE_SIZE],
+        metadata: &ReplayMetaData,
+    ) -> Self {
+        let mut recorder = Self::new(scheme, compression_type, num_ticks_to_sign);
+        recorder.path = path.to_string();
+        recorder.file = Some(RecordingFile::new(path));
+        recorder.in_active_set = true;
+
+        let header = ReplayHeader::new(
+            &*recorder.scheme,
+            digest,
+            game_update_frequency,
+            timestamp,
+            nonce,
+        );
+        let header_wire = header.to_bytes(&*recorder.scheme);
+
+        // Prime the checksum scheme with the header's signature for writing
+        // out the meta-data chunk (`:66-75`).
+        let signature_start =
+            ReplayHeader::signature_length_field_offset() + SIGNATURE_LENGTH_FIELD_SIZE;
+        recorder.scheme.reset();
+        recorder.scheme.read_blob(
+            &header_wire[signature_start..signature_start + header.signature_length as usize],
+        );
+        let meta_wire = metadata.to_bytes(&*recorder.scheme);
+
+        let mut stream = header_wire;
+        stream.extend_from_slice(&meta_wire);
+        recorder.last_signature = meta_wire[meta_wire.len() - recorder.signature_size..].to_vec();
+        recorder.last_chunk_position = stream.len() as u64;
+        recorder
+            .file
+            .as_mut()
+            .expect("the recording file was just attached")
+            .queue_write(stream, 0);
+        recorder
+    }
+
+    /// The recovery constructor (`:95-135`): resume from recovery data,
+    /// re-seeking the file to the next chunk position and re-priming the
+    /// chain from the recovered signature.
+    pub fn recover_recording(
+        path: &str,
+        scheme: Box<dyn ReplaySignatureScheme>,
+        recovery: &RecordingRecoveryData,
+    ) -> Self {
+        let mut recorder = Self::new(
+            scheme,
+            recovery.compression_type(),
+            recovery.num_ticks_to_sign() as usize,
+        );
+        recorder.path = path.to_string();
+        recorder.file = Some(RecordingFile::new(path));
+        recorder.in_active_set = true;
+        recorder.current_tick = recovery.last_tick_written().wrapping_add(1);
+        recorder.last_tick_pending_write = recovery.last_tick_written();
+        recorder.last_tick_written = recovery.last_tick_written();
+        recorder.num_ticks_written = recovery.num_ticks();
+        recorder.last_chunk_position = recovery.next_chunk_position();
+        recorder.last_signature = recovery.last_signature().to_vec();
+        recorder.scheme.reset();
+        recorder.scheme.read_blob(recovery.last_signature());
+        recorder
+            .file
+            .as_mut()
+            .expect("the recording file was just attached")
+            .queue_seek(recovery.next_chunk_position());
+        recorder
+    }
+
+    /// `addListener` (`:442-451`): listeners should outlive the callbacks
+    /// they receive, so they are shared.
+    pub fn add_listener(&mut self, listener: Rc<dyn ReplayWriterListener>) {
+        self.listeners.push(listener);
+    }
+
+    /// Drive the file's queued operations, feeding each write completion
+    /// back through `onBackgroundFileWritingComplete` and any failure
+    /// through `onBackgroundFileWritingError`, in queue order — what the
+    /// reference's background thread and main-thread tick produce together.
+    /// Returns how many operations completed.
+    pub fn pump_file_writes(&mut self) -> usize {
+        let mut handled = 0;
+        loop {
+            let completion = match self.file.as_mut() {
+                Some(file) => file.perform_next(),
+                None => return handled,
+            };
+            let Some(completion) = completion else {
+                return handled;
+            };
+            handled += 1;
+            match completion {
+                FileCompletion::Wrote {
+                    start_position,
+                    user_arg,
+                } => self.on_background_file_writing_complete(start_position, user_arg),
+                FileCompletion::Failed => self.on_background_file_writing_error(),
+                FileCompletion::Seeked | FileCompletion::Chmodded => {}
+            }
+        }
+    }
+
+    /// `onBackgroundFileWritingError` (`:452-458`): the path leaves the
+    /// active set and the listeners hear about it.
+    fn on_background_file_writing_error(&mut self) {
+        self.in_active_set = false;
+        let listeners = self.listeners.clone();
+        for listener in listeners {
+            listener.on_replay_data_file_writing_error(&self.path);
+        }
+    }
+
+    /// `onBackgroundFileWritingComplete` (`:460-507`): account a completed
+    /// write — the tick count, the chunk's position and length, and the
+    /// buffer drain the completed write makes safe — then, once finalising
+    /// with nothing left to write, close the writer.
+    fn on_background_file_writing_complete(&mut self, file_position: u64, user_arg: i32) {
+        if user_arg != 0 {
+            let new_last_tick_written = user_arg as u32;
+            self.num_ticks_written = self
+                .num_ticks_written
+                .wrapping_add(new_last_tick_written.wrapping_sub(self.last_tick_written));
+            self.last_chunk_position = file_position;
+            // sizeof(ReplayData::SignedChunkLength) (`:470`).
+            self.last_chunk_length = GAME_TIME_SIZE;
+
+            // Erase the ticks the chunk covered, summing their sizes
+            // (`:474-488`). The reference asserts the last erased tick is
+            // the chunk's last; a chunk that ends on a data-less tick has
+            // no entry to erase there, and we do not reproduce the assert.
+            let first = self.last_tick_written.wrapping_add(1);
+            let drained: Vec<u32> = self
+                .buffered
+                .range(first..=new_last_tick_written)
+                .map(|(&tick, _)| tick)
+                .collect();
+            for tick in drained {
+                let entry = self.buffered.remove(&tick).expect("the tick is buffered");
+                self.last_chunk_length += entry.size();
+            }
+            self.last_tick_written = new_last_tick_written;
+            self.last_chunk_length += self.signature_size;
+        }
+
+        // More tick data waits when the earliest buffered tick is still
+        // below the next expected tick (`:494-496`).
+        let have_more_tick_data_to_write = self
+            .buffered
+            .keys()
+            .next()
+            .is_some_and(|&first| first < self.current_tick);
+        if self.is_finalising && !have_more_tick_data_to_write {
+            self.close_writer();
+        }
+
+        let listeners = self.listeners.clone();
+        for listener in listeners {
+            listener.on_replay_data_file_writing_complete(&self.path);
+        }
+    }
+
+    /// `close(shouldFinalise)` (`:514-527`).
+    pub fn close(&mut self, should_finalise: bool) {
+        if should_finalise {
+            self.finalise();
+        } else {
+            self.close_writer();
+        }
+    }
+
+    /// `finalise` (`:529-556`): sign whatever completed ticks remain, then
+    /// queue the `numTicks` rewrite — the written count plus the ticks still
+    /// in flight — over a seek to its field offset, and the read-only chmod.
+    pub fn finalise(&mut self) {
+        self.is_finalising = true;
+
+        self.sign_and_write_completed_tick_data(true);
+
+        let field_offset = ReplayHeader::num_ticks_field_offset(self.signature_size);
+        let num_ticks_will_be_written = self.num_ticks_written.wrapping_add(
+            self.last_tick_pending_write
+                .wrapping_sub(self.last_tick_written),
+        );
+        let file = self
+            .file
+            .as_mut()
+            .expect("finalise needs the recording file");
+        file.queue_seek(field_offset as u64);
+        file.queue_write(num_ticks_will_be_written.to_le_bytes().to_vec(), 0);
+        file.queue_chmod(0o444);
+    }
+
+    /// `closeWriter` (`:558-572`): leave the active set, and release the
+    /// file unless it holds an error.
+    pub fn close_writer(&mut self) {
+        self.is_finalising = true;
+
+        // pWriter_->setListener(NULL).
+        self.in_active_set = false;
+        if !self.has_error() {
+            // Hold onto the writer if there was an error (`:562-564`).
+            self.writer_released = true;
+        }
+    }
+
+    /// `recoveryData` (`:731-748`): the state a recovered writer resumes
+    /// from — the next chunk lands at the last chunk position plus its
+    /// length.
+    pub fn recovery_data(&self) -> RecordingRecoveryData {
+        RecordingRecoveryData::new(
+            self.compression_type,
+            self.num_ticks_written,
+            self.last_tick_written,
+            self.last_chunk_position + self.last_chunk_length as u64,
+            self.last_signature.clone(),
+            self.num_ticks_to_sign as u16,
+        )
+    }
+
+    /// `path()`.
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// `numTicksWritten_`.
+    pub fn num_ticks_written(&self) -> u32 {
+        self.num_ticks_written
+    }
+
+    /// `lastTickWritten_`.
+    pub fn last_tick_written(&self) -> u32 {
+        self.last_tick_written
+    }
+
+    /// `lastChunkPosition_`.
+    pub fn last_chunk_position(&self) -> u64 {
+        self.last_chunk_position
+    }
+
+    /// `lastChunkLength_`.
+    pub fn last_chunk_length(&self) -> usize {
+        self.last_chunk_length
+    }
+
+    /// `isFinalising`.
+    pub fn is_finalising(&self) -> bool {
+        self.is_finalising
+    }
+
+    /// Whether `closeWriter` released the file — it holds onto the writer
+    /// while the file is in error (`:562-564`).
+    pub fn has_released_writer(&self) -> bool {
+        self.writer_released
+    }
+
+    /// `hasError` (`:575-581`).
+    pub fn has_error(&self) -> bool {
+        self.file.as_ref().is_some_and(RecordingFile::has_error)
+    }
+
+    /// `errorString` (`:586-595`): empty unless the file failed.
+    pub fn error_string(&self) -> &str {
+        self.file.as_ref().map_or("", RecordingFile::error_string)
+    }
+}
+
+impl Drop for ReplayRecorder {
+    /// The destructor (`:153-170`): tell the listeners the writer is gone.
+    fn drop(&mut self) {
+        let listeners = self.listeners.clone();
+        for listener in listeners {
+            listener.on_replay_data_file_writer_destroyed(&self.path);
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Section: the recording writer's file half (BW-07-05-04)
+// ----------------------------------------------------------------------------
+
+/// One queued background operation (`BackgroundFileWriterTask`).
+enum PendingWrite {
+    /// A `queueWrite`, carrying the chunk's last tick as its `userArg`.
+    Write { bytes: Vec<u8>, user_arg: i32 },
+    /// A `queueSeek`.
+    Seek { offset: u64 },
+    /// A `queueChmod`.
+    Chmod { mode: u32 },
+}
+
+/// What performing one queued operation produced.
+pub enum FileCompletion {
+    /// A write landed at `start_position`; the recording writer accounts it
+    /// by its `user_arg` (`onBackgroundFileWritingComplete`,
+    /// `replay_data_file_writer.cpp:460-507`).
+    Wrote { start_position: u64, user_arg: i32 },
+    /// A seek landed.
+    Seeked,
+    /// A chmod landed.
+    Chmodded,
+    /// The operation failed; the file is in error and takes no more work.
+    Failed,
+}
+
+/// `IBackgroundFileWriter`'s deterministic stand-in: the recording file
+/// itself, a FIFO of queued operations, and a step function that performs
+/// one operation at a time where the reference runs them on a background
+/// thread. Completions arrive in queue order — exactly the events
+/// `ReplayDataFileWriter`'s listener receives.
+pub struct RecordingFile {
+    path: String,
+    /// The file contents.
+    data: Vec<u8>,
+    /// The position the next write lands at.
+    position: u64,
+    /// The permission bits, the `queueChmod` target.
+    mode: u32,
+    pending: VecDeque<PendingWrite>,
+    /// A failure waiting for the next operation.
+    pending_failure: Option<String>,
+    /// The error state, once an operation has failed.
+    error: Option<String>,
+}
+
+impl RecordingFile {
+    /// A file opened for writing: created writable and empty.
+    pub fn new(path: &str) -> Self {
+        Self {
+            path: path.to_string(),
+            data: Vec::new(),
+            position: 0,
+            mode: 0o666,
+            pending: VecDeque::new(),
+            pending_failure: None,
+            error: None,
+        }
+    }
+
+    /// `IBackgroundFileWriter::queueWrite(data, userArg)`.
+    pub fn queue_write(&mut self, bytes: Vec<u8>, user_arg: i32) {
+        self.pending
+            .push_back(PendingWrite::Write { bytes, user_arg });
+    }
+
+    /// `IBackgroundFileWriter::queueSeek(offset, SEEK_SET)`.
+    pub fn queue_seek(&mut self, offset: u64) {
+        self.pending.push_back(PendingWrite::Seek { offset });
+    }
+
+    /// `IBackgroundFileWriter::queueChmod(mode)`.
+    pub fn queue_chmod(&mut self, mode: u32) {
+        self.pending.push_back(PendingWrite::Chmod { mode });
+    }
+
+    /// Inject a failure for the next operation, the way a full disk or a
+    /// vanished directory would.
+    pub fn fail_next(&mut self, message: &str) {
+        self.pending_failure = Some(message.to_string());
+    }
+
+    /// Perform the oldest queued operation. Once an operation has failed,
+    /// the file is in error and reports nothing further.
+    pub fn perform_next(&mut self) -> Option<FileCompletion> {
+        if self.error.is_some() {
+            return None;
+        }
+        let op = self.pending.pop_front()?;
+
+        if let Some(message) = self.pending_failure.take() {
+            self.error = Some(message);
+            return Some(FileCompletion::Failed);
+        }
+
+        match op {
+            PendingWrite::Write { bytes, user_arg } => {
+                let start = self.position as usize;
+                let end = start + bytes.len();
+                if end > self.data.len() {
+                    self.data.resize(end, 0);
+                }
+                self.data[start..end].copy_from_slice(&bytes);
+                self.position = end as u64;
+                Some(FileCompletion::Wrote {
+                    start_position: start as u64,
+                    user_arg,
+                })
+            }
+            PendingWrite::Seek { offset } => {
+                self.position = offset;
+                Some(FileCompletion::Seeked)
+            }
+            PendingWrite::Chmod { mode } => {
+                self.mode = mode;
+                Some(FileCompletion::Chmodded)
+            }
+        }
+    }
+
+    /// The recording's path.
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// The file contents.
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+
+    /// The permission bits.
+    pub fn mode(&self) -> u32 {
+        self.mode
+    }
+
+    /// The position the next write lands at.
+    pub fn position(&self) -> u64 {
+        self.position
+    }
+
+    /// `hasError`.
+    pub fn has_error(&self) -> bool {
+        self.error.is_some()
+    }
+
+    /// `errorString`: empty until an operation has failed.
+    pub fn error_string(&self) -> &str {
+        self.error.as_deref().unwrap_or("")
+    }
+}
+
+/// `ReplayDataFileWriterListener`
+/// (`replay_data_file_writer.hpp:52-65`): the observer a recording writer
+/// reports errors, completions and its destruction to. The reference hands
+/// each callback the writer itself; the writer's identity here is its path,
+/// and its state stays on the recorder.
+pub trait ReplayWriterListener {
+    /// `onReplayDataFileWritingError`: the recording's file failed.
+    fn on_replay_data_file_writing_error(&self, _path: &str) {}
+
+    /// `onReplayDataFileWritingComplete`: a queued write completed.
+    fn on_replay_data_file_writing_complete(&self, _path: &str) {}
+
+    /// `onReplayDataFileWriterDestroyed`: the writer is gone.
+    fn on_replay_data_file_writer_destroyed(&self, _path: &str) {}
+}
+
+/// `RecordingRecoveryData` (`baseapp/recording_recovery_data.hpp`): the
+/// state a recovered recording writer resumes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordingRecoveryData {
+    compression_type: u8,
+    num_ticks: u32,
+    last_tick_written: u32,
+    next_chunk_position: u64,
+    last_signature: Vec<u8>,
+    num_ticks_to_sign: u16,
+}
+
+impl RecordingRecoveryData {
+    /// The constructor (`recording_recovery_data.hpp:45-57`).
+    pub fn new(
+        compression_type: u8,
+        num_ticks: u32,
+        last_tick_written: u32,
+        next_chunk_position: u64,
+        last_signature: Vec<u8>,
+        num_ticks_to_sign: u16,
+    ) -> Self {
+        Self {
+            compression_type,
+            num_ticks,
+            last_tick_written,
+            next_chunk_position,
+            last_signature,
+            num_ticks_to_sign,
+        }
+    }
+
+    /// `addToStream` (`recording_recovery_data.hpp:70-74`): the compression
+    /// type, the tick counts, the `off_t` position, the signature as a
+    /// packed-length string, then the chunk size.
+    pub fn to_wire(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.push(self.compression_type);
+        out.extend_from_slice(&self.num_ticks.to_le_bytes());
+        out.extend_from_slice(&self.last_tick_written.to_le_bytes());
+        out.extend_from_slice(&(self.next_chunk_position as i64).to_le_bytes());
+        append_packed_bytes(&mut out, &self.last_signature);
+        out.extend_from_slice(&self.num_ticks_to_sign.to_le_bytes());
+        out
+    }
+
+    /// `initFromStream` (`recording_recovery_data.hpp:84-91`).
+    pub fn from_wire(data: &[u8]) -> Option<Self> {
+        let fixed = 1 + GAME_TIME_SIZE + GAME_TIME_SIZE + 8;
+        if data.len() < fixed + 1 + 2 {
+            return None;
+        }
+        let compression_type = data[0];
+        let num_ticks = u32::from_le_bytes(data[1..5].try_into().ok()?);
+        let last_tick_written = u32::from_le_bytes(data[5..9].try_into().ok()?);
+        let next_chunk_position = i64::from_le_bytes(data[9..17].try_into().ok()?) as u64;
+
+        let read_length = |bytes: &[u8]| -> Option<(usize, usize)> {
+            let first = *bytes.first()?;
+            if first == 0xFF {
+                let rest = bytes.get(1..4)?;
+                Some((
+                    u32::from_le_bytes([rest[0], rest[1], rest[2], 0]) as usize,
+                    4,
+                ))
+            } else {
+                Some((first as usize, 1))
+            }
+        };
+        let (sig_len, used) = read_length(&data[fixed..])?;
+        let last_signature = data.get(fixed + used..fixed + used + sig_len)?.to_vec();
+        let tail = fixed + used + sig_len;
+        if data.len() < tail + 2 {
+            return None;
+        }
+        let num_ticks_to_sign = u16::from_le_bytes(data[tail..tail + 2].try_into().ok()?);
+        Some(Self {
+            compression_type,
+            num_ticks,
+            last_tick_written,
+            next_chunk_position,
+            last_signature,
+            num_ticks_to_sign,
+        })
+    }
+
+    /// `compressionType`.
+    pub fn compression_type(&self) -> u8 {
+        self.compression_type
+    }
+
+    /// `numTicks`.
+    pub fn num_ticks(&self) -> u32 {
+        self.num_ticks
+    }
+
+    /// `lastTickWritten`.
+    pub fn last_tick_written(&self) -> u32 {
+        self.last_tick_written
+    }
+
+    /// `nextTickPosition`.
+    pub fn next_chunk_position(&self) -> u64 {
+        self.next_chunk_position
+    }
+
+    /// `lastSignature`.
+    pub fn last_signature(&self) -> &[u8] {
+        &self.last_signature
+    }
+
+    /// `numTicksToSign`.
+    pub fn num_ticks_to_sign(&self) -> u16 {
+        self.num_ticks_to_sign
+    }
+}
+
+/// `ReplayDataFileWriter::existsForPath` (`:607-614`) over the writers the
+/// caller holds; the reference keeps the active set as a process-wide
+/// static.
+pub fn exists_for_path(writers: &[&ReplayRecorder], path: &str) -> bool {
+    writers
+        .iter()
+        .any(|writer| writer.in_active_set && writer.path == path)
+}
+
+/// `ReplayDataFileWriter::haveAllClosed` (`:652-659`) over the writers the
+/// caller holds: true once every writer has left the active set.
+pub fn have_all_closed(writers: &[&ReplayRecorder]) -> bool {
+    writers.iter().all(|writer| !writer.in_active_set)
+}
+
+/// `ReplayDataFileWriter::closeAll` (`:616-650`): add the listener to every
+/// writer, then close the ones that are not already finalising.
+pub fn close_all(
+    writers: &mut [&mut ReplayRecorder],
+    listener: &Rc<dyn ReplayWriterListener>,
+    should_finalise: bool,
+) {
+    for writer in writers.iter_mut() {
+        writer.add_listener(listener.clone());
+        if !writer.is_finalising() {
+            writer.close(should_finalise);
+        }
     }
 }
 
@@ -2022,5 +2707,450 @@ mod tests {
         let mut bogus = chunk.bytes.clone();
         bogus[8..12].copy_from_slice(&(chunk.chunk_length as u32).to_le_bytes());
         assert!(decode_chunk(&bogus, 16).is_none());
+    }
+
+    // ------------------------------------------------------------------------
+    // Section: finalisation, failure and recovery (BW-07-05-04)
+    // ------------------------------------------------------------------------
+
+    /// A counting listener, the baseline probe for the callback counts.
+    #[derive(Default)]
+    struct CountingListener {
+        errors: std::cell::Cell<usize>,
+        completions: std::cell::Cell<usize>,
+        destroyed: std::cell::Cell<usize>,
+    }
+
+    impl ReplayWriterListener for CountingListener {
+        fn on_replay_data_file_writing_error(&self, _: &str) {
+            self.errors.set(self.errors.get() + 1);
+        }
+        fn on_replay_data_file_writing_complete(&self, _: &str) {
+            self.completions.set(self.completions.get() + 1);
+        }
+        fn on_replay_data_file_writer_destroyed(&self, _: &str) {
+            self.destroyed.set(self.destroyed.get() + 1);
+        }
+    }
+
+    /// A recording opened onto an MD5-signed, uncompressed file with
+    /// metadata "app=bigworld", hertz 10, two ticks per chunk.
+    fn opened_recording(path: &str) -> ReplayRecorder {
+        let mut meta = ReplayMetaData::new();
+        meta.add("app", "bigworld");
+        ReplayRecorder::open_recording(
+            path,
+            Box::new(Md5Signature::new()),
+            COMPRESSION_NONE,
+            2,
+            [0xAB; 16],
+            10,
+            1_700_000_000,
+            [0x22; 8],
+            &meta,
+        )
+    }
+
+    // Opening a recording streams the header and the metadata block as the
+    // file's first write, primes the chain from the metadata's signature,
+    // and positions the next chunk after both blocks
+    // (`replay_data_file_writer.cpp:40-87`).
+    #[test]
+    fn an_opened_recording_streams_header_and_metadata_first() {
+        let mut recorder = opened_recording("game/records/A");
+        assert_eq!(recorder.path(), "game/records/A");
+
+        let listener = Rc::new(CountingListener::default());
+        recorder.add_listener(listener.clone());
+        assert_eq!(recorder.pump_file_writes(), 1);
+        // The header+metadata write completed, but it carries no tick count.
+        assert_eq!(listener.completions.get(), 1);
+        assert_eq!(recorder.num_ticks_written(), 0);
+
+        let header_len = ReplayHeader::stream_size(16);
+        let file = recorder.file.as_ref().unwrap();
+        let (header, meta) = file.data().split_at(header_len);
+
+        assert_eq!(header[20], 10); // gameUpdateFrequency
+        assert_eq!(&header[25..33], &[0x22; 8]); // nonce
+        // streamSize 13 for the one packed pair.
+        assert_eq!(&meta[..4], &13u32.to_le_bytes());
+        assert_eq!(&meta[4..8], &[3, b'a', b'p', b'p']);
+        assert_eq!(
+            &meta[8..17],
+            &[8, b'b', b'i', b'g', b'w', b'o', b'r', b'l', b'd']
+        );
+
+        // The chain stands on the metadata block's signature.
+        assert_eq!(recorder.last_signature(), &meta[meta.len() - 16..]);
+        assert_eq!(
+            recorder.last_chunk_position(),
+            (header_len + meta.len()) as u64
+        );
+    }
+
+    // A chunk write's completion accounts its ticks and drains the buffer —
+    // the erase the reference defers to this callback
+    // (`onBackgroundFileWritingComplete`, `:460-489`).
+    #[test]
+    fn chunk_completions_account_their_ticks_and_drain_the_buffer() {
+        let mut recorder = opened_recording("game/records/B");
+        assert_eq!(
+            recorder.add_tick_data(10, 1, b"tick-ten"),
+            AddTickDataOutcome::Accepted
+        );
+        assert_eq!(
+            recorder.add_tick_data(11, 1, b"tick-eleven"),
+            AddTickDataOutcome::Accepted
+        );
+        recorder.pump_file_writes();
+
+        // The reference accumulates `numTicksWritten_ += userArg -
+        // lastTickWritten_`, so the tally converges to the highest written
+        // tick number — for a contiguous recording from tick one it doubles
+        // as the tick count.
+        assert_eq!(recorder.num_ticks_written(), 11);
+        assert_eq!(recorder.last_tick_written(), 11);
+        // The chunk landed where the header+metadata write ended: the header,
+        // then the metadata's streamSize field, its 13 bytes of pairs and its
+        // trailing signature.
+        let header_len = ReplayHeader::stream_size(16);
+        assert_eq!(
+            recorder.last_chunk_position(),
+            (header_len + 4 + 13 + 16) as u64
+        );
+        // The length field, both tick blocks, the signature.
+        assert_eq!(
+            recorder.last_chunk_length(),
+            4 + (8 + 1 + 8) + (8 + 1 + 11) + 16
+        );
+        // The completed write makes the erase safe.
+        assert!(recorder.buffered().is_empty());
+
+        // The file holds the tick data raw under NONE compression.
+        let data = recorder.file.as_ref().unwrap().data();
+        assert!(data.windows(8).any(|window| window == b"tick-ten"));
+        assert!(data.windows(11).any(|window| window == b"tick-eleven"));
+    }
+
+    // Finalise signs the remaining ticks, queues the numTicks rewrite at its
+    // field offset — the written count plus the ticks still in flight — and
+    // the read-only chmod; the writer closes once the last write completes
+    // (`finalise`, `replay_data_file_writer.cpp:529-556`).
+    #[test]
+    fn finalise_rewrites_num_ticks_and_sets_the_file_read_only() {
+        let listener = Rc::new(CountingListener::default());
+        let mut recorder = opened_recording("game/records/C");
+        recorder.add_listener(listener.clone());
+
+        for (tick, data) in [
+            (10u32, b"tick-ten" as &[u8]),
+            (11, b"tick-eleven"),
+            (12, b"tick-twelve"),
+        ] {
+            recorder.add_tick_data(tick, 1, data);
+        }
+        recorder.pump_file_writes();
+        assert_eq!(listener.completions.get(), 2); // header+metadata, chunk
+
+        recorder.finalise();
+        assert!(recorder.is_finalising());
+        recorder.pump_file_writes();
+
+        // numTicks = written (11, the tally's highest tick) + in flight
+        // (12 - 11) = 12 — the reference's arithmetic assumes ticks numbered
+        // from one, where tally and count coincide.
+        let offset = ReplayHeader::num_ticks_field_offset(16);
+        let file = recorder.file.as_ref().unwrap();
+        assert_eq!(&file.data()[offset..offset + 4], &12u32.to_le_bytes());
+        assert_eq!(file.mode(), 0o444);
+
+        // The writer closed once nothing was left to write.
+        assert!(recorder.has_released_writer());
+        assert!(!recorder.has_error());
+        // Baseline: one completion per completed write — header+metadata,
+        // both chunks, and the numTicks rewrite.
+        assert_eq!(listener.completions.get(), 4);
+    }
+
+    // Closing without finalising releases the path and the file without
+    // touching either (`close(false)`, `:514-527`).
+    #[test]
+    fn close_without_finalising_releases_the_path_and_leaves_the_file() {
+        let mut recorder = opened_recording("game/records/D");
+        recorder.pump_file_writes();
+        let size_before = recorder.file.as_ref().unwrap().data().len();
+
+        recorder.close(false);
+        assert!(recorder.is_finalising());
+        assert!(recorder.has_released_writer());
+        assert!(!recorder.has_error());
+
+        // Nothing was queued: pumping changes nothing on disk.
+        recorder.pump_file_writes();
+        let file = recorder.file.as_ref().unwrap();
+        assert_eq!(file.data().len(), size_before);
+        assert_eq!(file.mode(), 0o666);
+    }
+
+    // A failed write reports the error once and keeps the writer —
+    // `closeWriter` holds onto the file while it is in error
+    // (`onBackgroundFileWritingError`, `:452-458`; `closeWriter`, `:562-564`).
+    #[test]
+    fn a_failed_write_reports_the_error_once_and_keeps_the_writer() {
+        let listener = Rc::new(CountingListener::default());
+        let mut recorder = opened_recording("game/records/E");
+        recorder.add_listener(listener.clone());
+        recorder.pump_file_writes();
+        assert_eq!(listener.completions.get(), 1); // header+metadata
+
+        // The chunk lands in the queue only once its ticks are complete;
+        // arm the failure against it before pumping again.
+        recorder.add_tick_data(10, 1, b"tick-ten");
+        recorder.add_tick_data(11, 1, b"tick-eleven");
+        recorder
+            .file
+            .as_mut()
+            .unwrap()
+            .fail_next("No space left on device");
+        recorder.pump_file_writes();
+
+        assert_eq!(listener.errors.get(), 1);
+        assert_eq!(listener.completions.get(), 1);
+        assert!(recorder.has_error());
+        assert_eq!(recorder.error_string(), "No space left on device");
+        // The writer was not released, but the path left the active set —
+        // the error erases it just as `closeWriter` does.
+        assert!(!recorder.has_released_writer());
+        assert!(!exists_for_path(&[&recorder], "game/records/E"));
+        assert!(have_all_closed(&[&recorder]));
+
+        // The file is in error: no further work is performed.
+        assert_eq!(recorder.pump_file_writes(), 0);
+    }
+
+    // A writer that is finalising takes no more tick data
+    // (`addTickData`'s `isFinalising_` guard, `:182-190`).
+    #[test]
+    fn adding_tick_data_while_finalising_is_ignored() {
+        let mut recorder = opened_recording("game/records/F");
+        recorder.finalise();
+        assert_eq!(
+            recorder.add_tick_data(10, 1, b"late"),
+            AddTickDataOutcome::IgnoredWhileFinalising
+        );
+        assert!(recorder.buffered().is_empty());
+    }
+
+    // closeAll adds the listener to every writer and finalises the ones
+    // still active (`closeAll`, `:616-650`).
+    #[test]
+    fn close_all_finalises_every_active_writer() {
+        let listener = Rc::new(CountingListener::default());
+        let mut first = opened_recording("game/records/G1");
+        let mut second = opened_recording("game/records/G2");
+        assert!(exists_for_path(&[&first, &second], "game/records/G2"));
+        assert!(!exists_for_path(&[&first, &second], "game/records/G3"));
+        assert!(!have_all_closed(&[&first, &second]));
+
+        let closer: Rc<dyn ReplayWriterListener> = listener.clone();
+        close_all(&mut [&mut first, &mut second], &closer, true);
+        assert!(first.is_finalising() && second.is_finalising());
+
+        first.pump_file_writes();
+        second.pump_file_writes();
+        assert!(have_all_closed(&[&first, &second]));
+        assert!(first.has_released_writer() && second.has_released_writer());
+        // Each writer completed its header+metadata write and its numTicks
+        // rewrite.
+        assert_eq!(listener.completions.get(), 4);
+    }
+
+    // Writers that are already finalising only gain the listener
+    // (`closeAll`'s `!isFinalising` guard, `:640-648`).
+    #[test]
+    fn close_all_skips_writers_already_finalising() {
+        let listener = Rc::new(CountingListener::default());
+        let mut settled = opened_recording("game/records/K1");
+        settled.close(false); // already finalising and released
+        let mut fresh = opened_recording("game/records/K2");
+
+        let listener: Rc<dyn ReplayWriterListener> = listener.clone();
+        close_all(&mut [&mut settled, &mut fresh], &listener, true);
+        assert!(settled.has_released_writer());
+        assert!(!fresh.has_released_writer());
+
+        fresh.pump_file_writes();
+        assert!(have_all_closed(&[&settled, &fresh]));
+    }
+
+    // recoveryData reads back through the stream: the compression type, the
+    // tick counts, the next chunk position, the signature and the chunk size
+    // (`recording_recovery_data.hpp:70-91`).
+    #[test]
+    fn recovery_data_round_trips_through_the_stream() {
+        let mut recorder = opened_recording("game/records/H");
+        recorder.add_tick_data(10, 1, b"tick-ten");
+        recorder.add_tick_data(11, 1, b"tick-eleven");
+        recorder.pump_file_writes();
+
+        let recovery = recorder.recovery_data();
+        assert_eq!(recovery.compression_type(), COMPRESSION_NONE);
+        // The tally is the reference's highest-tick accumulator, not a count.
+        assert_eq!(recovery.num_ticks(), 11);
+        assert_eq!(recovery.last_tick_written(), 11);
+        assert_eq!(
+            recovery.next_chunk_position(),
+            recorder.last_chunk_position() + recorder.last_chunk_length() as u64
+        );
+        assert_eq!(recovery.last_signature(), recorder.last_signature());
+        assert_eq!(recovery.num_ticks_to_sign(), 2);
+
+        let wire = recovery.to_wire();
+        assert_eq!(RecordingRecoveryData::from_wire(&wire), Some(recovery));
+        // Fragments refuse: one short of the fixed fields, and one short of
+        // the trailing chunk size.
+        assert_eq!(RecordingRecoveryData::from_wire(&wire[..14]), None);
+        assert_eq!(RecordingRecoveryData::from_wire(&wire[..34]), None);
+        assert_eq!(RecordingRecoveryData::from_wire(&[]), None);
+    }
+
+    // A recovered writer resumes at the recovered state and continues the
+    // signature chain from it (`:95-135`).
+    #[test]
+    fn a_recovered_writer_continues_the_signature_chain() {
+        let mut recorder = opened_recording("game/records/I");
+        recorder.add_tick_data(10, 1, b"tick-ten");
+        recorder.add_tick_data(11, 1, b"tick-eleven");
+        recorder.pump_file_writes();
+        let recovery = recorder.recovery_data();
+
+        let mut revived = ReplayRecorder::recover_recording(
+            "game/records/I",
+            Box::new(Md5Signature::new()),
+            &recovery,
+        );
+        assert_eq!(revived.current_tick(), 12);
+        assert_eq!(revived.last_tick_pending_write(), 11);
+        assert_eq!(revived.num_ticks_written(), 11);
+        assert_eq!(revived.path(), "game/records/I");
+
+        // The recovery queued a seek to the next chunk position.
+        revived.pump_file_writes();
+        assert_eq!(revived.file.as_ref().unwrap().path(), "game/records/I");
+        assert_eq!(
+            revived.file.as_ref().unwrap().position(),
+            recovery.next_chunk_position()
+        );
+
+        assert_eq!(
+            revived.add_tick_data(12, 1, b"tick-twelve"),
+            AddTickDataOutcome::Accepted
+        );
+        assert_eq!(
+            revived.add_tick_data(13, 1, b"tick-thirteen"),
+            AddTickDataOutcome::Accepted
+        );
+        revived.pump_file_writes();
+
+        // The resumed tally continues from the recovered tick, and the first
+        // chunk of the revived recording chains from the recovered signature.
+        assert_eq!(revived.num_ticks_written(), 13);
+        let start = recovery.next_chunk_position() as usize;
+        assert_eq!(revived.last_chunk_position(), start as u64);
+        let data = revived.file.as_ref().unwrap().data();
+        let (region, signature) = data[start..].split_at(data.len() - start - 16);
+        let mut hasher = Md5Core::new();
+        hasher.update(recovery.last_signature());
+        hasher.update(region);
+        assert_eq!(signature, &hasher.finalize()[..]);
+    }
+
+    // Destruction reports the writer's listeners
+    // (`~ReplayDataFileWriter`, `:153-170`).
+    #[test]
+    fn destroying_the_writer_notifies_its_listeners() {
+        let listener = Rc::new(CountingListener::default());
+        {
+            let mut recorder = opened_recording("game/records/J");
+            recorder.add_listener(listener.clone());
+            assert_eq!(listener.destroyed.get(), 0);
+        }
+        assert_eq!(listener.destroyed.get(), 1);
+    }
+
+    // A listener with no overrides still receives every callback.
+    #[derive(Default)]
+    struct SilentListener;
+
+    impl ReplayWriterListener for SilentListener {}
+
+    #[test]
+    fn a_listener_without_overrides_defaults_through_every_callback() {
+        let listener = Rc::new(SilentListener);
+        let mut recorder = opened_recording("game/records/K");
+        recorder.add_listener(listener.clone());
+        recorder.pump_file_writes();
+        // The completion reached the default body; the recorder holds a clone.
+        assert_eq!(Rc::strong_count(&listener), 2);
+
+        // The error reaches the default body too.
+        recorder.file.as_mut().unwrap().fail_next("disk gone");
+        recorder.pump_file_writes();
+
+        // And the destruction does, when the writer drops.
+        drop(recorder);
+        assert_eq!(Rc::strong_count(&listener), 1);
+    }
+
+    // A recorder without an attached file has nothing to pump; its chunks
+    // stay in the detached queue.
+    #[test]
+    fn a_detached_recorder_has_nothing_to_pump() {
+        let mut recorder = recorder(2);
+        assert_eq!(recorder.pump_file_writes(), 0);
+        recorder.add_tick_data(1, 1, b"first");
+        recorder.add_tick_data(2, 1, b"second");
+        assert_eq!(recorder.pump_file_writes(), 0);
+        assert_eq!(recorder.take_written_chunks().len(), 1);
+    }
+
+    // closeWriter holds onto a file that failed, so closing an errored
+    // writer keeps it (`closeWriter`, `:562-564`).
+    #[test]
+    fn closing_an_errored_writer_keeps_the_file() {
+        let mut recorder = opened_recording("game/records/L");
+        recorder.pump_file_writes();
+        recorder.add_tick_data(10, 1, b"tick-ten");
+        recorder.add_tick_data(11, 1, b"tick-eleven");
+        recorder.file.as_mut().unwrap().fail_next("disk gone");
+        recorder.pump_file_writes();
+        assert!(recorder.has_error());
+
+        recorder.close(false);
+        assert!(recorder.has_error());
+        assert!(!recorder.has_released_writer());
+    }
+
+    // A signature of 255+ bytes takes the packed 4-byte length form
+    // (`RecordingRecoveryData::initFromStream`, `:84-91`).
+    #[test]
+    fn a_recovery_signature_of_255_bytes_takes_the_packed_length_form() {
+        let mut wire = Vec::new();
+        wire.push(COMPRESSION_NONE);
+        wire.extend_from_slice(&9u32.to_le_bytes());
+        wire.extend_from_slice(&8u32.to_le_bytes());
+        wire.extend_from_slice(&300i64.to_le_bytes());
+        let signature = vec![0x5Au8; 255];
+        append_packed_bytes(&mut wire, &signature);
+        wire.extend_from_slice(&7u16.to_le_bytes());
+
+        let recovery = RecordingRecoveryData::from_wire(&wire).expect("decodes");
+        assert_eq!(recovery.compression_type(), COMPRESSION_NONE);
+        assert_eq!(recovery.num_ticks(), 9);
+        assert_eq!(recovery.last_tick_written(), 8);
+        assert_eq!(recovery.next_chunk_position(), 300);
+        assert_eq!(recovery.last_signature(), &signature);
+        assert_eq!(recovery.num_ticks_to_sign(), 7);
     }
 }

@@ -1,0 +1,102 @@
+# Mercury 线格式逐字段解码（登录段,会话 59631,2026-11-24 21:36）
+
+字节序总则(实证):`lib/cstdmf/binary_stream.ipp` 的字节序宏在非 BIG_ENDIAN 主机上是
+恒等宏(`#define BW_HTONS( x ) x`,`BW_NTOHS = BW_HTONS`),因此本机 x86 el7 构建的
+Mercury 包头/消息头整数字段一律**主机字节序(小端)上线**。下列全部按 LE 解,逐包字段
+自洽、请求号跨包连续,验证该结论。
+
+包结构:`[flags u16][消息流...][footer 区,从包尾向消息区反向排布]`
+flags 位定义(lib/network/packet.hpp:62-71):
+  0x0001 HAS_REQUESTS      0x0002 HAS_PIGGYBACKS   0x0004 HAS_ACKS
+  0x0008 ON_CHANNEL        0x0010 IS_RELIABLE      0x0020 IS_FRAGMENT
+  0x0040 HAS_SEQUENCE_NUMBER 0x0080 INDEXED_CHANNEL 0x0100 HAS_CHECKSUM
+  0x0200 CREATE_CHANNEL    0x0400 HAS_CUMULATIVE_ACK
+
+消息头(lib/network/interface_element.cpp:103-118, 517-560; udp_bundle_processor.cpp:400-490):
+  定长消息:  [id u8][payload 固定长]
+  变长消息:  [id u8][len u16 LE][payload]
+  请求消息:  头部之后跟 [replyID u32 LE][nextRequestOffset u16 LE],再接 payload
+  回复消息:  [0xFF][len u32 LE][replyID u32 LE][payload],len 覆盖 replyID+payload
+  id=0xFF 即 REPLY_MESSAGE_IDENTIFIER(interface_element.hpp:342)
+消息 ID 分配(interface_minder.cpp:34 `MessageID id = elements_.size()`):按接口内声明
+序 0 起。LoginInterface(lib/connection/login_interface.hpp:52-60):
+  login=0  probe=1  challengeResponse=2
+BaseAppExtInterface(lib/connection/baseapp_ext_interface.hpp:27-31):
+  baseAppLogin=0(定长 5B:SessionKey u32 + numAttempts u8,basictypes.hpp:171)
+  authenticate=1 ...
+
+---
+
+## P1 客户端→LoginApp 127.0.0.1:59631→127.0.0.1:20013,273B(21:36:38.528919)
+
+01 00 | 00 | 04 01 | d3 8b 01 00 | 00 00 | <payload 260B> | ... 2e | 02 00(尾部)
+
+  flags        = 0x0001 HAS_REQUESTS
+  msgID        = 0x00 LoginInterface::login(变长)
+  len          = 0x0104 = 260(LE)
+  replyID      = 0x00018BD3 = 101331(LE)
+  nextRequestOffset = 0
+  payload[0..3]  = 00 00 09 02 → LE u32 = 0x02090000 = 协议版本 2.9.0
+                   (与 loginapp.log "Server protocol version: 2.9.0" 一致)
+  payload[4..259]= RSA 密文(LogOnParams:username/password/encryptionKey,
+                   经 loginapp.pubkey 加密,高熵,loginapp_login_request_protocol.cpp:120
+                   startRequest( LoginInterface::login ... );末字节 2e 属密文)
+  包尾 2B       = firstRequestOffset footer = 0x0002(HAS_REQUESTS 时反向打包,
+                   udp_bundle.cpp:561-564)
+  字节账:2+3+4+2+260+2 = 273 ✓ 完全闭合
+
+## P2 LoginApp→客户端 127.0.0.1:20013→127.0.0.1:59631,28B(21:36:39.057592)
+
+00 00 | ff | 15 00 00 00 | d3 8b 01 00 | 01 90 59 54 0c ff cb 51 c0 df fd 36 b8 56 60 0b ab
+
+  flags   = 0x0000(纯回复,无 footer)
+  msgID   = 0xFF REPLY_MESSAGE_IDENTIFIER
+  len     = 0x00000015 = 21(LE,覆盖 replyID+payload)
+  replyID = 0x00018BD3 = 101331(LE)——与 P1 请求号回显一致 ✓
+  payload = 17B:LoginReplyRecord 段(LoginApp 地址 + 会话密钥块,
+            会话密钥经客户端 LogOnParams encryptionKey 加密,密文)
+
+## P3 客户端→BaseApp :59631→192.168.5.188:50463,16B(21:36:39.081017)
+
+01 00 | 00 | d4 8b 01 00 | 00 00 | c6 a3 f2 72 01 | 02 00
+
+  flags   = 0x0001 HAS_REQUESTS
+  msgID   = 0x00 BaseAppExtInterface::baseAppLogin(定长,无 len 字段)
+  replyID = 0x00018BD4 = 101332(LE)——请求号在进程内逐请求 +1 ✓
+  nextRequestOffset = 0
+  payload = 5B 定长:SessionKey u32 LE = 0x72F2A3C6 + numAttempts u8 = 1
+  包尾 2B = firstRequestOffset footer = 0x0002
+  字节账:2+1+4+2+5+2 = 16 ✓ 完全闭合
+
+## P4 BaseApp→客户端 :50463→:59631,32B(21:36:39.081205)
+
+f4 04 | f5 cf 7c 4e 1c 25 1f 57 cb fa 67 57 d0 f5 27 4b bb 97 4a 9a c5 5b 77 7f 8c ed c2 1e 9e a7
+
+  flags = 0x04F4 = HAS_ACKS|IS_RELIABLE|IS_FRAGMENT?|HAS_SEQUENCE_NUMBER|
+          INDEXED_CHANNEL|HAS_CUMULATIVE_ACK(0x04F4 = 0100 1111 0100b:
+          bit2 ACKS, bit4 RELIABLE, bit5 FRAGMENT, bit6 SEQ, bit7 INDEXED,
+          bit10 CUMULATIVE_ACK)
+  → 信道化可靠流(baseapp→客户端 AoI/实体更新),载荷为信道序号+密文段。
+  该类包的逐消息解码需完整信道机(序号窗/ACK/分包重组),本批只留原始字节,
+  不做逐字段断言。
+
+---
+
+## 后续包型登记
+
+- 客户端→baseapp 其余 3 包(16/24/24B):flags 0x0001(非信道请求,avatarUpdate/
+  entityMessage 类,载荷密文)。
+- baseapp→客户端周期包(80→144B,每 2s):flags 0x04F4 信道化 AoI 更新,
+  长度随实体集增长。
+- 断连后残留:客户端退出后 baseapp 仍向死端口持续发包(前一 21:30 会话的 47724
+  在 21:36 仍收到 1432B 包),direction-list.txt 有完整清单,登记为服务器侧
+  发送队列残留行为,非解码对象。
+
+## 与源码锚点的对应
+
+- 静态锚点(此前登记):exposed_message_range START=10/END=20;watcher nub 16/17/18/20。
+- 本批动态锚点:LoginInterface {0,1,2};BaseAppExtInterface {baseAppLogin=0,
+  authenticate=1,...};REPLY=0xFF;请求号进程内递增。
+- 字节序:LE(主机序)——修正此前"协议 baseline 大端"的疑点:大端口径来自
+  BW_UNPACK3/BinaryStream 的部分调用点,Mercury 包头在 LE 构建上以 LE 上线,
+  两者不矛盾,按字段所在层判别。

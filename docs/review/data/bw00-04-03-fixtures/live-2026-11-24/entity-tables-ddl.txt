@@ -1,0 +1,70 @@
+*************************** 1. row ***************************
+       Table: tbl_Account
+Create Table: CREATE TABLE `tbl_Account` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `gameTime` int(10) unsigned NOT NULL DEFAULT 0,
+  `sm_character` blob NOT NULL,
+  `sm_playerName` blob NOT NULL,
+  `timestamp` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+*************************** 1. row ***************************
+       Table: tbl_ClientAvatar
+Create Table: CREATE TABLE `tbl_ClientAvatar` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `gameTime` int(10) unsigned NOT NULL DEFAULT 0,
+  `sm_playerName` blob NOT NULL,
+  `sm_prop2` smallint(6) NOT NULL DEFAULT 2,
+  `sm_prop5_intValue` int(11) NOT NULL DEFAULT 0,
+  `sm_prop5_stringValue` varbinary(50) NOT NULL,
+  `sm_spaceID` int(11) NOT NULL DEFAULT 0,
+  `timestamp` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `vm_0_direction` float NOT NULL DEFAULT 0,
+  `vm_0_position` float NOT NULL DEFAULT 0,
+  `vm_1_direction` float NOT NULL DEFAULT 0,
+  `vm_1_position` float NOT NULL DEFAULT 0,
+  `vm_2_direction` float NOT NULL DEFAULT 0,
+  `vm_2_position` float NOT NULL DEFAULT 0,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `playerNameIndex` (`sm_playerName`(255))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+*************************** 1. row ***************************
+       Table: tbl_ClientAvatar_prop5_dictValue
+Create Table: CREATE TABLE `tbl_ClientAvatar_prop5_dictValue` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `parentID` bigint(20) NOT NULL,
+  `sm_key` varbinary(50) NOT NULL,
+  `sm_value` varbinary(50) NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `parentIDIndex` (`parentID`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+*************************** 1. row ***************************
+       Table: tbl_Guard
+Create Table: CREATE TABLE `tbl_Guard` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `gameTime` int(10) unsigned NOT NULL DEFAULT 0,
+  `sm_spaceID` int(11) NOT NULL DEFAULT 0,
+  `timestamp` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `vm_0_direction` float NOT NULL DEFAULT 0,
+  `vm_0_position` float NOT NULL DEFAULT 0,
+  `vm_1_direction` float NOT NULL DEFAULT 0,
+  `vm_1_position` float NOT NULL DEFAULT 0,
+  `vm_2_direction` float NOT NULL DEFAULT 0,
+  `vm_2_position` float NOT NULL DEFAULT 0,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+*************************** 1. row ***************************
+       Table: tbl_Space
+Create Table: CREATE TABLE `tbl_Space` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `gameTime` int(10) unsigned NOT NULL DEFAULT 0,
+  `sm_spaceID` int(11) NOT NULL DEFAULT 0,
+  `timestamp` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `vm_0_direction` float NOT NULL DEFAULT 0,
+  `vm_0_position` float NOT NULL DEFAULT 0,
+  `vm_1_direction` float NOT NULL DEFAULT 0,
+  `vm_1_position` float NOT NULL DEFAULT 0,
+  `vm_2_direction` float NOT NULL DEFAULT 0,
+  `vm_2_position` float NOT NULL DEFAULT 0,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
