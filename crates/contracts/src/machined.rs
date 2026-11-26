@@ -145,7 +145,9 @@ pub struct ProcessMessage {
     pub param: u8,
     pub category: u8,
     pub uid: u16,
-    pub pid: u16,
+    /// The reference widened this from u16 to u32 (`machine_guard.hpp` line
+    /// 521: "uint16 in the original protocol, but ...").
+    pub pid: u32,
     pub port: u16,
     /// BigWorld app id, as in `cellapp01`.
     pub id: u16,
@@ -188,13 +190,21 @@ impl ProcessMessage {
     /// Write the fixed fields: header through the interface name, with no
     /// extra block. Subclasses (e.g. `ProcessStatsMessage`) add their own
     /// fields between the body and the extra block.
+    ///
+    /// The port rides the wire in network byte order: the reference stores
+    /// `srcAddr.port` — already byteswapped by the socket layer — in
+    /// `pm.port_` (`machined_utils.cpp:79`) before the little-endian stream
+    /// write, and the message logger consumes the decoded value directly as
+    /// a `Mercury::Address` port (`logger.cpp:1243`). The struct field here
+    /// stays host-order for the Rust callers; the swap happens at this wire
+    /// boundary only.
     pub fn write_body(&self, stream: &mut BinaryStream) -> Result<(), StreamError> {
         self.header.write(stream);
         stream.write_u8(self.param);
         stream.write_u8(self.category);
         stream.write_u16(self.uid);
-        stream.write_u16(self.pid);
-        stream.write_u16(self.port);
+        stream.write_u32(self.pid);
+        stream.write_u16(self.port.swap_bytes());
         stream.write_u16(self.id);
         stream.write_string(&self.name)?;
         Ok(())
@@ -227,8 +237,8 @@ impl ProcessMessage {
         let param = stream.read_u8()?;
         let category = stream.read_u8()?;
         let uid = stream.read_u16()?;
-        let pid = stream.read_u16()?;
-        let port = stream.read_u16()?;
+        let pid = stream.read_u32()?;
+        let port = u16::swap_bytes(stream.read_u16()?);
         let id = stream.read_u16()?;
         let name = stream.read_string()?;
         Ok(Self {
@@ -336,21 +346,28 @@ pub mod listener_type {
 }
 
 impl ListenerMessage {
-    /// Write the process body followed by both addresses.
+    /// Write the process body, both addresses, then the versioned extra
+    /// block. The reference envelope writes `writeImpl` (which appends the
+    /// addresses to the bare process body) before `writeExtra`
+    /// (`machine_guard.cpp:1001-1012`), so the extra block trails the
+    /// addresses.
     pub fn write(&self, stream: &mut BinaryStream) -> Result<(), StreamError> {
-        self.process.write(stream)?;
+        self.process.write_body(stream)?;
         stream.write_string(&self.pre_addr)?;
         stream.write_string(&self.post_addr)?;
-        Ok(())
+        self.process.write_extra(stream)
     }
 
     /// Read a listener message.
     pub fn read(stream: &mut BinaryStream) -> Result<Self, StreamError> {
-        let process = ProcessMessage::read(stream)?;
+        let mut process = ProcessMessage::read_body(stream)?;
+        let pre_addr = stream.read_string()?;
+        let post_addr = stream.read_string()?;
+        ProcessMessage::read_extra(stream, &mut process)?;
         Ok(Self {
             process,
-            pre_addr: stream.read_string()?,
-            post_addr: stream.read_string()?,
+            pre_addr,
+            post_addr,
         })
     }
 }
@@ -378,20 +395,21 @@ pub mod config {
 }
 
 impl SignalMessage {
-    /// Write the process body followed by the signal number.
+    /// Write the process body, the signal number, then the versioned extra
+    /// block (`machine_guard.cpp:1130-1142` — same envelope order as
+    /// `ListenerMessage`).
     pub fn write(&self, stream: &mut BinaryStream) -> Result<(), StreamError> {
-        self.process.write(stream)?;
+        self.process.write_body(stream)?;
         stream.write_u8(self.signal);
-        Ok(())
+        self.process.write_extra(stream)
     }
 
     /// Read a signal message.
     pub fn read(stream: &mut BinaryStream) -> Result<Self, StreamError> {
-        let process = ProcessMessage::read(stream)?;
-        Ok(Self {
-            process,
-            signal: stream.read_u8()?,
-        })
+        let mut process = ProcessMessage::read_body(stream)?;
+        let signal = stream.read_u8()?;
+        ProcessMessage::read_extra(stream, &mut process)?;
+        Ok(Self { process, signal })
     }
 
     /// A controlled shutdown, `SIGUSR1` in the reference.
@@ -964,7 +982,9 @@ impl UserMessage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PidMessage {
     pub header: Header,
-    pub pid: u16,
+    /// The reference widened this from u16 to u32 at BWMACHINED_VERSION 51
+    /// (`machine_guard.hpp` line 919); port and id stay u16.
+    pub pid: u32,
     pub running: u8,
 }
 
@@ -986,7 +1006,7 @@ impl PidMessage {
     /// Write the message body.
     pub fn write(&self, stream: &mut BinaryStream) -> Result<(), StreamError> {
         self.header.write(stream);
-        stream.write_u16(self.pid);
+        stream.write_u32(self.pid);
         stream.write_u8(self.running);
         Ok(())
     }
@@ -995,7 +1015,7 @@ impl PidMessage {
     pub fn read(stream: &mut BinaryStream) -> Result<Self, StreamError> {
         Ok(Self {
             header: Header::read(stream)?,
-            pid: stream.read_u16()?,
+            pid: stream.read_u32()?,
             running: stream.read_u8()?,
         })
     }
@@ -1677,7 +1697,7 @@ impl MachinedRegistry {
     }
 
     /// Deregister the first process with the given pid.
-    pub fn deregister(&mut self, pid: u16) -> DeregisterOutcome {
+    pub fn deregister(&mut self, pid: u32) -> DeregisterOutcome {
         match self.processes.iter().position(|p| p.process.pid == pid) {
             Some(index) => {
                 self.processes.remove(index);
@@ -1693,7 +1713,7 @@ impl MachinedRegistry {
     }
 
     /// Whether any registered process has the given pid.
-    pub fn is_running(&self, pid: u16) -> bool {
+    pub fn is_running(&self, pid: u32) -> bool {
         self.processes.iter().any(|p| p.process.pid == pid)
     }
 
@@ -1701,7 +1721,7 @@ impl MachinedRegistry {
     ///
     /// The values are the 0-255 bytes computed from the raw counters. Returns
     /// false if the process is not registered.
-    pub fn set_process_stats(&mut self, pid: u16, cpu: u8, mem: u8) -> bool {
+    pub fn set_process_stats(&mut self, pid: u32, cpu: u8, mem: u8) -> bool {
         match self.processes.iter_mut().find(|p| p.process.pid == pid) {
             Some(entry) => {
                 entry.cpu = cpu;
@@ -1713,7 +1733,7 @@ impl MachinedRegistry {
     }
 
     /// The most recently collected stats for a process, if registered.
-    pub fn process_stats(&self, pid: u16) -> Option<(u8, u8)> {
+    pub fn process_stats(&self, pid: u32) -> Option<(u8, u8)> {
         self.processes
             .iter()
             .find(|p| p.process.pid == pid)
@@ -1725,7 +1745,7 @@ impl MachinedRegistry {
     /// Matches the reference `sendSignal`, which signals every registered
     /// process whose message matches the command's filter bits. The actual
     /// `kill` syscall is left to the caller.
-    pub fn signal_targets(&self, sm: &SignalMessage) -> Vec<u16> {
+    pub fn signal_targets(&self, sm: &SignalMessage) -> Vec<u32> {
         self.processes
             .iter()
             .filter(|entry| entry.process.matches(&sm.process))
@@ -1859,7 +1879,7 @@ impl Listeners {
     /// reference `checkListeners`. Returns how many were dropped.
     pub fn drop_dead<F>(&mut self, mut is_running: F) -> usize
     where
-        F: FnMut(u16) -> bool,
+        F: FnMut(u32) -> bool,
     {
         let before = self.members.len();
         self.members
@@ -1925,7 +1945,7 @@ impl ListenerRegistry {
     /// Drop listeners whose process died, in both lists.
     pub fn drop_dead<F>(&mut self, mut is_running: F) -> usize
     where
-        F: FnMut(u16) -> bool,
+        F: FnMut(u32) -> bool,
     {
         self.birth.drop_dead(&mut is_running) + self.death.drop_dead(is_running)
     }
@@ -1951,6 +1971,54 @@ pub struct MachinedSnapshot {
     /// The process registry; discovery queries read from it.
     pub registry: MachinedRegistry,
     pub user: UserMessage,
+}
+
+/// Answer a MachineGuard query with every compatible reply, in registry
+/// order.
+///
+/// A ProcessStats discovery query is answered once per matching process —
+/// the reference appends each cached `pi.m` to `replies`
+/// (`bwmachined.cpp:1410-1452`) — and every other query has exactly one
+/// reply. A ProcessStats query with no match yields the single pid-0
+/// terminator so the client's recv loop can stop.
+pub fn answer_query_all(
+    snapshot: &MachinedSnapshot,
+    request: &MachineGuardMessage,
+) -> Vec<MachineGuardMessage> {
+    if let MachineGuardMessage::ProcessStats(query) = request {
+        let seq = query.process.header.seq;
+        let mut replies: Vec<MachineGuardMessage> = snapshot
+            .registry
+            .processes()
+            .iter()
+            .filter(|entry| entry.process.matches(&query.process))
+            .map(|entry| {
+                let mut process = entry.process.clone();
+                process.header.message = message_id::PROCESS_STATS;
+                process.header.seq = seq;
+                MachineGuardMessage::ProcessStats(ProcessStatsMessage {
+                    process,
+                    cpu: entry.cpu,
+                    mem: entry.mem,
+                })
+            })
+            .collect();
+        if replies.is_empty() {
+            // The reference zeroes the pid so the client's recv loop can
+            // terminate on the miss.
+            let mut process = query.process.clone();
+            process.pid = 0;
+            process.header.message = message_id::PROCESS_STATS;
+            process.header.seq = seq;
+            replies.push(MachineGuardMessage::ProcessStats(ProcessStatsMessage {
+                process,
+                cpu: 0,
+                mem: 0,
+            }));
+        }
+        return replies;
+    }
+    vec![answer_query(snapshot, request)]
 }
 
 /// Answer a MachineGuard query with a compatible reply.
@@ -2165,13 +2233,15 @@ mod tests {
             0,
             7,
             0,
-            // process: param, category, uid, pid, port, id
+            // process: param, category, uid, pid (u32), port, id
             0,
             0,
             0,
             0,
             0x92,
             0x10,
+            0,
+            0,
             0,
             0,
             1,
@@ -2205,6 +2275,32 @@ mod tests {
         ]
         .to_vec();
         assert_eq!(stream.as_bytes(), expected);
+    }
+
+    /// The port rides the wire in network byte order — the reference stores
+    /// the socket's already-byteswapped port in `pm.port_`
+    /// (`machined_utils.cpp:79`) and the message logger consumes the decoded
+    /// value directly as a `Mercury::Address` port (`logger.cpp:1243`).
+    #[test]
+    fn process_message_port_is_network_order_on_the_wire() {
+        let mut message = ProcessMessage {
+            pid: 7,
+            port: 0xC000, // 49152: wire bytes c0 00, host-order bytes 00 c0
+            name: "cellapp01".to_string(),
+            ..ProcessMessage::default()
+        };
+        message.header.seq = 1;
+
+        let mut stream = BinaryStream::new();
+        message.write(&mut stream).expect("write");
+
+        let bytes = stream.as_bytes();
+        // header(4) + param + category + uid(2) + pid(4) = 12; port next.
+        assert_eq!(bytes[12], 0xC0, "port high byte first (network order)");
+        assert_eq!(bytes[13], 0x00);
+
+        stream.rewind();
+        assert_eq!(ProcessMessage::read(&mut stream).expect("read"), message);
     }
 
     #[test]
@@ -2241,7 +2337,7 @@ mod tests {
         stream.write_u8(process_param::USE_NAME);
         stream.write_u8(process_category::SERVER_COMPONENT);
         stream.write_u16(0);
-        stream.write_u16(11);
+        stream.write_u32(11);
         stream.write_u16(0);
         stream.write_u16(0);
         stream.write_string("cellapp01").expect("write");
@@ -2264,7 +2360,7 @@ mod tests {
         stream.write_u8(0);
         stream.write_u8(process_category::SERVER_COMPONENT);
         stream.write_u16(0);
-        stream.write_u16(4242);
+        stream.write_u32(4242);
         stream.write_u16(0);
         stream.write_u16(0);
         stream.write_string("cellapp01").expect("write");
@@ -2340,6 +2436,169 @@ mod tests {
         let mut stream = BinaryStream::new();
         listener.write(&mut stream).expect("write");
         assert_eq!(ListenerMessage::read(&mut stream).expect("read"), listener);
+    }
+
+    /// The reference envelope writes `writeImpl` (process body + the
+    /// subclass fields) before `writeExtra`, so a listener's addresses sit
+    /// between the body and the version block
+    /// (`machine_guard.cpp:1001-1012`). Pinned byte-exactly because the
+    /// pre-extra position is what the EL7 binary parses.
+    #[test]
+    fn listener_message_orders_addresses_before_the_extra_block() {
+        let listener = ListenerMessage {
+            process: ProcessMessage {
+                header: Header {
+                    message: message_id::LISTENER,
+                    flags: 0,
+                    seq: 0,
+                },
+                param: process_param::IS_MSGTYPE | listener_type::ADD_BIRTH_LISTENER,
+                ..ProcessMessage::default()
+            },
+            pre_addr: "ab".to_string(),
+            post_addr: "cd".to_string(),
+        };
+
+        let mut stream = BinaryStream::new();
+        listener.write(&mut stream).expect("write");
+
+        let expected: Vec<u8> = [
+            // header
+            message_id::LISTENER,
+            0,
+            0,
+            0,
+            // body: param (IS_MSGTYPE | ADD_BIRTH_LISTENER), category, uid,
+            // pid (u32), port, id, empty name
+            0x80,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            // preAddr, postAddr
+            2,
+            b'a',
+            b'b',
+            2,
+            b'c',
+            b'd',
+            // extra: tail 10 (i32), four u16 versions, two empty strings
+            10,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+        ]
+        .to_vec();
+        assert_eq!(stream.as_bytes(), expected);
+
+        stream.rewind();
+        assert_eq!(ListenerMessage::read(&mut stream).expect("read"), listener);
+    }
+
+    /// Same envelope order for signals: the signal byte lands between the
+    /// body and the extra block (`machine_guard.cpp:1130-1142`).
+    #[test]
+    fn signal_message_orders_signal_before_the_extra_block() {
+        let mut command = SignalMessage {
+            process: ProcessMessage {
+                header: Header {
+                    message: message_id::SIGNAL,
+                    flags: 0,
+                    seq: 0,
+                },
+                ..ProcessMessage::default()
+            },
+            signal: 0,
+        };
+        command.set_kill();
+
+        let mut stream = BinaryStream::new();
+        command.write(&mut stream).expect("write");
+
+        let expected: Vec<u8> = [
+            // header
+            message_id::SIGNAL,
+            0,
+            0,
+            0,
+            // body: param, category, uid, pid (u32), port, id, empty name
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            // signal (SIGINT)
+            signal::SIGINT,
+            // extra: tail 10, four u16 versions, two empty strings
+            10,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+        ]
+        .to_vec();
+        assert_eq!(stream.as_bytes(), expected);
+
+        stream.rewind();
+        assert_eq!(SignalMessage::read(&mut stream).expect("read"), command);
+    }
+
+    /// The v51 pid width: a pid above u16 range survives the round trip and
+    /// writes as a full u32 (the EL7 binary reads four bytes here).
+    #[test]
+    fn pid_message_carries_u32_pids() {
+        let query = pid_query(0x0001_1092);
+        let mut stream = BinaryStream::new();
+        query.write(&mut stream).expect("write");
+
+        let MachineGuardMessage::Pid(ref message) = query else {
+            panic!("expected a pid message");
+        };
+        // header + pid + running (the query default sets running 0)
+        let expected: Vec<u8> = [message_id::PID, 0, 0, 0, 0x92, 0x10, 0x01, 0x00, 0].to_vec();
+        assert_eq!(stream.as_bytes(), expected);
+
+        stream.rewind();
+        assert_eq!(
+            MachineGuardMessage::create(&mut stream).expect("read"),
+            query
+        );
+        assert!(message.pid > u16::MAX as u32);
     }
 
     #[test]
@@ -2546,12 +2805,14 @@ mod tests {
             0,
             0,
             0,
-            // process body: param, category, uid, pid, port, id
+            // process body: param, category, uid, pid (u32), port, id
             0,
             0,
             0,
             0,
             11,
+            0,
+            0,
             0,
             0,
             0,
@@ -2634,7 +2895,7 @@ mod tests {
             platform
         );
 
-        // Pid: header + pid + running.
+        // Pid: header + pid (u32, v51) + running.
         let pid = PidMessage {
             pid: 4242,
             running: 1,
@@ -2644,7 +2905,7 @@ mod tests {
         pid.write(&mut stream).expect("write");
         assert_eq!(
             stream.as_bytes(),
-            [message_id::PID, 0, 0, 0, 0x92, 0x10, 1].to_vec()
+            [message_id::PID, 0, 0, 0, 0x92, 0x10, 0, 0, 1].to_vec()
         );
         stream.rewind();
         assert_eq!(PidMessage::read(&mut stream).expect("read"), pid);
@@ -2953,7 +3214,7 @@ mod tests {
         )
         .to_bytes()
         .expect("write");
-        assert_eq!(hit, [message_id::PID, 0, 0, 0, 11, 0, 1].to_vec());
+        assert_eq!(hit, [message_id::PID, 0, 0, 0, 11, 0, 0, 0, 1].to_vec());
 
         let miss = answer_query(
             &snapshot,
@@ -2964,7 +3225,7 @@ mod tests {
         )
         .to_bytes()
         .expect("write");
-        assert_eq!(miss, [message_id::PID, 0, 0, 0, 12, 0, 0].to_vec());
+        assert_eq!(miss, [message_id::PID, 0, 0, 0, 12, 0, 0, 0, 0].to_vec());
 
         // Commands are not answered by the query path.
         let command = answer_query(
@@ -2977,6 +3238,75 @@ mod tests {
             }
             other => panic!("expected unknown, got {other:?}"),
         }
+    }
+
+    /// The reference appends one cached ProcessStatsMessage per matching
+    /// process to the reply stream (`bwmachined.cpp:1410-1452`), so a
+    /// category-wide discovery query learns about every component at once —
+    /// this is what the original message logger's FindHandler walks.
+    #[test]
+    fn process_stats_query_answers_every_match() {
+        let mut snapshot = base_snapshot();
+        for (pid, port, name, major, minor) in [
+            (101, 40001, "cellapp01", 2, 7),
+            (102, 40002, "baseapp01", 2, 5),
+        ] {
+            let mut pm = register_command(pid, port, name);
+            pm.uid = 1000;
+            pm.category = process_category::WATCHER_NUB;
+            pm.major_version = major;
+            pm.minor_version = minor;
+            snapshot.registry.handle_command(&pm).expect("register");
+        }
+
+        // The logger's discovery query: category-wide, restricted to uid.
+        let mut query = ProcessMessage::default();
+        query.header.message = message_id::PROCESS_STATS;
+        query.header.seq = 42;
+        query.param = process_param::USE_CATEGORY | process_param::USE_UID;
+        query.category = process_category::WATCHER_NUB;
+        query.uid = 1000;
+
+        let replies = answer_query_all(
+            &snapshot,
+            &MachineGuardMessage::ProcessStats(ProcessStatsMessage {
+                process: query.clone(),
+                cpu: 0,
+                mem: 0,
+            }),
+        );
+        assert_eq!(replies.len(), 2, "one reply per registered component");
+
+        let mut names = Vec::new();
+        for reply in &replies {
+            let MachineGuardMessage::ProcessStats(stats) = reply else {
+                panic!("expected process stats, got {reply:?}");
+            };
+            // Every reply keeps the request's seq, as `copySeq` does.
+            assert_eq!(stats.process.header.seq, 42);
+            assert_eq!(stats.process.header.message, message_id::PROCESS_STATS);
+            assert_eq!(stats.process.uid, 1000);
+            names.push(stats.process.name.clone());
+        }
+        assert!(names.contains(&"cellapp01".to_string()));
+        assert!(names.contains(&"baseapp01".to_string()));
+
+        // A uid outside the registry matches nothing: the pid-0 terminator.
+        let mut stranger = query;
+        stranger.uid = 2000;
+        let miss = answer_query_all(
+            &snapshot,
+            &MachineGuardMessage::ProcessStats(ProcessStatsMessage {
+                process: stranger,
+                cpu: 0,
+                mem: 0,
+            }),
+        );
+        assert_eq!(miss.len(), 1);
+        let MachineGuardMessage::ProcessStats(stats) = &miss[0] else {
+            panic!("expected process stats, got {:?}", miss[0]);
+        };
+        assert_eq!(stats.process.pid, 0);
     }
 
     fn base_snapshot() -> MachinedSnapshot {
@@ -2998,7 +3328,7 @@ mod tests {
     }
 
     /// A register command for a `cellapp01` process on port 50001.
-    fn register_command(pid: u16, port: u16, name: &str) -> ProcessMessage {
+    fn register_command(pid: u32, port: u16, name: &str) -> ProcessMessage {
         ProcessMessage {
             pid,
             port,
@@ -3010,7 +3340,7 @@ mod tests {
     }
 
     /// A discovery query for a process by pid.
-    fn pid_query(pid: u16) -> MachineGuardMessage {
+    fn pid_query(pid: u32) -> MachineGuardMessage {
         MachineGuardMessage::Pid(PidMessage {
             pid,
             ..PidMessage::default()
@@ -3199,7 +3529,7 @@ mod tests {
     }
 
     /// A process event as `Listeners::notify` sees it, with a sender address.
-    fn event(pid: u16, port: u16, name: &str, addr: [u8; 4]) -> (ProcessMessage, [u8; 4]) {
+    fn event(pid: u32, port: u16, name: &str, addr: [u8; 4]) -> (ProcessMessage, [u8; 4]) {
         let mut pm = ProcessMessage {
             pid,
             port,

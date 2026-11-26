@@ -55,6 +55,10 @@ blowfish = "0.9"
 # PostgreSQL wire client for the BW-09-06 storage backend (sync libpq
 # conventions; JSONB columns carry the nested property values).
 postgres = "0.19"
+# MySQL wire client for the OPT-09 baseline: it drives the reference's
+# backend over the same dataset the PostgreSQL cases use. Offline builds
+# use the pure-Rust compression backend.
+mysql = { version = "28", default-features = false, features = ["minimal-rust"] }
 # JSON encoding for the JSONB columns (the nested PropertyValue codec).
 serde_json = "1"
 
@@ -90,6 +94,9 @@ server-runtime = { path = "crates/server-runtime" }
 # MeshNavigator (BW-10-06-01) is the first runtime consumer.
 waypoint = { path = "crates/waypoint" }
 client = { path = "crates/client" }  # replay_write round-trips through its reader (BW-07-05-02)
+# The log ingestion protocol codecs (OPT-02-01-04): the mixed-version
+# rerun speaks the register/record envelopes to the reference EL7 logger.
+message_logger = { path = "crates/message_logger" }
 # load = { path = "crates/load" }  # re-add with first consumer
 # test-support = { path = "crates/test-support" }  # re-add with first consumer
 asset-pipeline = { path = "crates/asset-pipeline" }
