@@ -1,0 +1,13 @@
+key	value	unit	source
+install_clean	PASS	status	ci/install-layout.sh round 1, fresh prefix with data/ created
+install_smoke_server	PASS	status	installed server starts and stops, exit 0 + starting + has shut down
+install_cli	PASS	status	installed process_defs --help prints usage
+install_cli_res	PASS	status	installed process_defs -r <res> loads defs, digest in dump
+install_res_server	PASS	status	installed server locates res/server/bw.xml silently (no "Could not find")
+install_build_parity	PASS	status	build tree and install prefix res/identical, defs dump identical, both locate config
+install_module	PASS	status	bare Python imports boundless_core from lib/python/boundless_core.so; answer()=42, engine_version()=14.4.1
+install_layout	PASS	status	bin/lib/res/data layout complete
+install_upgrade	PASS	status	tampered res/server/bw.xml restored, data/db/user.db contents preserved
+install_uninstall	PASS	status	bin/lib/res removed, data/db/user.db contents preserved
+selftest_suite	7/7	count	green+red stubs all bite, 7 selftest rows PASS
+archive_bytes	872K	display	boundless-0.1.0-linux-x86_64.tar.gz (strip=symbols candidate)
