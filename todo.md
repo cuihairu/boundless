@@ -2939,7 +2939,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
 - [x] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（7081674）
-- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
+- [x] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。(2026-11-26 lane/bw14-script-host 2f77126：crates/client/tests/render_backend_baseline.rs 按图形后端登记表采集三问——新树唯一出货像素后端=Device 下的软件光栅器（参考侧 D3D9/OpenGL/cocos2d/Awesomium 四后端是 BW-15-06-01 档事实非移植，登记表 BACKENDS 留位后端落地即插行）；设备面（结构断言）：SoftwareDevice 640×480 adapter=0 307200px RGBA8、帧序 1..=64 单设备对象、status=Ok 全程、leaked()=0；驱动面（probe 只印不断言）：软件光栅的"驱动"=执行环境（CPU 型号/逻辑核/OS/内核）文本入报告；帧时（probe 只印不断言）：固定镜头 check_device→step→present 64 帧逐帧 FRAME-TIME+FRAME-TAIL 汇总入 RENDER_BACKEND_OUT 报告（本机 p50 15.6-18.8ms/p99 24.2-25.1ms，随宿主漂移如实记录不断言）；结构契约：逐相邻帧摘要必异+帧 1..=8/64 复现 OPT-11-01-01 saved 钉（后端记录与端基线同一光栅不漂移）+帧 1/7/31/64 纯帧序号复现+复跑恒等；提交目录 tests/baseline/render-backend-baseline.tsv 十列（platform/backend/device/driver/frames/min/median/p99/max/note），linux-x86_64=measured，macos-arm64/windows-x86_64=pending 行带 BW-15-04/BW-15-03 blocker 不编数字，语法检查拒 pending 带测量/未知后端 id/重复(platform,backend)/非数字帧时/测量平台缺任一出货后端行；client 门禁 861 绿+集成全绿）
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
 ### OPT-16-01 采集依赖与增量构建基线
@@ -4520,7 +4520,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
 - [x] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（7081674）
-- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
+- [x] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。(2026-11-26 lane/bw14-script-host 2f77126：crates/client/tests/render_backend_baseline.rs 按图形后端登记表采集三问——新树唯一出货像素后端=Device 下的软件光栅器（参考侧 D3D9/OpenGL/cocos2d/Awesomium 四后端是 BW-15-06-01 档事实非移植，登记表 BACKENDS 留位后端落地即插行）；设备面（结构断言）：SoftwareDevice 640×480 adapter=0 307200px RGBA8、帧序 1..=64 单设备对象、status=Ok 全程、leaked()=0；驱动面（probe 只印不断言）：软件光栅的"驱动"=执行环境（CPU 型号/逻辑核/OS/内核）文本入报告；帧时（probe 只印不断言）：固定镜头 check_device→step→present 64 帧逐帧 FRAME-TIME+FRAME-TAIL 汇总入 RENDER_BACKEND_OUT 报告（本机 p50 15.6-18.8ms/p99 24.2-25.1ms，随宿主漂移如实记录不断言）；结构契约：逐相邻帧摘要必异+帧 1..=8/64 复现 OPT-11-01-01 saved 钉（后端记录与端基线同一光栅不漂移）+帧 1/7/31/64 纯帧序号复现+复跑恒等；提交目录 tests/baseline/render-backend-baseline.tsv 十列（platform/backend/device/driver/frames/min/median/p99/max/note），linux-x86_64=measured，macos-arm64/windows-x86_64=pending 行带 BW-15-04/BW-15-03 blocker 不编数字，语法检查拒 pending 带测量/未知后端 id/重复(platform,backend)/非数字帧时/测量平台缺任一出货后端行；client 门禁 861 绿+集成全绿）
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
 ### OPT-16-01 采集依赖与增量构建基线
@@ -6062,7 +6062,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
 - [x] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（7081674）
-- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
+- [x] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。(2026-11-26 lane/bw14-script-host 2f77126：crates/client/tests/render_backend_baseline.rs 按图形后端登记表采集三问——新树唯一出货像素后端=Device 下的软件光栅器（参考侧 D3D9/OpenGL/cocos2d/Awesomium 四后端是 BW-15-06-01 档事实非移植，登记表 BACKENDS 留位后端落地即插行）；设备面（结构断言）：SoftwareDevice 640×480 adapter=0 307200px RGBA8、帧序 1..=64 单设备对象、status=Ok 全程、leaked()=0；驱动面（probe 只印不断言）：软件光栅的"驱动"=执行环境（CPU 型号/逻辑核/OS/内核）文本入报告；帧时（probe 只印不断言）：固定镜头 check_device→step→present 64 帧逐帧 FRAME-TIME+FRAME-TAIL 汇总入 RENDER_BACKEND_OUT 报告（本机 p50 15.6-18.8ms/p99 24.2-25.1ms，随宿主漂移如实记录不断言）；结构契约：逐相邻帧摘要必异+帧 1..=8/64 复现 OPT-11-01-01 saved 钉（后端记录与端基线同一光栅不漂移）+帧 1/7/31/64 纯帧序号复现+复跑恒等；提交目录 tests/baseline/render-backend-baseline.tsv 十列（platform/backend/device/driver/frames/min/median/p99/max/note），linux-x86_64=measured，macos-arm64/windows-x86_64=pending 行带 BW-15-04/BW-15-03 blocker 不编数字，语法检查拒 pending 带测量/未知后端 id/重复(platform,backend)/非数字帧时/测量平台缺任一出货后端行；client 门禁 861 绿+集成全绿）
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
 ### OPT-16-01 采集依赖与增量构建基线
@@ -7604,7 +7604,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
 - [x] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（7081674）
-- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
+- [x] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。(2026-11-26 lane/bw14-script-host 2f77126：crates/client/tests/render_backend_baseline.rs 按图形后端登记表采集三问——新树唯一出货像素后端=Device 下的软件光栅器（参考侧 D3D9/OpenGL/cocos2d/Awesomium 四后端是 BW-15-06-01 档事实非移植，登记表 BACKENDS 留位后端落地即插行）；设备面（结构断言）：SoftwareDevice 640×480 adapter=0 307200px RGBA8、帧序 1..=64 单设备对象、status=Ok 全程、leaked()=0；驱动面（probe 只印不断言）：软件光栅的"驱动"=执行环境（CPU 型号/逻辑核/OS/内核）文本入报告；帧时（probe 只印不断言）：固定镜头 check_device→step→present 64 帧逐帧 FRAME-TIME+FRAME-TAIL 汇总入 RENDER_BACKEND_OUT 报告（本机 p50 15.6-18.8ms/p99 24.2-25.1ms，随宿主漂移如实记录不断言）；结构契约：逐相邻帧摘要必异+帧 1..=8/64 复现 OPT-11-01-01 saved 钉（后端记录与端基线同一光栅不漂移）+帧 1/7/31/64 纯帧序号复现+复跑恒等；提交目录 tests/baseline/render-backend-baseline.tsv 十列（platform/backend/device/driver/frames/min/median/p99/max/note），linux-x86_64=measured，macos-arm64/windows-x86_64=pending 行带 BW-15-04/BW-15-03 blocker 不编数字，语法检查拒 pending 带测量/未知后端 id/重复(platform,backend)/非数字帧时/测量平台缺任一出货后端行；client 门禁 861 绿+集成全绿）
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
 ### OPT-16-01 采集依赖与增量构建基线
@@ -9185,7 +9185,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
 - [x] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（7081674）
-- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
+- [x] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。(2026-11-26 lane/bw14-script-host 2f77126：crates/client/tests/render_backend_baseline.rs 按图形后端登记表采集三问——新树唯一出货像素后端=Device 下的软件光栅器（参考侧 D3D9/OpenGL/cocos2d/Awesomium 四后端是 BW-15-06-01 档事实非移植，登记表 BACKENDS 留位后端落地即插行）；设备面（结构断言）：SoftwareDevice 640×480 adapter=0 307200px RGBA8、帧序 1..=64 单设备对象、status=Ok 全程、leaked()=0；驱动面（probe 只印不断言）：软件光栅的"驱动"=执行环境（CPU 型号/逻辑核/OS/内核）文本入报告；帧时（probe 只印不断言）：固定镜头 check_device→step→present 64 帧逐帧 FRAME-TIME+FRAME-TAIL 汇总入 RENDER_BACKEND_OUT 报告（本机 p50 15.6-18.8ms/p99 24.2-25.1ms，随宿主漂移如实记录不断言）；结构契约：逐相邻帧摘要必异+帧 1..=8/64 复现 OPT-11-01-01 saved 钉（后端记录与端基线同一光栅不漂移）+帧 1/7/31/64 纯帧序号复现+复跑恒等；提交目录 tests/baseline/render-backend-baseline.tsv 十列（platform/backend/device/driver/frames/min/median/p99/max/note），linux-x86_64=measured，macos-arm64/windows-x86_64=pending 行带 BW-15-04/BW-15-03 blocker 不编数字，语法检查拒 pending 带测量/未知后端 id/重复(platform,backend)/非数字帧时/测量平台缺任一出货后端行；client 门禁 861 绿+集成全绿）
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
 ### OPT-16-01 采集依赖与增量构建基线
@@ -10727,7 +10727,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 按操作系统测量 I/O、定时精度和图形后端。使用同一协议与功能套件复测各端行为。
 
 - [x] **OPT-15-01-01 采集各平台 I/O 及定时精度**。**验收** 统一负载下产出报告。（7081674）
-- [ ] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。
+- [x] **OPT-15-01-02 采集各图形后端性能**。**验收** 记录设备、驱动与帧时。(2026-11-26 lane/bw14-script-host 2f77126：crates/client/tests/render_backend_baseline.rs 按图形后端登记表采集三问——新树唯一出货像素后端=Device 下的软件光栅器（参考侧 D3D9/OpenGL/cocos2d/Awesomium 四后端是 BW-15-06-01 档事实非移植，登记表 BACKENDS 留位后端落地即插行）；设备面（结构断言）：SoftwareDevice 640×480 adapter=0 307200px RGBA8、帧序 1..=64 单设备对象、status=Ok 全程、leaked()=0；驱动面（probe 只印不断言）：软件光栅的"驱动"=执行环境（CPU 型号/逻辑核/OS/内核）文本入报告；帧时（probe 只印不断言）：固定镜头 check_device→step→present 64 帧逐帧 FRAME-TIME+FRAME-TAIL 汇总入 RENDER_BACKEND_OUT 报告（本机 p50 15.6-18.8ms/p99 24.2-25.1ms，随宿主漂移如实记录不断言）；结构契约：逐相邻帧摘要必异+帧 1..=8/64 复现 OPT-11-01-01 saved 钉（后端记录与端基线同一光栅不漂移）+帧 1/7/31/64 纯帧序号复现+复跑恒等；提交目录 tests/baseline/render-backend-baseline.tsv 十列（platform/backend/device/driver/frames/min/median/p99/max/note），linux-x86_64=measured，macos-arm64/windows-x86_64=pending 行带 BW-15-04/BW-15-03 blocker 不编数字，语法检查拒 pending 带测量/未知后端 id/重复(platform,backend)/非数字帧时/测量平台缺任一出货后端行；client 门禁 861 绿+集成全绿）
 - [ ] **OPT-15-01-03 检验平台针对性优化**。**验收** 相同功能和协议套件通过。
 
 ### OPT-16-01 采集依赖与增量构建基线
