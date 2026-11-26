@@ -79,7 +79,7 @@ BW-00-03-05）承载：
 | `urlrequest` | `crates/python-host/src/urlrequest.rs` | 内联 | BW-09 |
 | `jit_compiler`/`offline_processor`/`resourcechecker` | `crates/asset-pipeline/src/{jit_compiler,offline_processor,resource_checker}.rs` | 内联 | BW-13 |
 | `particle`/`camera`/`post_processing`/`web_render`（面） | `crates/client/src/{particle,camera,post_processing,web_render}.rs` | client 内联（865 测） | BW-11（`c5a70f6` 合入）；`web_render` 等三方 SDK 集成点在 `conditional_integrations.rs` 登记缺席（BW-11 SDK 矩阵） |
-| 编辑器核（`modeleditor_core`/`worldeditor` 核面） | `asset-pipeline::{model_editor,material_editor}` + `chunk::{chunk_editor,chunk_placer,snaps,undoredo,space_publish}` + `client::{animation_editor,particle_editor,simple_gui}` | 内联 | **部分**：编辑核面在树；GUI 外壳二进制未建（BW-15-03 Windows 构建入口） |
+| 编辑器核（`modeleditor_core`/`worldeditor` 核面） | `asset-pipeline::{model_editor,material_editor}` + `chunk::{chunk_editor,chunk_placer,snaps,undoredo,space_publish}` + `client::{animation_editor,particle_editor,simple_gui}` | 内联 | **部分**：编辑核面在树；GUI 窗口面未建（headless 外壳二进制 `apps/editor` 已建 `02bedbb`，Windows/macOS 入口待 BW-15-03/04） |
 | `common`（tools/common） | `chunk::undoredo` + `asset_pipeline::navmesh_processor` 等按面散布 | 内联 | **部分**：按面落位，无独立 crate |
 | `bwmachined` | `crates/server-runtime/src/machined.rs`（408 行，daemon+discovery 客户端）+ `crates/contracts/src/machined.rs`（3527 行消息契约） | 两模块均 `pub mod` 在活树（`lib.rs:54`/`lib.rs:7`）；server-runtime 内联 3 测（`#[test]` @295/328/356） | BW-05-01-06（`PORT_MACHINED=20018`，真实 SOCK_DGRAM 经 `platform::socket`）；2026-11-25 勘误：旧 §2 记「未建」已过时——模块与测试路径在树；RPM 布局基线见 BW-15-02-05 §2.2 |
 | `animationexporter` | `crates/asset-pipeline/src/animation_exporter.rs`（1791 行） | 内联（19 测） | `95a6df2` 在树；lane/bw15-platform `e299957`（2995 行+验收 2 测）同面双交付，主席择一 |
@@ -87,6 +87,8 @@ BW-00-03-05）承载：
 | `mayavisualexporter` | `crates/asset-pipeline/src/maya_visual_exporter.rs`（5893 行） | 内联（48 测） | `0538e8c` 在树；lane/bw15-platform `maya_exporter.rs`（`c37ba81`，MayaIo trait 面）同项双交付，主席择一 |
 | `bw_world_machine_import` | `crates/asset-pipeline/src/world_machine_import.rs`（1355 行） | 内联（19 测） | `a14093c`（=`8322e9d` cherry-pick）并轨入库（2026-11-26） |
 | `launcher`（tools/bwlauncher） | `crates/launcher` | `crates/launcher/tests.rs` + 内联（45 测） | `e18dc94`（BW-13-05-05，100%）并轨入库（2026-11-26） |
+| `client`（可执行入口，Linux 腿） | `apps/client`（`boundless-client`） | `crates/client/tests/map_display_baseline.rs`（2 测） | `02bedbb`（BW-15-02-03 固定地图显示：map_view+软件设备+TGA，六绑/8 帧二跑同） |
+| `modeleditor`/`worldeditor`（可执行外壳，Linux 腿） | `apps/editor`（`boundless-editor`） | `apps/editor/tests/edit_reload.rs`（2 测） | `02bedbb`（BW-15-02-03 固定地图编辑：ed_save 移 tree00 模型+重载验证，二跑逐字节同；Windows/macOS 外壳仍待 BW-15-03/04） |
 
 ### 1.5 并轨台账（2026-11-26 清空）
 
@@ -100,8 +102,11 @@ exporter 族个别目标存在 lane 候选双交付（animation `e299957`、maya
 | 原版目标 | 计划归属 | 解锁项 | 现状 |
 |---|---|---|---|
 | `appmgr`/`moo`/`romp`/`chunk_loading`/`model`/`speedtree`/`ual`/`gizmo`/`guimanager`/`guitabs`/`controls`/`input`/`duplo`/`navigation_recast`/`connection`/`connection_model`/`bwentity`/`delegate_interface`/`visual_manipulator`/`ashes` | `crates/`（客户端/渲染/工具库） | BW-11 / BW-13 | 未建（`moo` 的设备生命周期面已由 `crates/client/src/device` 等建模，完整渲染器待 BW-11；`navigation_recast` 用户挂起 BW-10-05-03；三方 SDK 面 `fmodsound`/`scaleform`/`emptyvoip`/`memhook`/`open_automate` 在 `conditional_integrations.rs` 登记缺席） |
-| `modeleditor`/`worldeditor`/`worldeditor_ui`/`particle_editor`/`editor_shared`（GUI 外壳） | `apps/editor` | BW-15-03（Windows 构建入口） | 外壳未建；编辑核面已入库（§1.4） |
 | `bw_lsp`/`visual_studio`/`exporter_common` | `crates/`（工具） | BW-13 | 未建 |
+
+（编辑器 GUI 外壳行已于 2026-11-26 自 §2 迁出：`apps/editor` 可执行外壳
+`02bedbb` 建成（headless Linux 腿），GUI 窗口面/Windows·macOS 入口余量并入
+§1.4 该行备注。）
 
 ## 3. 覆盖与卡点
 
@@ -116,11 +121,13 @@ exporter 族个别目标存在 lane 候选双交付（animation `e299957`、maya
   8 个角色目标（单二进制面）、3 个扩展目标（模块面）、`client`/`process_defs`/`plugin_system`。
 - **并轨清空（§1.5，2026-11-26）**：原四行+`launcher` 全部入库迁 §1.4；仅余 exporter 族
   lane 候选双交付（animation `e299957`、maya `c37ba81`）待主席择一，不阻塞登记面。
-- **未建（§2）**：客户端/渲染/工具库残余、编辑器 GUI 外壳、
-  `bw_lsp`/`visual_studio`/`exporter_common`——**无模块与测试路径**，各随 BW-11/BW-13/BW-15 立项解锁。
-  （`bwmachined` 已于 2026-11-25 勘误迁入 §1.4——`server-runtime/src/machined.rs` daemon+discovery 在树。）
+- **未建（§2）**：客户端/渲染/工具库残余、
+  `bw_lsp`/`visual_studio`/`exporter_common`——**无模块与测试路径**，各随 BW-11/BW-13 立项解锁。
+  （`bwmachined` 已于 2026-11-25 勘误迁入 §1.4——`server-runtime/src/machined.rs` daemon+discovery 在树；
+  编辑器 GUI 外壳行已于 2026-11-26 迁入 §1.4——`apps/editor` 可执行外壳 `02bedbb` 建成，
+  Windows/macOS 入口仍待 BW-15-03/04。）
 - **部分**：3 个扩展（扩展内容）、`entitydef_script`（entity-script 导入面）、
-  `navgen`（Windows 入口）、编辑器核（GUI 外壳）——模块面已有，缺口见各行
+  `navgen`（Windows 入口）、编辑器核（GUI 窗口面）——模块面已有，缺口见各行
   （`db` 后端矩阵已收窄：SQLite/PostgreSQL 在树，MySQL/XML 面=store 四模式 TSV）。
 
 **卡点**：§2 目标的「模块与测试路径」依赖对应席位立项（BW-11/BW-13/BW-15）；§1.2
