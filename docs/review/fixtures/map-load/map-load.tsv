@@ -1,0 +1,11 @@
+space_settings_ns_avg	101818
+one_shot_load_ms	12.342
+reload_load_ms	11.649
+reload_to_oneshot_ratio	0.94
+cached_lookup_ms	0.067
+lookup_to_load_ratio	0.0054
+workers	4
+parallel_load_ms	4.550
+parallel_speedup	2.71
+chunks	16
+map_load_wall_ms	93.453
