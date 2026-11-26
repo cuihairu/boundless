@@ -1,0 +1,41 @@
+fixture	stampede_2048 (64 downloads for drain_256; payload 16B + desc 1B; budget 24B/download)
+workload	drain_256
+into_chunks_median_us_r1	62.211
+into_chunks_median_us_r2	59.968
+into_chunks_median_us_r3	64.548
+per_download_vec_median_us_r1	87.911
+per_download_vec_median_us_r2	83.313
+per_download_vec_median_us_r3	93.829
+ratio_median_r1	0.708
+ratio_median_r2	0.720
+ratio_median_r3	0.688
+workload	drain_2048
+into_chunks_median_us_r1	566.12
+into_chunks_median_us_r2	557.16
+into_chunks_median_us_r3	785.97
+per_download_vec_median_us_r1	636.87
+per_download_vec_median_us_r2	648.32
+per_download_vec_median_us_r3	722.54
+ratio_median_r1	0.889
+ratio_median_r2	0.859
+ratio_median_r3	1.088
+note_r3	fleet-concurrent build load (load avg 16.9-38.7, 7-55 cargo/rustc processes); rounds 1-2 are the comparison
+bench_env	taskset -c 6 pinned, criterion 0.8.2, warm-up 1s, measurement 2s, fresh process per round, --bench flag required for benchmark mode
+metric	alloc drain-only stampede_2048
+into_chunks_allocs	2069
+per_download_vec_allocs	4117
+into_chunks_bytes	311152
+per_download_vec_bytes	573296
+into_chunks_peak_live	191560
+per_download_vec_peak_live	191704
+metric	alloc build+drain stampede_2048
+into_chunks_allocs	10961
+per_download_vec_allocs	13009
+into_chunks_bytes	940976
+per_download_vec_bytes	1203120
+into_chunks_peak_live	381010
+per_download_vec_peak_live	381010
+metric	retained_mut_probe (rejected premise)
+retain_mut_drain_2048_us_r1	771.81
+remove_at_drain_2048_us_r1	668.79
+verdict	remove-at-head is O(1) in the in-order drain (VecDeque::remove shifts the shorter side); retain_mut measured 15% slower and was reverted
