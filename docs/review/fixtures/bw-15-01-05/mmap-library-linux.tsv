@@ -1,0 +1,7 @@
+map_file_us	34
+map_bytes	65536
+anon_len	4096
+lib_open_us	22
+symbol_us	3
+symbol_found	malloc
+host	linux-x86_64
