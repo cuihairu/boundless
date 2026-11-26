@@ -121,6 +121,7 @@ dependencies = [
  "regex",
  "resources",
  "terrain",
+ "waypoint-gen",
 ]
 
 [[package]]

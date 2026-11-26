@@ -71,7 +71,7 @@ pub unsafe fn install(module: *mut capi::PyObject, component: &str) {
     // chain (`script_bigworld.cpp:2140-2143`) -- and `Proxy` needs the
     // finished `Base` type object for its `tp_base`.
     if manifest::carries_role(manifest::Scope::BaseApp, component) {
-        let base = type_object("BigWorld.Base", |spec| spec.subclassable());
+        let base = type_object("BigWorld.Base", crate::entity_runtime::shape_base);
         // SAFETY: the module is live and the names are NUL-terminated keys.
         unsafe {
             set_attr(module, c"Base", &base);
@@ -83,7 +83,7 @@ pub unsafe fn install(module: *mut capi::PyObject, component: &str) {
     // (`script_bigworld.cpp:987`), the cell app (`cellapp.cpp:3889`) and
     // the bots tool (`entity_type.cpp:110`) each from their own source.
     if manifest::carries_role(manifest::Scope::EntityApps, component) {
-        let entity = type_object("BigWorld.Entity", |spec| spec.subclassable());
+        let entity = type_object("BigWorld.Entity", crate::entity_runtime::shape_entity);
         // SAFETY: the module is live.
         unsafe {
             set_attr(module, c"Entity", &entity);

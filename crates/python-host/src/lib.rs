@@ -19,6 +19,7 @@ pub mod billing;
 pub mod binding;
 pub mod bw_profile;
 pub mod capi;
+pub mod entity_runtime;
 pub mod gil;
 pub mod import_paths;
 pub mod init_time_job;
