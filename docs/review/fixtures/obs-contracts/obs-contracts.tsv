@@ -1,0 +1,17 @@
+records_written	12
+backpressure_rolls	3
+segments_active_after	1
+active_files_contract	1
+disk_readback_match	1
+rolled_segment_records	3
+query_results	12
+query_interpolated_match	1
+query_pid_filter_rejects	1
+query_severity_filter_rejects	1
+query_unknown_category_errors	1
+query_backwards_matches	12
+watcher_query_contract	1
+watcher_rejects_bad_parse	1
+eventstats_mount_contract	1
+eventstats_mount_children	4
+rerun_wall_ms	0.889
