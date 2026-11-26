@@ -2916,7 +2916,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。deliver 80c9b88 **FLAG 双交付未决**：bw14-script-host `1fd4739`+勾 `bb1e3ea`（crates/asset-pipeline/tests/build_baselines.rs 377 行+fixtures/baseline 固定资产集 12 文件 48293 字节——冷构建：shipped BatchCompiler+ConversionRule+计数 Converter，零失败/恰 12 次转换调用/12 输出字节等于源/每源 {source}.deps sidecar；增量：零改动重建计数器仍 12=零重转+输出与冷构建逐字节同（探针冷 17.85ms→增量 0.30ms ≈60× 只印不断言）；转换器调用计数器才是「converted」可观测面=管线汇总标签虚高发现）；主席择一，未决前行保持本勾态。
 - [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。deliver fb80b66 **FLAG 双交付未决**：bw14-script-host `663dc8c`（前置 `604fe59` 修增量基线 fresh session）+勾 `97817db`（crates/asset-pipeline/tests/cache_concurrency_evaluation.rs 884 行——缓存六走共享一 cache：冷 12 转换缓存 36 entries/flip miss 12 重转 48 entries/restore hit 零转换零写，二级依赖 palette 改动走 hash miss 链；并发面+ContentAddressableCache 直驱；发现=fresh pipeline session 是增量基线正确性前提，探针 CACHE-EVAL 只印不断言）；主席择一，未决前行保持本勾态。
 - [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。deliver 4330bd7 **FLAG 双交付未决**：bw14-script-host `827ed8e`+勾 `00109d2`（crates/chunk/tests/editor_map_load_opt.rs 383 行——12×12 大合成 space 144 块，shipped `BwResource::open_section` LRU section cache（OPT-04-01-02/OPT-10-01-02）对裸 read+parse resolver 首开填满/后续命中；结构恒等=绑定文件同序/块 item 标签资源同/focus-query 命中同块标识/缓存解析等于裸解析；墙钟+分配数 `MAP-EDIT` 只印不断言（样本 raw 28.91/16.69ms 各 24319 allocs、cached cold 28.07ms 34844 allocs/重开 11.02ms 19854 allocs），契约=相等断言+恰 144 miss/144 hit 且 65112 字节在 100 KiB 预算内+144 解析逐字节相等；发现=硬预算下全序扫描零命中，此夹具非那种扫描）；主席择一，未决前行保持本勾态。
-- [ ] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。
+- [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。deliver bb45885
 
 ### OPT-14-01 发布包尺寸及首次运行
 
@@ -4480,7 +4480,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。deliver 80c9b88 **FLAG 双交付未决**：bw14-script-host `1fd4739`+勾 `bb1e3ea`（crates/asset-pipeline/tests/build_baselines.rs 377 行+fixtures/baseline 固定资产集 12 文件 48293 字节——冷构建：shipped BatchCompiler+ConversionRule+计数 Converter，零失败/恰 12 次转换调用/12 输出字节等于源/每源 {source}.deps sidecar；增量：零改动重建计数器仍 12=零重转+输出与冷构建逐字节同（探针冷 17.85ms→增量 0.30ms ≈60× 只印不断言）；转换器调用计数器才是「converted」可观测面=管线汇总标签虚高发现）；主席择一，未决前行保持本勾态。
 - [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。deliver fb80b66 **FLAG 双交付未决**：bw14-script-host `663dc8c`（前置 `604fe59` 修增量基线 fresh session）+勾 `97817db`（crates/asset-pipeline/tests/cache_concurrency_evaluation.rs 884 行——缓存六走共享一 cache：冷 12 转换缓存 36 entries/flip miss 12 重转 48 entries/restore hit 零转换零写，二级依赖 palette 改动走 hash miss 链；并发面+ContentAddressableCache 直驱；发现=fresh pipeline session 是增量基线正确性前提，探针 CACHE-EVAL 只印不断言）；主席择一，未决前行保持本勾态。
 - [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。deliver 4330bd7 **FLAG 双交付未决**：bw14-script-host `827ed8e`+勾 `00109d2`（crates/chunk/tests/editor_map_load_opt.rs 383 行——12×12 大合成 space 144 块，shipped `BwResource::open_section` LRU section cache（OPT-04-01-02/OPT-10-01-02）对裸 read+parse resolver 首开填满/后续命中；结构恒等=绑定文件同序/块 item 标签资源同/focus-query 命中同块标识/缓存解析等于裸解析；墙钟+分配数 `MAP-EDIT` 只印不断言（样本 raw 28.91/16.69ms 各 24319 allocs、cached cold 28.07ms 34844 allocs/重开 11.02ms 19854 allocs），契约=相等断言+恰 144 miss/144 hit 且 65112 字节在 100 KiB 预算内+144 解析逐字节相等；发现=硬预算下全序扫描零命中，此夹具非那种扫描）；主席择一，未决前行保持本勾态。
-- [ ] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。
+- [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。deliver bb45885
 
 ### OPT-14-01 发布包尺寸及首次运行
 
@@ -6005,7 +6005,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。deliver 80c9b88 **FLAG 双交付未决**：bw14-script-host `1fd4739`+勾 `bb1e3ea`（crates/asset-pipeline/tests/build_baselines.rs 377 行+fixtures/baseline 固定资产集 12 文件 48293 字节——冷构建：shipped BatchCompiler+ConversionRule+计数 Converter，零失败/恰 12 次转换调用/12 输出字节等于源/每源 {source}.deps sidecar；增量：零改动重建计数器仍 12=零重转+输出与冷构建逐字节同（探针冷 17.85ms→增量 0.30ms ≈60× 只印不断言）；转换器调用计数器才是「converted」可观测面=管线汇总标签虚高发现）；主席择一，未决前行保持本勾态。
 - [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。deliver fb80b66 **FLAG 双交付未决**：bw14-script-host `663dc8c`（前置 `604fe59` 修增量基线 fresh session）+勾 `97817db`（crates/asset-pipeline/tests/cache_concurrency_evaluation.rs 884 行——缓存六走共享一 cache：冷 12 转换缓存 36 entries/flip miss 12 重转 48 entries/restore hit 零转换零写，二级依赖 palette 改动走 hash miss 链；并发面+ContentAddressableCache 直驱；发现=fresh pipeline session 是增量基线正确性前提，探针 CACHE-EVAL 只印不断言）；主席择一，未决前行保持本勾态。
 - [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。deliver 4330bd7 **FLAG 双交付未决**：bw14-script-host `827ed8e`+勾 `00109d2`（crates/chunk/tests/editor_map_load_opt.rs 383 行——12×12 大合成 space 144 块，shipped `BwResource::open_section` LRU section cache（OPT-04-01-02/OPT-10-01-02）对裸 read+parse resolver 首开填满/后续命中；结构恒等=绑定文件同序/块 item 标签资源同/focus-query 命中同块标识/缓存解析等于裸解析；墙钟+分配数 `MAP-EDIT` 只印不断言（样本 raw 28.91/16.69ms 各 24319 allocs、cached cold 28.07ms 34844 allocs/重开 11.02ms 19854 allocs），契约=相等断言+恰 144 miss/144 hit 且 65112 字节在 100 KiB 预算内+144 解析逐字节相等；发现=硬预算下全序扫描零命中，此夹具非那种扫描）；主席择一，未决前行保持本勾态。
-- [ ] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。
+- [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。deliver bb45885
 
 ### OPT-14-01 发布包尺寸及首次运行
 
@@ -7530,7 +7530,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。deliver 80c9b88 **FLAG 双交付未决**：bw14-script-host `1fd4739`+勾 `bb1e3ea`（crates/asset-pipeline/tests/build_baselines.rs 377 行+fixtures/baseline 固定资产集 12 文件 48293 字节——冷构建：shipped BatchCompiler+ConversionRule+计数 Converter，零失败/恰 12 次转换调用/12 输出字节等于源/每源 {source}.deps sidecar；增量：零改动重建计数器仍 12=零重转+输出与冷构建逐字节同（探针冷 17.85ms→增量 0.30ms ≈60× 只印不断言）；转换器调用计数器才是「converted」可观测面=管线汇总标签虚高发现）；主席择一，未决前行保持本勾态。
 - [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。deliver fb80b66 **FLAG 双交付未决**：bw14-script-host `663dc8c`（前置 `604fe59` 修增量基线 fresh session）+勾 `97817db`（crates/asset-pipeline/tests/cache_concurrency_evaluation.rs 884 行——缓存六走共享一 cache：冷 12 转换缓存 36 entries/flip miss 12 重转 48 entries/restore hit 零转换零写，二级依赖 palette 改动走 hash miss 链；并发面+ContentAddressableCache 直驱；发现=fresh pipeline session 是增量基线正确性前提，探针 CACHE-EVAL 只印不断言）；主席择一，未决前行保持本勾态。
 - [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。deliver 4330bd7 **FLAG 双交付未决**：bw14-script-host `827ed8e`+勾 `00109d2`（crates/chunk/tests/editor_map_load_opt.rs 383 行——12×12 大合成 space 144 块，shipped `BwResource::open_section` LRU section cache（OPT-04-01-02/OPT-10-01-02）对裸 read+parse resolver 首开填满/后续命中；结构恒等=绑定文件同序/块 item 标签资源同/focus-query 命中同块标识/缓存解析等于裸解析；墙钟+分配数 `MAP-EDIT` 只印不断言（样本 raw 28.91/16.69ms 各 24319 allocs、cached cold 28.07ms 34844 allocs/重开 11.02ms 19854 allocs），契约=相等断言+恰 144 miss/144 hit 且 65112 字节在 100 KiB 预算内+144 解析逐字节相等；发现=硬预算下全序扫描零命中，此夹具非那种扫描）；主席择一，未决前行保持本勾态。
-- [ ] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。
+- [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。deliver bb45885
 
 ### OPT-14-01 发布包尺寸及首次运行
 
@@ -9094,7 +9094,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。deliver 80c9b88 **FLAG 双交付未决**：bw14-script-host `1fd4739`+勾 `bb1e3ea`（crates/asset-pipeline/tests/build_baselines.rs 377 行+fixtures/baseline 固定资产集 12 文件 48293 字节——冷构建：shipped BatchCompiler+ConversionRule+计数 Converter，零失败/恰 12 次转换调用/12 输出字节等于源/每源 {source}.deps sidecar；增量：零改动重建计数器仍 12=零重转+输出与冷构建逐字节同（探针冷 17.85ms→增量 0.30ms ≈60× 只印不断言）；转换器调用计数器才是「converted」可观测面=管线汇总标签虚高发现）；主席择一，未决前行保持本勾态。
 - [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。deliver fb80b66 **FLAG 双交付未决**：bw14-script-host `663dc8c`（前置 `604fe59` 修增量基线 fresh session）+勾 `97817db`（crates/asset-pipeline/tests/cache_concurrency_evaluation.rs 884 行——缓存六走共享一 cache：冷 12 转换缓存 36 entries/flip miss 12 重转 48 entries/restore hit 零转换零写，二级依赖 palette 改动走 hash miss 链；并发面+ContentAddressableCache 直驱；发现=fresh pipeline session 是增量基线正确性前提，探针 CACHE-EVAL 只印不断言）；主席择一，未决前行保持本勾态。
 - [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。deliver 4330bd7 **FLAG 双交付未决**：bw14-script-host `827ed8e`+勾 `00109d2`（crates/chunk/tests/editor_map_load_opt.rs 383 行——12×12 大合成 space 144 块，shipped `BwResource::open_section` LRU section cache（OPT-04-01-02/OPT-10-01-02）对裸 read+parse resolver 首开填满/后续命中；结构恒等=绑定文件同序/块 item 标签资源同/focus-query 命中同块标识/缓存解析等于裸解析；墙钟+分配数 `MAP-EDIT` 只印不断言（样本 raw 28.91/16.69ms 各 24319 allocs、cached cold 28.07ms 34844 allocs/重开 11.02ms 19854 allocs），契约=相等断言+恰 144 miss/144 hit 且 65112 字节在 100 KiB 预算内+144 解析逐字节相等；发现=硬预算下全序扫描零命中，此夹具非那种扫描）；主席择一，未决前行保持本勾态。
-- [ ] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。
+- [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。deliver bb45885
 
 ### OPT-14-01 发布包尺寸及首次运行
 
@@ -10619,7 +10619,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-13-01-01 记录冷构建、增量与编辑器加载**。**验收** 形成固定资产基线。deliver 80c9b88 **FLAG 双交付未决**：bw14-script-host `1fd4739`+勾 `bb1e3ea`（crates/asset-pipeline/tests/build_baselines.rs 377 行+fixtures/baseline 固定资产集 12 文件 48293 字节——冷构建：shipped BatchCompiler+ConversionRule+计数 Converter，零失败/恰 12 次转换调用/12 输出字节等于源/每源 {source}.deps sidecar；增量：零改动重建计数器仍 12=零重转+输出与冷构建逐字节同（探针冷 17.85ms→增量 0.30ms ≈60× 只印不断言）；转换器调用计数器才是「converted」可观测面=管线汇总标签虚高发现）；主席择一，未决前行保持本勾态。
 - [x] **OPT-13-01-02 评估缓存与并发转换**。**验收** 比较冷/热耗时。deliver fb80b66 **FLAG 双交付未决**：bw14-script-host `663dc8c`（前置 `604fe59` 修增量基线 fresh session）+勾 `97817db`（crates/asset-pipeline/tests/cache_concurrency_evaluation.rs 884 行——缓存六走共享一 cache：冷 12 转换缓存 36 entries/flip miss 12 重转 48 entries/restore hit 零转换零写，二级依赖 palette 改动走 hash miss 链；并发面+ContentAddressableCache 直驱；发现=fresh pipeline session 是增量基线正确性前提，探针 CACHE-EVAL 只印不断言）；主席择一，未决前行保持本勾态。
 - [x] **OPT-13-01-03 优化地图载入**。**验收** 比较编辑等待时间。deliver 4330bd7 **FLAG 双交付未决**：bw14-script-host `827ed8e`+勾 `00109d2`（crates/chunk/tests/editor_map_load_opt.rs 383 行——12×12 大合成 space 144 块，shipped `BwResource::open_section` LRU section cache（OPT-04-01-02/OPT-10-01-02）对裸 read+parse resolver 首开填满/后续命中；结构恒等=绑定文件同序/块 item 标签资源同/focus-query 命中同块标识/缓存解析等于裸解析；墙钟+分配数 `MAP-EDIT` 只印不断言（样本 raw 28.91/16.69ms 各 24319 allocs、cached cold 28.07ms 34844 allocs/重开 11.02ms 19854 allocs），契约=相等断言+恰 144 miss/144 hit 且 65112 字节在 100 KiB 预算内+144 解析逐字节相等；发现=硬预算下全序扫描零命中，此夹具非那种扫描）；主席择一，未决前行保持本勾态。
-- [ ] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。
+- [x] **OPT-13-01-04 复核资产哈希和格式**。**验收** 可复现且原版可读。deliver bb45885
 
 ### OPT-14-01 发布包尺寸及首次运行
 
