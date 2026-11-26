@@ -2898,7 +2898,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。 (5a80a78)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `09ec792`（`877e016`：render_baseline_opt.rs 三端固定镜头 64 帧帧时间逐帧落档+显存计数分配器结构账 1228848B 恒不涨）；主席择一，未决前行保持本勾态。
 - [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。 (909bc11)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `cc9797e`（`5313db6`：render_batch_opt.rs 双面上传评估——批量候选 481 写/帧 vs shipped 307200 写/帧=7-8× 省，三端各 64 帧逐帧全像素向量相等+摘要相等）；主席择一，未决前行保持本勾态。
-- [ ] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。他席已交付未进 main：bw14-script-host `5535b86`+勾 `b384a1e`（crates/client/tests/render_stream_sched_opt.rs 378 行——基线固定镜头走 shipped FrameLoop::run_frame 相序断言 Tick→UpdateAnimations→Draw，六个排程切图帧走 load_and_bind 六批流进活空间；分配账即结构识别：切图帧 allocs 954/32/32/32/32/128 严格大于全部稳帧 ≤9，总 1729 allocs/峰值 1281573 复跑恒等；夹具发现=第六绑 chunk 是分隔块标识符是路径非格胞）；主席并入后按勾行态处理，本行保持开。
+- [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。 (0f4963c)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `b384a1e`（`5535b86`：render_stream_sched_opt.rs 378 行——基线固定镜头走 shipped FrameLoop::run_frame 相序断言、六排程切图帧 load_and_bind 六批流进，分配账结构识别切图帧 allocs 954/32/32/32/32/128 严格大于稳帧 ≤9）；主席择一，未决前行保持本勾态。
 - [ ] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。他席已交付未进 main：bw14-script-host `96d8f67`+勾 `7ddaae1`（crates/client/tests/render_visual_rerun.rs 309 行——三端复跑 OPT-11-01-01 saved 基线固定镜头 64 帧，钉帧 1..=8+64 摘要逐帧对上 saved 记录首走+复走双验，容差=复走间钉帧逐像素 differing_pixels=0 位级相等；连批量候选面也同满足；截图 ScreenCopy::capture→TGA 钉帧 1/8/64 逐帧 18 字节头+1228800 帧体三端字节相等+二遍复跑恒等；OPT-11-01 簇收官四面互相咬合）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-12-01 各观测通道开销
@@ -4462,7 +4462,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。 (5a80a78)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `09ec792`（`877e016`：render_baseline_opt.rs 三端固定镜头 64 帧帧时间逐帧落档+显存计数分配器结构账 1228848B 恒不涨）；主席择一，未决前行保持本勾态。
 - [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。 (909bc11)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `cc9797e`（`5313db6`：render_batch_opt.rs 双面上传评估——批量候选 481 写/帧 vs shipped 307200 写/帧=7-8× 省，三端各 64 帧逐帧全像素向量相等+摘要相等）；主席择一，未决前行保持本勾态。
-- [ ] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。他席已交付未进 main：bw14-script-host `5535b86`+勾 `b384a1e`（crates/client/tests/render_stream_sched_opt.rs 378 行——基线固定镜头走 shipped FrameLoop::run_frame 相序断言 Tick→UpdateAnimations→Draw，六个排程切图帧走 load_and_bind 六批流进活空间；分配账即结构识别：切图帧 allocs 954/32/32/32/32/128 严格大于全部稳帧 ≤9，总 1729 allocs/峰值 1281573 复跑恒等；夹具发现=第六绑 chunk 是分隔块标识符是路径非格胞）；主席并入后按勾行态处理，本行保持开。
+- [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。 (0f4963c)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `b384a1e`（`5535b86`：render_stream_sched_opt.rs 378 行——基线固定镜头走 shipped FrameLoop::run_frame 相序断言、六排程切图帧 load_and_bind 六批流进，分配账结构识别切图帧 allocs 954/32/32/32/32/128 严格大于稳帧 ≤9）；主席择一，未决前行保持本勾态。
 - [ ] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。他席已交付未进 main：bw14-script-host `96d8f67`+勾 `7ddaae1`（crates/client/tests/render_visual_rerun.rs 309 行——三端复跑 OPT-11-01-01 saved 基线固定镜头 64 帧，钉帧 1..=8+64 摘要逐帧对上 saved 记录首走+复走双验，容差=复走间钉帧逐像素 differing_pixels=0 位级相等；连批量候选面也同满足；截图 ScreenCopy::capture→TGA 钉帧 1/8/64 逐帧 18 字节头+1228800 帧体三端字节相等+二遍复跑恒等；OPT-11-01 簇收官四面互相咬合）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-12-01 各观测通道开销
@@ -5987,7 +5987,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。 (5a80a78)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `09ec792`（`877e016`：render_baseline_opt.rs 三端固定镜头 64 帧帧时间逐帧落档+显存计数分配器结构账 1228848B 恒不涨）；主席择一，未决前行保持本勾态。
 - [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。 (909bc11)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `cc9797e`（`5313db6`：render_batch_opt.rs 双面上传评估——批量候选 481 写/帧 vs shipped 307200 写/帧=7-8× 省，三端各 64 帧逐帧全像素向量相等+摘要相等）；主席择一，未决前行保持本勾态。
-- [ ] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。他席已交付未进 main：bw14-script-host `5535b86`+勾 `b384a1e`（crates/client/tests/render_stream_sched_opt.rs 378 行——基线固定镜头走 shipped FrameLoop::run_frame 相序断言 Tick→UpdateAnimations→Draw，六个排程切图帧走 load_and_bind 六批流进活空间；分配账即结构识别：切图帧 allocs 954/32/32/32/32/128 严格大于全部稳帧 ≤9，总 1729 allocs/峰值 1281573 复跑恒等；夹具发现=第六绑 chunk 是分隔块标识符是路径非格胞）；主席并入后按勾行态处理，本行保持开。
+- [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。 (0f4963c)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `b384a1e`（`5535b86`：render_stream_sched_opt.rs 378 行——基线固定镜头走 shipped FrameLoop::run_frame 相序断言、六排程切图帧 load_and_bind 六批流进，分配账结构识别切图帧 allocs 954/32/32/32/32/128 严格大于稳帧 ≤9）；主席择一，未决前行保持本勾态。
 - [ ] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。他席已交付未进 main：bw14-script-host `96d8f67`+勾 `7ddaae1`（crates/client/tests/render_visual_rerun.rs 309 行——三端复跑 OPT-11-01-01 saved 基线固定镜头 64 帧，钉帧 1..=8+64 摘要逐帧对上 saved 记录首走+复走双验，容差=复走间钉帧逐像素 differing_pixels=0 位级相等；连批量候选面也同满足；截图 ScreenCopy::capture→TGA 钉帧 1/8/64 逐帧 18 字节头+1228800 帧体三端字节相等+二遍复跑恒等；OPT-11-01 簇收官四面互相咬合）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-12-01 各观测通道开销
@@ -7512,7 +7512,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。 (5a80a78)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `09ec792`（`877e016`：render_baseline_opt.rs 三端固定镜头 64 帧帧时间逐帧落档+显存计数分配器结构账 1228848B 恒不涨）；主席择一，未决前行保持本勾态。
 - [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。 (909bc11)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `cc9797e`（`5313db6`：render_batch_opt.rs 双面上传评估——批量候选 481 写/帧 vs shipped 307200 写/帧=7-8× 省，三端各 64 帧逐帧全像素向量相等+摘要相等）；主席择一，未决前行保持本勾态。
-- [ ] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。他席已交付未进 main：bw14-script-host `5535b86`+勾 `b384a1e`（crates/client/tests/render_stream_sched_opt.rs 378 行——基线固定镜头走 shipped FrameLoop::run_frame 相序断言 Tick→UpdateAnimations→Draw，六个排程切图帧走 load_and_bind 六批流进活空间；分配账即结构识别：切图帧 allocs 954/32/32/32/32/128 严格大于全部稳帧 ≤9，总 1729 allocs/峰值 1281573 复跑恒等；夹具发现=第六绑 chunk 是分隔块标识符是路径非格胞）；主席并入后按勾行态处理，本行保持开。
+- [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。 (0f4963c)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `b384a1e`（`5535b86`：render_stream_sched_opt.rs 378 行——基线固定镜头走 shipped FrameLoop::run_frame 相序断言、六排程切图帧 load_and_bind 六批流进，分配账结构识别切图帧 allocs 954/32/32/32/32/128 严格大于稳帧 ≤9）；主席择一，未决前行保持本勾态。
 - [ ] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。他席已交付未进 main：bw14-script-host `96d8f67`+勾 `7ddaae1`（crates/client/tests/render_visual_rerun.rs 309 行——三端复跑 OPT-11-01-01 saved 基线固定镜头 64 帧，钉帧 1..=8+64 摘要逐帧对上 saved 记录首走+复走双验，容差=复走间钉帧逐像素 differing_pixels=0 位级相等；连批量候选面也同满足；截图 ScreenCopy::capture→TGA 钉帧 1/8/64 逐帧 18 字节头+1228800 帧体三端字节相等+二遍复跑恒等；OPT-11-01 簇收官四面互相咬合）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-12-01 各观测通道开销
@@ -9076,7 +9076,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。 (5a80a78)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `09ec792`（`877e016`：render_baseline_opt.rs 三端固定镜头 64 帧帧时间逐帧落档+显存计数分配器结构账 1228848B 恒不涨）；主席择一，未决前行保持本勾态。
 - [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。 (909bc11)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `cc9797e`（`5313db6`：render_batch_opt.rs 双面上传评估——批量候选 481 写/帧 vs shipped 307200 写/帧=7-8× 省，三端各 64 帧逐帧全像素向量相等+摘要相等）；主席择一，未决前行保持本勾态。
-- [ ] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。他席已交付未进 main：bw14-script-host `5535b86`+勾 `b384a1e`（crates/client/tests/render_stream_sched_opt.rs 378 行——基线固定镜头走 shipped FrameLoop::run_frame 相序断言 Tick→UpdateAnimations→Draw，六个排程切图帧走 load_and_bind 六批流进活空间；分配账即结构识别：切图帧 allocs 954/32/32/32/32/128 严格大于全部稳帧 ≤9，总 1729 allocs/峰值 1281573 复跑恒等；夹具发现=第六绑 chunk 是分隔块标识符是路径非格胞）；主席并入后按勾行态处理，本行保持开。
+- [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。 (0f4963c)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `b384a1e`（`5535b86`：render_stream_sched_opt.rs 378 行——基线固定镜头走 shipped FrameLoop::run_frame 相序断言、六排程切图帧 load_and_bind 六批流进，分配账结构识别切图帧 allocs 954/32/32/32/32/128 严格大于稳帧 ≤9）；主席择一，未决前行保持本勾态。
 - [ ] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。他席已交付未进 main：bw14-script-host `96d8f67`+勾 `7ddaae1`（crates/client/tests/render_visual_rerun.rs 309 行——三端复跑 OPT-11-01-01 saved 基线固定镜头 64 帧，钉帧 1..=8+64 摘要逐帧对上 saved 记录首走+复走双验，容差=复走间钉帧逐像素 differing_pixels=0 位级相等；连批量候选面也同满足；截图 ScreenCopy::capture→TGA 钉帧 1/8/64 逐帧 18 字节头+1228800 帧体三端字节相等+二遍复跑恒等；OPT-11-01 簇收官四面互相咬合）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-12-01 各观测通道开销
@@ -10601,7 +10601,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-11-01-01 记录三端固定镜头基线**。**验收** 保存帧时间和显存。 (5a80a78)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `09ec792`（`877e016`：render_baseline_opt.rs 三端固定镜头 64 帧帧时间逐帧落档+显存计数分配器结构账 1228848B 恒不涨）；主席择一，未决前行保持本勾态。
 - [x] **OPT-11-01-02 评估上传与渲染批次**。**验收** 按端对比帧时间。 (909bc11)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `cc9797e`（`5313db6`：render_batch_opt.rs 双面上传评估——批量候选 481 写/帧 vs shipped 307200 写/帧=7-8× 省，三端各 64 帧逐帧全像素向量相等+摘要相等）；主席择一，未决前行保持本勾态。
-- [ ] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。他席已交付未进 main：bw14-script-host `5535b86`+勾 `b384a1e`（crates/client/tests/render_stream_sched_opt.rs 378 行——基线固定镜头走 shipped FrameLoop::run_frame 相序断言 Tick→UpdateAnimations→Draw，六个排程切图帧走 load_and_bind 六批流进活空间；分配账即结构识别：切图帧 allocs 954/32/32/32/32/128 严格大于全部稳帧 ≤9，总 1729 allocs/峰值 1281573 复跑恒等；夹具发现=第六绑 chunk 是分隔块标识符是路径非格胞）；主席并入后按勾行态处理，本行保持开。
+- [x] **OPT-11-01-03 评估资源流和帧调度**。**验收** 报告切图和长帧。 (0f4963c)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `b384a1e`（`5535b86`：render_stream_sched_opt.rs 378 行——基线固定镜头走 shipped FrameLoop::run_frame 相序断言、六排程切图帧 load_and_bind 六批流进，分配账结构识别切图帧 allocs 954/32/32/32/32/128 严格大于稳帧 ≤9）；主席择一，未决前行保持本勾态。
 - [ ] **OPT-11-01-04 复跑视觉回归**。**验收** 固定镜头满足容差。他席已交付未进 main：bw14-script-host `96d8f67`+勾 `7ddaae1`（crates/client/tests/render_visual_rerun.rs 309 行——三端复跑 OPT-11-01-01 saved 基线固定镜头 64 帧，钉帧 1..=8+64 摘要逐帧对上 saved 记录首走+复走双验，容差=复走间钉帧逐像素 differing_pixels=0 位级相等；连批量候选面也同满足；截图 ScreenCopy::capture→TGA 钉帧 1/8/64 逐帧 18 字节头+1228800 帧体三端字节相等+二遍复跑恒等；OPT-11-01 簇收官四面互相咬合）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-12-01 各观测通道开销
