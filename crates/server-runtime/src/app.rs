@@ -726,11 +726,15 @@ mod tests {
             &mercury_dispatcher,
         ))));
 
-        // One datagram from a fresh socket to the interface's port.
+        // One datagram from a fresh socket to the interface's port. The
+        // restored reference-shaped receive path validates the flags
+        // header first (`process_filtered_packet`), so the datagram
+        // carries a clear flags word ahead of its body.
         let mut sender = mercury::endpoint::Endpoint::new();
         sender.socket(platform::socket::SOCK_DGRAM);
+        let frame = [0u8, 0, b'p', b'i', b'n', b'g'];
         assert_eq!(
-            sender.sendto(b"\x00\x00ping", interface.address().port, LOOPBACK),
+            sender.sendto(&frame, interface.address().port, LOOPBACK),
             6,
             "the datagram is queued"
         );
@@ -738,7 +742,7 @@ mod tests {
         dispatcher.process_once(true);
         assert_eq!(
             sink.packets.borrow().as_slice(),
-            [b"\x00\x00ping".to_vec()],
+            [frame.to_vec()],
             "the pass delivered the datagram to the interface"
         );
     }
