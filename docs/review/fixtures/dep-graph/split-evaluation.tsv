@@ -1,0 +1,14 @@
+crates_before	29
+crates_after	30
+before_fanout	24
+after_fanout	6
+fanout_reduction	18
+after_dependents	boundless-server,db,db-postgres,mercury,server-runtime,test-support
+recompiled_foundation_run1	25
+seconds_foundation_run1	8.30
+recompiled_time-queue_run1	7
+seconds_time-queue_run1	6.79
+recompiled_time-queue_run2	7
+seconds_time-queue_run2	10.65
+best_wall_ratio	1.22
+recompiled_reduction	18
