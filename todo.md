@@ -2859,7 +2859,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
 - [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。(2026-11-26 lane/bw15-platform 5ec0620→main 4c29980+证据 afee8b2→fcfa88f：crates/load/src/login_baseline.rs 组合既有面记录三族数字——峰值=login hurricane online 序列最大值（seed 固定可复现）；拒绝率=FD 预算拒绝 login_refusal_rate=refused/(admitted+refused) 单列（与「发出后失败」分账，login_success_rate 仍参考 admitted/attempts 语义）；延迟=资源下载分块 tick 地板 ceil(payload/BUNDLE_BYTES)（参考 ServerDownloads::add_to_bundle 每 mini-tick 一 bundle 载荷）+队列驻留字节；**读法警告：离线面是模拟时间无墙钟 RTT，延迟=确定性地板非实测往返**；记录运行=保存夹具 login-hurricane.xml seed 20261123/FD 500×FD_PER_BOT+1/载荷 4096B→attempts 500/admitted 500/refused 177/online_peak 500/refusal_rate 0.26145/download_ticks 4/queue_bytes 4096，夹具 docs/review/fixtures/load/login-baseline.report.json；5 单测钉 ceil 分块/队列字节/峰值拒绝记录/seed 复现/预算拒绝臂；本席 main 树 load --lib 174 绿（含 login_baseline 6）)
-- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
+- [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。(2026-11-26 lane/bw15-platform 083c598→main 790332b+证据 83f6caa：fleet.rs botsForLogOnRetry_ 排水从每条到期 bot 单独 Vec::remove 改单遍分区（mem::take 遍历 log_on_retry_time()<now 到期者 log_on() 后推回，O(n²)→O(n)，队序/重登序不变固定 seed 派遣序不变）；新测钉 4 到期条队序重登+1 留队；bench login_surge.rs parked 64/512 同刻到期单 tick 排水+Throughput::Elements；A/B 对照 taskset -c 6 钉核交错 6 轮：drain_64 13.93→7.39µs 0.530（1.9×）、drain_512 776→80µs 0.104（9.65×）每轮候选全优无交叉=效应远超噪声；本席 main 树 bench 跑通（drain_512 ~90µs 级）load --lib 175 绿，clippy 净，smoke.rs 三处 expect(&format!) 被遮 lint 顺手清（main 已有此修 auto-merge 消重）)
 - [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
 
@@ -4440,7 +4440,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
 - [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。(2026-11-26 lane/bw15-platform 5ec0620→main 4c29980+证据 afee8b2→fcfa88f：crates/load/src/login_baseline.rs 组合既有面记录三族数字——峰值=login hurricane online 序列最大值（seed 固定可复现）；拒绝率=FD 预算拒绝 login_refusal_rate=refused/(admitted+refused) 单列（与「发出后失败」分账，login_success_rate 仍参考 admitted/attempts 语义）；延迟=资源下载分块 tick 地板 ceil(payload/BUNDLE_BYTES)（参考 ServerDownloads::add_to_bundle 每 mini-tick 一 bundle 载荷）+队列驻留字节；**读法警告：离线面是模拟时间无墙钟 RTT，延迟=确定性地板非实测往返**；记录运行=保存夹具 login-hurricane.xml seed 20261123/FD 500×FD_PER_BOT+1/载荷 4096B→attempts 500/admitted 500/refused 177/online_peak 500/refusal_rate 0.26145/download_ticks 4/queue_bytes 4096，夹具 docs/review/fixtures/load/login-baseline.report.json；5 单测钉 ceil 分块/队列字节/峰值拒绝记录/seed 复现/预算拒绝臂；本席 main 树 load --lib 174 绿（含 login_baseline 6）)
-- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
+- [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。(2026-11-26 lane/bw15-platform 083c598→main 790332b+证据 83f6caa：fleet.rs botsForLogOnRetry_ 排水从每条到期 bot 单独 Vec::remove 改单遍分区（mem::take 遍历 log_on_retry_time()<now 到期者 log_on() 后推回，O(n²)→O(n)，队序/重登序不变固定 seed 派遣序不变）；新测钉 4 到期条队序重登+1 留队；bench login_surge.rs parked 64/512 同刻到期单 tick 排水+Throughput::Elements；A/B 对照 taskset -c 6 钉核交错 6 轮：drain_64 13.93→7.39µs 0.530（1.9×）、drain_512 776→80µs 0.104（9.65×）每轮候选全优无交叉=效应远超噪声；本席 main 树 bench 跑通（drain_512 ~90µs 级）load --lib 175 绿，clippy 净，smoke.rs 三处 expect(&format!) 被遮 lint 顺手清（main 已有此修 auto-merge 消重）)
 - [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
 
@@ -5982,7 +5982,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
 - [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。(2026-11-26 lane/bw15-platform 5ec0620→main 4c29980+证据 afee8b2→fcfa88f：crates/load/src/login_baseline.rs 组合既有面记录三族数字——峰值=login hurricane online 序列最大值（seed 固定可复现）；拒绝率=FD 预算拒绝 login_refusal_rate=refused/(admitted+refused) 单列（与「发出后失败」分账，login_success_rate 仍参考 admitted/attempts 语义）；延迟=资源下载分块 tick 地板 ceil(payload/BUNDLE_BYTES)（参考 ServerDownloads::add_to_bundle 每 mini-tick 一 bundle 载荷）+队列驻留字节；**读法警告：离线面是模拟时间无墙钟 RTT，延迟=确定性地板非实测往返**；记录运行=保存夹具 login-hurricane.xml seed 20261123/FD 500×FD_PER_BOT+1/载荷 4096B→attempts 500/admitted 500/refused 177/online_peak 500/refusal_rate 0.26145/download_ticks 4/queue_bytes 4096，夹具 docs/review/fixtures/load/login-baseline.report.json；5 单测钉 ceil 分块/队列字节/峰值拒绝记录/seed 复现/预算拒绝臂；本席 main 树 load --lib 174 绿（含 login_baseline 6）)
-- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
+- [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。(2026-11-26 lane/bw15-platform 083c598→main 790332b+证据 83f6caa：fleet.rs botsForLogOnRetry_ 排水从每条到期 bot 单独 Vec::remove 改单遍分区（mem::take 遍历 log_on_retry_time()<now 到期者 log_on() 后推回，O(n²)→O(n)，队序/重登序不变固定 seed 派遣序不变）；新测钉 4 到期条队序重登+1 留队；bench login_surge.rs parked 64/512 同刻到期单 tick 排水+Throughput::Elements；A/B 对照 taskset -c 6 钉核交错 6 轮：drain_64 13.93→7.39µs 0.530（1.9×）、drain_512 776→80µs 0.104（9.65×）每轮候选全优无交叉=效应远超噪声；本席 main 树 bench 跑通（drain_512 ~90µs 级）load --lib 175 绿，clippy 净，smoke.rs 三处 expect(&format!) 被遮 lint 顺手清（main 已有此修 auto-merge 消重）)
 - [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
 
@@ -7524,7 +7524,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
 - [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。(2026-11-26 lane/bw15-platform 5ec0620→main 4c29980+证据 afee8b2→fcfa88f：crates/load/src/login_baseline.rs 组合既有面记录三族数字——峰值=login hurricane online 序列最大值（seed 固定可复现）；拒绝率=FD 预算拒绝 login_refusal_rate=refused/(admitted+refused) 单列（与「发出后失败」分账，login_success_rate 仍参考 admitted/attempts 语义）；延迟=资源下载分块 tick 地板 ceil(payload/BUNDLE_BYTES)（参考 ServerDownloads::add_to_bundle 每 mini-tick 一 bundle 载荷）+队列驻留字节；**读法警告：离线面是模拟时间无墙钟 RTT，延迟=确定性地板非实测往返**；记录运行=保存夹具 login-hurricane.xml seed 20261123/FD 500×FD_PER_BOT+1/载荷 4096B→attempts 500/admitted 500/refused 177/online_peak 500/refusal_rate 0.26145/download_ticks 4/queue_bytes 4096，夹具 docs/review/fixtures/load/login-baseline.report.json；5 单测钉 ceil 分块/队列字节/峰值拒绝记录/seed 复现/预算拒绝臂；本席 main 树 load --lib 174 绿（含 login_baseline 6）)
-- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
+- [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。(2026-11-26 lane/bw15-platform 083c598→main 790332b+证据 83f6caa：fleet.rs botsForLogOnRetry_ 排水从每条到期 bot 单独 Vec::remove 改单遍分区（mem::take 遍历 log_on_retry_time()<now 到期者 log_on() 后推回，O(n²)→O(n)，队序/重登序不变固定 seed 派遣序不变）；新测钉 4 到期条队序重登+1 留队；bench login_surge.rs parked 64/512 同刻到期单 tick 排水+Throughput::Elements；A/B 对照 taskset -c 6 钉核交错 6 轮：drain_64 13.93→7.39µs 0.530（1.9×）、drain_512 776→80µs 0.104（9.65×）每轮候选全优无交叉=效应远超噪声；本席 main 树 bench 跑通（drain_512 ~90µs 级）load --lib 175 绿，clippy 净，smoke.rs 三处 expect(&format!) 被遮 lint 顺手清（main 已有此修 auto-merge 消重）)
 - [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
 
@@ -9105,7 +9105,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
 - [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。(2026-11-26 lane/bw15-platform 5ec0620→main 4c29980+证据 afee8b2→fcfa88f：crates/load/src/login_baseline.rs 组合既有面记录三族数字——峰值=login hurricane online 序列最大值（seed 固定可复现）；拒绝率=FD 预算拒绝 login_refusal_rate=refused/(admitted+refused) 单列（与「发出后失败」分账，login_success_rate 仍参考 admitted/attempts 语义）；延迟=资源下载分块 tick 地板 ceil(payload/BUNDLE_BYTES)（参考 ServerDownloads::add_to_bundle 每 mini-tick 一 bundle 载荷）+队列驻留字节；**读法警告：离线面是模拟时间无墙钟 RTT，延迟=确定性地板非实测往返**；记录运行=保存夹具 login-hurricane.xml seed 20261123/FD 500×FD_PER_BOT+1/载荷 4096B→attempts 500/admitted 500/refused 177/online_peak 500/refusal_rate 0.26145/download_ticks 4/queue_bytes 4096，夹具 docs/review/fixtures/load/login-baseline.report.json；5 单测钉 ceil 分块/队列字节/峰值拒绝记录/seed 复现/预算拒绝臂；本席 main 树 load --lib 174 绿（含 login_baseline 6）)
-- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
+- [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。(2026-11-26 lane/bw15-platform 083c598→main 790332b+证据 83f6caa：fleet.rs botsForLogOnRetry_ 排水从每条到期 bot 单独 Vec::remove 改单遍分区（mem::take 遍历 log_on_retry_time()<now 到期者 log_on() 后推回，O(n²)→O(n)，队序/重登序不变固定 seed 派遣序不变）；新测钉 4 到期条队序重登+1 留队；bench login_surge.rs parked 64/512 同刻到期单 tick 排水+Throughput::Elements；A/B 对照 taskset -c 6 钉核交错 6 轮：drain_64 13.93→7.39µs 0.530（1.9×）、drain_512 776→80µs 0.104（9.65×）每轮候选全优无交叉=效应远超噪声；本席 main 树 bench 跑通（drain_512 ~90µs 级）load --lib 175 绿，clippy 净，smoke.rs 三处 expect(&format!) 被遮 lint 顺手清（main 已有此修 auto-merge 消重）)
 - [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
 
@@ -10647,7 +10647,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
 - [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。(2026-11-26 lane/bw15-platform 5ec0620→main 4c29980+证据 afee8b2→fcfa88f：crates/load/src/login_baseline.rs 组合既有面记录三族数字——峰值=login hurricane online 序列最大值（seed 固定可复现）；拒绝率=FD 预算拒绝 login_refusal_rate=refused/(admitted+refused) 单列（与「发出后失败」分账，login_success_rate 仍参考 admitted/attempts 语义）；延迟=资源下载分块 tick 地板 ceil(payload/BUNDLE_BYTES)（参考 ServerDownloads::add_to_bundle 每 mini-tick 一 bundle 载荷）+队列驻留字节；**读法警告：离线面是模拟时间无墙钟 RTT，延迟=确定性地板非实测往返**；记录运行=保存夹具 login-hurricane.xml seed 20261123/FD 500×FD_PER_BOT+1/载荷 4096B→attempts 500/admitted 500/refused 177/online_peak 500/refusal_rate 0.26145/download_ticks 4/queue_bytes 4096，夹具 docs/review/fixtures/load/login-baseline.report.json；5 单测钉 ceil 分块/队列字节/峰值拒绝记录/seed 复现/预算拒绝臂；本席 main 树 load --lib 174 绿（含 login_baseline 6）)
-- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
+- [x] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。(2026-11-26 lane/bw15-platform 083c598→main 790332b+证据 83f6caa：fleet.rs botsForLogOnRetry_ 排水从每条到期 bot 单独 Vec::remove 改单遍分区（mem::take 遍历 log_on_retry_time()<now 到期者 log_on() 后推回，O(n²)→O(n)，队序/重登序不变固定 seed 派遣序不变）；新测钉 4 到期条队序重登+1 留队；bench login_surge.rs parked 64/512 同刻到期单 tick 排水+Throughput::Elements；A/B 对照 taskset -c 6 钉核交错 6 轮：drain_64 13.93→7.39µs 0.530（1.9×）、drain_512 776→80µs 0.104（9.65×）每轮候选全优无交叉=效应远超噪声；本席 main 树 bench 跑通（drain_512 ~90µs 级）load --lib 175 绿，clippy 净，smoke.rs 三处 expect(&format!) 被遮 lint 顺手清（main 已有此修 auto-merge 消重）)
 - [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
 
