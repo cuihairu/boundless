@@ -1356,7 +1356,10 @@
 
 作为 Boundless 新增的 DBApp 主存储后端，与 MySQL、XML 共用存储接口，通过配置选择。实现实体/账号字段映射、DBID 分配、索引与约束、事务、并发锁和连接恢复。复用存储契约测试，覆盖创建、装载、更新、删除、账号重登、auto-load 和二级库归档合并。以原版 MySQL 路径的实体状态、错误语义与回调结果作为行为基准。
 
-- [ ] **BW-09-06-01 配置 PostgreSQL 主存储选择**。**验收** DBApp 启动时报告所用后端。
+- [x] **BW-09-06-01 配置 PostgreSQL 主存储选择**。**验收** DBApp 启动时报告所用后端。
+  - 证据：代码在主干（0ea3eaf 2026-11-24 `crates/db/src/config.rs`+`crates/server-runtime/src/dbapp.rs`、96a3b35 隔离套件，均为 HEAD 祖先），本勾系 8c8dde8 重写 todo.md 丢勾后的回补；2026-11-27 活树逐名核对（判已交付不采信台账自述）。面：`StorageBackend::{Xml,MySql,PostgreSql}`+`from_config_name`（未知名→`DbError::UnknownBackend`→「Failed to create database of type: db2」，参照 dbapp.cpp:433-440 `DatabaseEngineCreator::createInstance` 失败臂）+`describe()`→`Database engine = %s`（dbapp.cpp:427 `DBENGINE_INFO_MSG`，本机参照树实测行号）；`PostgresConnection`（host/port/database/user/password，默认 localhost:5432/bigworld）→`to_conninfo()`；`DatabaseConfig::from_type_name("postgresql")`=`<db><type>` 启动选择（dbapp.cpp:425 `DBConfig::get().type()`）；`DbApp::{init,init_from_type_name,backend,engine_report,config}` 承载启动面。
+  - 验收测试：`startup_reports_the_configured_backend`（dbapp.rs:56，断言 `backend()==PostgreSql`、`engine_report()=="Database engine = postgresql"`、连接默认值逐项）+ `db_backend_isolation.rs` 4 例（三个引擎名各自启用互不牵连、未知名失败不影响他后端、memory 后端零库进程可读、postgres 驱动独立连接串失败进 `DbError::Storage`）。
+  - 门禁（本席活树实测 2026-11-27）：db `--lib config` 19/19、server-runtime `--lib dbapp` 19/19、`db_backend_isolation` 4/4 全绿。登记：工作区有他席 db-postgres 在飞未提交改动（import_mysql+store.rs/删三测试），本勾仅 pathspec 提交 todo.md，不触他席 staged 内容。
 - [ ] **BW-09-06-02 映射实体 schema 与字段**。**验收** Unicode、二进制和嵌套类型可往返。
 - [ ] **BW-09-06-03 映射账号表和唯一约束**。**验收** 重复账号产生合同错误。
 - [ ] **BW-09-06-04 实现 DBID 分配**。**验收** 并发创建无重复且重启连续可用。
