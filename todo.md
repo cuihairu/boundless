@@ -1421,13 +1421,21 @@
 
 覆盖高度、洞、材质、碰撞三角形、BSP、空间树、射线/扫掠及 Portal 状态。对照边界点、重叠面、不同材质和坐标系。
 
-- [ ] **BW-10-03-01 读取 Terrain2 高度图**。**验收** 格点和插值坐标吻合。
-- [ ] **BW-10-03-02 读取地形洞**。**验收** 洞内外查询对照。
-- [ ] **BW-10-03-03 查询主材质和碰撞标志**。**验收** 同一点返回相同标识。
-- [ ] **BW-10-03-04 读取 BSP 与碰撞三角形**。**验收** 原版场景可查询。
-- [ ] **BW-10-03-05 实现射线命中**。**验收** 首个交点、法向和材质对照。
-- [ ] **BW-10-03-06 实现扫掠碰撞**。**验收** 重叠面和边界条件吻合。
-- [ ] **BW-10-03-07 处理 Portal 通行与坐标变换**。**验收** 开关前后结果与基线一致。
+- [x] **BW-10-03-01 读取 Terrain2 高度图**（8f167e6）。**验收** 格点和插值坐标吻合。
+  - 证据：`crates/terrain`（height_map 777 行 + png 解码 601 行）；夹具 `docs/review/fixtures/terrain/height_map/` 由未改动参照 `compressHeightMap`/libpng 管线产出，真值 `gen_height_map.log` 系参照 `TerrainHeightMap2::load`+`heightAt` 原面打印；`height_map_bin.rs` 4 例全探针对照（格点+插值坐标）。证据档 `docs/review/bw10-03-01-height-map.md`。
+- [x] **BW-10-03-02 读取地形洞**（9c43de5）。**验收** 洞内外查询对照。
+  - 证据：`hole_map.rs` 746 行；夹具由参照 `TerrainHoleMap2::save`/`BinaryBlock` 压缩管线产出，真值=原 `load`+`holeAt` 面打印；`hole_map_bin.rs` 洞内外探针逐条对照。证据档 `docs/review/bw10-03-02-hole-map.md`。
+- [x] **BW-10-03-03 查询主材质和碰撞标志**（0b863f6）。**验收** 同一点返回相同标识。
+  - 证据：`dominant_texture_map.rs` 532 行；夹具用原 `DominantTextureMapHeader` 结构+save 例程 strncpy 名窗+原 `BinaryBlock::compress` 产出，真值=原 `load`+`texture`/`groundType` 面打印；同点标识对照有测。证据档 `docs/review/bw10-03-03-dominant-texture-map.md`。
+- [x] **BW-10-03-04 读取 BSP 与碰撞三角形**（82ec3ef）。**验收** 原版场景可查询。
+  - 证据：`physics/src/bsp.rs` 1296 行+`world_triangle.rs`；夹具 `docs/review/fixtures/physics/bsp/`（真值=未改动参照 `BSPTreeTool::buildBSP`/`loadBSP`/`saveBSPInMemory` 面打印）：`built.bsp`=原构造器划分 11 三角形+原 writer 存现格式 blob（BT 行）；`bsp_bin.rs` 全探针对照。证据档 `docs/review/bw10-03-04-bsp.md`。
+- [x] **BW-10-03-05 实现射线命中**（fa27a44）。**验收** 首个交点、法向和材质对照。
+  - 证据：bsp.rs +472 行射线命中面+world_triangle 扩展；真值与夹具同 04 套件，首交点/法向/材质探针逐条对照；`bsp_bin.rs` +166 行。证据档 `docs/review/bw10-03-05-ray-hit.md`。
+- [x] **BW-10-03-06 实现扫掠碰撞**（911ed85+1ee1576）。**验收** 重叠面和边界条件吻合。
+  - 证据：bsp.rs +314 行扫掠面+`world_polygon.rs`+world_triangle +560 行；1ee1576 补 `quad_tree.rs` 1097 行+`sweep_helpers.rs`+`closest_triangle.rs`（space collide 的 quad tree 扫掠面）；重叠面与边界条件探针对照，`bsp_bin.rs` +414 行。
+- [x] **BW-10-03-07 处理 Portal 通行与坐标变换**（534638e）。**验收** 开关前后结果与基线一致。
+  - 证据：`portal.rs` 1378 行（Portal 平面构造/`setCollisionState`/`PortalObstacle` ctor/buildTriangles/collide+头内 `SweepParams`/`SweepShape`/`collideIntoObject`/`CollisionState`）+foundation/math 补 boundbox(+183)/vector(+51)；夹具由 **el7 原库端到端驱动**（libchunk.a）打印真值 `gen_portal.log`，开关前后逐位回放；`portal_bin.rs` 对照。
+  - 门禁（本席活树实测 2026-11-27）：physics lib **104/104** + bsp_bin 9/9 + portal_bin 1/1、terrain lib **83/83** + dominant_texture_map_bin 2/2 + height_map_bin 4/4 全绿；clippy 零新增；fmt 零差异。登记：七项早已在主干（8f167e6→1ee1576 均 HEAD 祖先），本勾系台账回补。
 
 #### BW-10-04 Waypoint 寻路运行时
 
@@ -2975,13 +2983,13 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 覆盖高度、洞、材质、碰撞三角形、BSP、空间树、射线/扫掠及 Portal 状态。对照边界点、重叠面、不同材质和坐标系。
 
-- [ ] **BW-10-03-01 读取 Terrain2 高度图**。**验收** 格点和插值坐标吻合。
-- [ ] **BW-10-03-02 读取地形洞**。**验收** 洞内外查询对照。
-- [ ] **BW-10-03-03 查询主材质和碰撞标志**。**验收** 同一点返回相同标识。
-- [ ] **BW-10-03-04 读取 BSP 与碰撞三角形**。**验收** 原版场景可查询。
-- [ ] **BW-10-03-05 实现射线命中**。**验收** 首个交点、法向和材质对照。
-- [ ] **BW-10-03-06 实现扫掠碰撞**。**验收** 重叠面和边界条件吻合。
-- [ ] **BW-10-03-07 处理 Portal 通行与坐标变换**。**验收** 开关前后结果与基线一致。
+- [x] **BW-10-03-01 读取 Terrain2 高度图**（8f167e6）。**验收** 格点和插值坐标吻合。证据见主清单 BW-10-03 节。
+- [x] **BW-10-03-02 读取地形洞**（9c43de5）。**验收** 洞内外查询对照。证据见主清单 BW-10-03 节。
+- [x] **BW-10-03-03 查询主材质和碰撞标志**（0b863f6）。**验收** 同一点返回相同标识。证据见主清单 BW-10-03 节。
+- [x] **BW-10-03-04 读取 BSP 与碰撞三角形**（82ec3ef）。**验收** 原版场景可查询。证据见主清单 BW-10-03 节。
+- [x] **BW-10-03-05 实现射线命中**（fa27a44）。**验收** 首个交点、法向和材质对照。证据见主清单 BW-10-03 节。
+- [x] **BW-10-03-06 实现扫掠碰撞**（911ed85+1ee1576）。**验收** 重叠面和边界条件吻合。证据见主清单 BW-10-03 节。
+- [x] **BW-10-03-07 处理 Portal 通行与坐标变换**（534638e）。**验收** 开关前后结果与基线一致。证据见主清单 BW-10-03 节。
 
 #### BW-10-04 Waypoint 寻路运行时
 
