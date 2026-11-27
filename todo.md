@@ -1488,12 +1488,22 @@
 
 以带地形高低差、障碍、Portal 和两个 Chunk 的固定地图，覆盖编辑与生成、服务端加载、客户端查询、Bots 穿越和导航调试显示。对照服务端坐标、路径、地形洞与碰撞结果。绑定已启用的原版目标逐平台验收。
 
-- [ ] **BW-10-07-01 固定测试地图和期望值**。**验收** 含坡、洞、障碍和两个相邻 Chunk。
-- [ ] **BW-10-07-02 执行地图编辑和生成**。**验收** 新版导出后可被基准目标消费。
-- [ ] **BW-10-07-03 从服务端加载该地图**。**验收** 坐标、地形和 Portal 状态吻合。
-- [ ] **BW-10-07-04 从客户端查询该地图**。**验收** 固定射线及导航显示吻合。
-- [ ] **BW-10-07-05 执行 Bot 穿越**。**验收** 记录两 Cell 的移动和进入离开事件。
-- [ ] **BW-10-07-06 运行平台验收矩阵**。**验收** 每个适用原版目标有结果及证据。
+- [x] **BW-10-07-01 固定测试地图和期望值**（097b5fb）。**验收** 含坡、洞、障碍和两个相邻 Chunk。
+  - 证据：固定地图夹具+原版 el7 生成器（`docs/review/fixtures/waypoint/gen_fixed_map.cpp`/`.log`，逐字节真值）；`fixed_map.rs` 749 行断言坡/洞/障碍/两相邻 Chunk 的装载与坐标。证据档 `docs/review/bw10-07-01-fixed-test-map.md`。
+- [x] **BW-10-07-02 执行地图编辑和生成**（b99cb0e）。**验收** 新版导出后可被基准目标消费。
+  - 证据：navgen 块管线+固定两块图，原版 `gen_navgen_map.cpp` 打印 3710 行逐字节真值 `gen_navgen_map.log`；`waypoint/tests/genmap.rs` 2 例。证据档 `docs/review/bw10-07-02-map-edit-generate.md`。
+- [x] **BW-10-07-03 从服务端加载该地图**（be48399）。**验收** 坐标、地形和 Portal 状态吻合。
+  - 证据：`genmap_load.rs` 599 行逐位回放原版 `gen_mapload.cpp`（el7 原库真值 `gen_mapload.err`），chunk/portal 绑定与 chunk/set 级 A* 探针含双向缝穿越与长路线一次穿越拒绝。证据档 `docs/review/bw10-07-03-server-load-map.md`。
+  - 合并修复：`be48399` 的 `chunk_bind.rs`（bind 面、邻边构造）在 8c8dde8 中连带 `mod chunk_bind;`+`pub use` 与 `neighbour_edges` 字段一起丢失，07-03 靶编不过；本席按原交付逐行恢复（c7d488b）。
+- [x] **BW-10-07-04 从客户端查询该地图**（310ac24）。**验收** 固定射线及导航显示吻合。
+  - 证据：`client/tests/genmap_clientview.rs` 393 行+`chunk/tests/clientquery_collide.rs` 281 行固定射线/导航显示对照；同提交交付 smoothPath 漏斗面（+0.01 y 抬升由 guess ctor 重建产生，真值来自原版）。证据档 `docs/review/bw10-07-04-client-query-map.md`。
+  - 合并修复：8c8dde8 收了 310ac24 的新测试却把 9 个 waypoint src 文件退回旧代（-847 行，smoothPath 面整体丢失），致 `fixed_map.rs` 两例失败；整批对齐 310ac24 原代（c7d488b）。
+- [x] **BW-10-07-05 执行 Bot 穿越**（dddfd21+55fb16d）。**验收** 记录两 Cell 的移动和进入离开事件。
+  - 证据：`server-runtime/src/bot_crossing.rs` 393 行（双 Cell 移动与进入/离开事件记录）+`tests/bot_cross_cell.rs` 2 例真跑；`load/src/cross_cell.rs` 247 行场景驱动。证据档 `docs/review/bw10-07-05-bot-crossing.md`。
+  - 合并修复：dddfd21 的 dev-dep `load = { workspace = true }` 行被 8c8dde8 抹掉致测试靶 `unresolved import load`；原位恢复（c7d488b）。
+- [x] **BW-10-07-06 运行平台验收矩阵**（eb02c4f）。**验收** 每个适用原版目标有结果及证据。
+  - 证据：参照树唯一启用平台 Linux el7（`game/bin/server/` 仅 el7；Windows 无原版二进制→无适用目标），八个目标（terrain/physics2/scene/math/resmgr/cstdmf/cellapp/unit_test_lib）本机实跑全绿、退出码 0，**703 用例 0 败**，原始日志逐份存 `docs/review/fixtures/platform/<target>.log`；证据档 `docs/review/bw10-07-06-platform-acceptance-matrix.md`。
+  - 门禁（本席活树实测 2026-11-27，修复后）：waypoint 全 8 靶绿、`chunk --test clientquery_collide` 2/2、`client --test genmap_clientview` 4/4、`server-runtime --test bot_cross_cell` 2/2；clippy 零新增；fmt 干净。登记：六项代码早已在主干，本勾系台账回补；修复 commit c7d488b 待远端恢复后推。
 
 ### BW-11 客户端、渲染与交互
 
@@ -3042,12 +3052,22 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 以带地形高低差、障碍、Portal 和两个 Chunk 的固定地图，覆盖编辑与生成、服务端加载、客户端查询、Bots 穿越和导航调试显示。对照服务端坐标、路径、地形洞与碰撞结果。绑定已启用的原版目标逐平台验收。
 
-- [ ] **BW-10-07-01 固定测试地图和期望值**。**验收** 含坡、洞、障碍和两个相邻 Chunk。
-- [ ] **BW-10-07-02 执行地图编辑和生成**。**验收** 新版导出后可被基准目标消费。
-- [ ] **BW-10-07-03 从服务端加载该地图**。**验收** 坐标、地形和 Portal 状态吻合。
-- [ ] **BW-10-07-04 从客户端查询该地图**。**验收** 固定射线及导航显示吻合。
-- [ ] **BW-10-07-05 执行 Bot 穿越**。**验收** 记录两 Cell 的移动和进入离开事件。
-- [ ] **BW-10-07-06 运行平台验收矩阵**。**验收** 每个适用原版目标有结果及证据。
+- [x] **BW-10-07-01 固定测试地图和期望值**（097b5fb）。**验收** 含坡、洞、障碍和两个相邻 Chunk。
+  - 证据：固定地图夹具+原版 el7 生成器（`docs/review/fixtures/waypoint/gen_fixed_map.cpp`/`.log`，逐字节真值）；`fixed_map.rs` 749 行断言坡/洞/障碍/两相邻 Chunk 的装载与坐标。证据档 `docs/review/bw10-07-01-fixed-test-map.md`。
+- [x] **BW-10-07-02 执行地图编辑和生成**（b99cb0e）。**验收** 新版导出后可被基准目标消费。
+  - 证据：navgen 块管线+固定两块图，原版 `gen_navgen_map.cpp` 打印 3710 行逐字节真值 `gen_navgen_map.log`；`waypoint/tests/genmap.rs` 2 例。证据档 `docs/review/bw10-07-02-map-edit-generate.md`。
+- [x] **BW-10-07-03 从服务端加载该地图**（be48399）。**验收** 坐标、地形和 Portal 状态吻合。
+  - 证据：`genmap_load.rs` 599 行逐位回放原版 `gen_mapload.cpp`（el7 原库真值 `gen_mapload.err`），chunk/portal 绑定与 chunk/set 级 A* 探针含双向缝穿越与长路线一次穿越拒绝。证据档 `docs/review/bw10-07-03-server-load-map.md`。
+  - 合并修复：`be48399` 的 `chunk_bind.rs`（bind 面、邻边构造）在 8c8dde8 中连带 `mod chunk_bind;`+`pub use` 与 `neighbour_edges` 字段一起丢失，07-03 靶编不过；本席按原交付逐行恢复（c7d488b）。
+- [x] **BW-10-07-04 从客户端查询该地图**（310ac24）。**验收** 固定射线及导航显示吻合。
+  - 证据：`client/tests/genmap_clientview.rs` 393 行+`chunk/tests/clientquery_collide.rs` 281 行固定射线/导航显示对照；同提交交付 smoothPath 漏斗面（+0.01 y 抬升由 guess ctor 重建产生，真值来自原版）。证据档 `docs/review/bw10-07-04-client-query-map.md`。
+  - 合并修复：8c8dde8 收了 310ac24 的新测试却把 9 个 waypoint src 文件退回旧代（-847 行，smoothPath 面整体丢失），致 `fixed_map.rs` 两例失败；整批对齐 310ac24 原代（c7d488b）。
+- [x] **BW-10-07-05 执行 Bot 穿越**（dddfd21+55fb16d）。**验收** 记录两 Cell 的移动和进入离开事件。
+  - 证据：`server-runtime/src/bot_crossing.rs` 393 行（双 Cell 移动与进入/离开事件记录）+`tests/bot_cross_cell.rs` 2 例真跑；`load/src/cross_cell.rs` 247 行场景驱动。证据档 `docs/review/bw10-07-05-bot-crossing.md`。
+  - 合并修复：dddfd21 的 dev-dep `load = { workspace = true }` 行被 8c8dde8 抹掉致测试靶 `unresolved import load`；原位恢复（c7d488b）。
+- [x] **BW-10-07-06 运行平台验收矩阵**（eb02c4f）。**验收** 每个适用原版目标有结果及证据。
+  - 证据：参照树唯一启用平台 Linux el7（`game/bin/server/` 仅 el7；Windows 无原版二进制→无适用目标），八个目标（terrain/physics2/scene/math/resmgr/cstdmf/cellapp/unit_test_lib）本机实跑全绿、退出码 0，**703 用例 0 败**，原始日志逐份存 `docs/review/fixtures/platform/<target>.log`；证据档 `docs/review/bw10-07-06-platform-acceptance-matrix.md`。
+  - 门禁（本席活树实测 2026-11-27，修复后）：waypoint 全 8 靶绿、`chunk --test clientquery_collide` 2/2、`client --test genmap_clientview` 4/4、`server-runtime --test bot_cross_cell` 2/2；clippy 零新增；fmt 干净。登记：六项代码早已在主干，本勾系台账回补；修复 commit c7d488b 待远端恢复后推。
 
 ### BW-11 客户端、渲染与交互
 
