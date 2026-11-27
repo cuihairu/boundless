@@ -1405,11 +1405,17 @@
 
 覆盖 compiled space 读取、渲染/查询对象注册、静态和动态场景、委托接口及实体空间映射。比对由原版转换器产出的资源读入结果。
 
-- [ ] **BW-10-02-01 解析 compiled space 格式**。**验收** 读入原版转换器生成的样本。
-- [ ] **BW-10-02-02 注册静态场景对象**。**验收** 固定空间查询返回同一对象集合。
-- [ ] **BW-10-02-03 注册动态对象**。**验收** 移动和移除后查询结果匹配。
-- [ ] **BW-10-02-04 实现委托接口与实体映射**。**验收** 实体可定位对应场景对象。
-- [ ] **BW-10-02-05 验证渲染与查询投影**。**验收** 同一编译空间两种消费者均可加载。
+- [x] **BW-10-02-01 解析 compiled space 格式**（f81eb20）。**验收** 读入原版转换器生成的样本。
+  - 证据：`crates/compiled-space`（binary_format/string_table/asset_list/settings 容器读取）；夹具 `docs/review/fixtures/compiled_space/space.bin`（340 字节）系把参照 `binary_writers/{binary_format,string_table_writer,asset_list_writer,settings_writer}.cpp` 原生编译（链参照自身 libcstdmf/libmath/libresmgr）跑 `gen_space.cpp` 产出——space_converter 的 CMake 在 Linux FATAL_ERROR 不可建，故直接驱动原 writer 管线，来源如实登记。钉死参照怪癖：`Header::file_size` 恒 0（writer 从不填）、BWAL 条目带未初始化 padding、重复模型资产被 writer 去重（3 资产 4 字符串）。`space_bin.rs` 4 例：节表/三节逐字节对照。
+- [x] **BW-10-02-02 注册静态场景对象**（3d41412）。**验收** 固定空间查询返回同一对象集合。
+  - 证据：`static_scene.rs`+`static_scene_model.rs`；夹具 `docs/review/fixtures/compiled_space/scene/`（未改动的参照 `StaticSceneWriter` 管线产出、参照 dump 工具核对）。`scene_bin.rs` 7 例：容器节表、string_table 逐条、spatial/contents/object_data/model type 装载、`fixed_regions_return_the_reference_object_sets`（固定区域=参照对象集合）+ `repeated_queries_return_the_same_object_set`（重复查询同一集合）即验收两条原文。
+- [x] **BW-10-02-03 注册动态对象**（f83484c）。**验收** 移动和移除后查询结果匹配。
+  - 证据：`dynamic_scene.rs`——`lib/space/dynamic_scene_provider.{hpp,cpp}` 服务端切片：可移动/可移除对象注册进 collision/visibility 双动态 loose octree（`loose_octree.rs`），visibility 树上答空间查询；移动=重插、移除=摘除后查询集合匹配有专测。
+- [x] **BW-10-02-04 实现委托接口与实体映射**（beb597a）。**验收** 实体可定位对应场景对象。
+  - 证据：新增 `crates/scene`（provider/scene_object/scene_object_flags/tick_view/type_system——`SceneProvider` 呈现面与类型系统）；`dynamic_scene.rs` 存储对象升格为真 `scene::SceneObject` 类型句柄（参照 `objects_` 经 `objectLookup_` 读回）；实体映射=实体可定位场景对象。证据档 `docs/review/bw10-02-04-scene-delegation.md`。
+- [x] **BW-10-02-05 验证渲染与查询投影**（8824b4b）。**验收** 同一编译空间两种消费者均可加载。
+  - 证据：dynamic_scene 升格全 `SceneProvider`（tick/collision/intersect 面经共享 `DynamicSceneFaces`、tick view listener 驱动 post-tick 重建、对象变更走 `ObjectChangeSceneView`）；查询投影=collision/intersect scene view + intersection set + scene intersect context；`foundation/math` 补 boundbox(+299)/convex_hull(+264)。证据档 `docs/review/bw10-02-05-query-projection.md`。
+  - 门禁（本席活树实测 2026-11-27）：compiled-space lib **127/127** + scene_bin 7/7 + space_bin 4/4、scene lib **38/38** 全绿；clippy 零新增（仅既有 workspace 级 unused-dep 三条）；fmt 改动 crate 零差异。登记：五行早已在主干（f81eb20→8824b4b 均 HEAD 祖先），本勾系台账回补；BW-09-06/07 块阻塞于他席在飞重构（9 个 OPT-09 靶旧 API 编不过），不越权代改。
 
 #### BW-10-03 地形与物理
 
@@ -1702,7 +1708,7 @@
 - [x] **BW-14-01-02 运行账号登录及角色创建**。**验收** 回调与持久化状态吻合。（commit c68667c）
   - 证据：`crates/server-runtime/tests/fantasydemo_login.rs`（c68667c，5 测）——进程内走通「wire → billing → 回调机 → db::xml 持久化」全链，逐回调与落盘状态对账（参照 `loginapp.cpp:916-999`/`login_handler.cpp:69-508`/`xml_billing_system.cpp:35-113`/`xml_database.cpp:626`）：**既有账号** FantasyAccount/a 版本字节(subpatch,patch,minor,major)+LogOnParams 解析接受 → LogOnMapping 明文口令比对 Success{Account,2} → LoadByKey → 行投影（visit 序：base-only `character` 先、base+client `playerName` 后，非 def 文件序）→ check_out Granted → ReserveBaseMailbox → DispatchCreateEntity{db_id_slot=2}；角色接续 = 账户 `character` 属性按名解析 Avatar 行（FantasyHero→1，`createBaseFromDB` 面）；**重复登录** 见 holder → AlreadyLoggedOn（BW-06-02-04 重登路）+ storage Elsewhere 双证；**新账号**（accept+remember unknown）→ CreateEntity → putEntity pending → **dbID 3 = ++maxID_** → SetEntityKeyForAccount → 映射回查 Success → dispatch；重开存档逐项吻合（行 3 值/原行不动/LogOnMapping 逐字保真/`<databaseID> 3`）；**角色创建** 新 Avatar "FreshHero" → dbID 3 → 账户行原位改写（id/name 保全）→ 重开按名解析 = 3；**拒绝面** 错口令 "Invalid password."/未知用户 "Unknown user."（login_handler.cpp:182-229 文本逐字）存档字节不变、行数仍 2。**关键发现**：夹具 `Account.def` 无 `<Identifier>`（仅 Avatar.playerName 有）→ Account 只按 (type, entityID) 解析，`find_entity_by_name(Account)` 恒 None——与参考 `createBaseFromDB` 拒 identifier-less 类型（`entity_creator.cpp:794-801`）及 LogOnMapping 自带 entityID 的设计互证；已知偏差：db::xml 重写 def 属性行按投影序落盘（夹具原序不保真，db::xml 既有设计，round-trip 自幂等）。门禁：server-runtime 全套 1222+4+5+5 绿，test-support layering 绿（server-runtime dev-dep entitydef 合法下行边），clippy 零新增（5 处既有 server_app.rs 债），fmt 过。边界：多进程运行（`app::run` 角色运行时接线）不在本项，01-03..05/02-01 卡点仍在 trunk。
 - [ ] **BW-14-01-03 运行入场、移动和 AOI**。**验收** 同一轨迹的观察事件可比。
-  - 卡点（cell/场景运行时未全落地）：**chunk 解析已落地**（BW-10-01-01，`crates/chunk` 标识符/边界/portal）；仍缺 CellApp 创建与注册（BW-08-01-02 未勾）与 compiled space 解析（BW-10-02-01 未勾）；入场/移动/AOI 观测事件依赖 cell 角色实体模型，无 cell 运行时可驱动轨迹。
+  - 卡点（cell/场景运行时未全落地）：**chunk 解析已落地**（BW-10-01-01，`crates/chunk` 标识符/边界/portal）；CellApp 创建与注册已落地（BW-08-01-02，5752e77）；compiled space 解析已落地（BW-10-02-01..05，`crates/compiled-space`+`crates/scene`）；入场/移动/AOI 观测事件依赖 cell 角色实体模型，无 cell 运行时可驱动轨迹。
 - [ ] **BW-14-01-04 运行 Guard 和 Space 脚本**。**验收** 行为与基准相符。
   - 卡点（脚本宿主未接到服务角色）：Guard（cell+client 占位）与 Space（DefaultSpace bootstrap）的脚本 `scripts/cell/Guard.py`、`scripts/base/Space.py` 已随夹具跟踪（845831f）。pyscript **模块面**已合入——BW-03-03-01 模块清单/核对（b50a875）+ BW-03-03-02 数学对象/Provider + BW-03-03-03 定时器模块——但脚本宿主↔服务角色**接线**未落地：无 cell/base script app 把 `Guard.py`/`Space.py` 载入活解释器并驱动 `onCellEnter`/`onSpaceStart` 回调，该接线随 cell 运行时（BW-08）+ 服务端 script app（BW-03-03-04 资源访问后角色侧集成）落地，无宿主则本项不可运行。
 - [ ] **BW-14-01-05 验证退出重登**。**验收** 读回此前角色位置及属性。
@@ -2959,11 +2965,11 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 覆盖 compiled space 读取、渲染/查询对象注册、静态和动态场景、委托接口及实体空间映射。比对由原版转换器产出的资源读入结果。
 
-- [ ] **BW-10-02-01 解析 compiled space 格式**。**验收** 读入原版转换器生成的样本。
-- [ ] **BW-10-02-02 注册静态场景对象**。**验收** 固定空间查询返回同一对象集合。
-- [ ] **BW-10-02-03 注册动态对象**。**验收** 移动和移除后查询结果匹配。
-- [ ] **BW-10-02-04 实现委托接口与实体映射**。**验收** 实体可定位对应场景对象。
-- [ ] **BW-10-02-05 验证渲染与查询投影**。**验收** 同一编译空间两种消费者均可加载。
+- [x] **BW-10-02-01 解析 compiled space 格式**（f81eb20）。**验收** 读入原版转换器生成的样本。证据见主清单 BW-10-02 节。
+- [x] **BW-10-02-02 注册静态场景对象**（3d41412）。**验收** 固定空间查询返回同一对象集合。证据见主清单 BW-10-02 节。
+- [x] **BW-10-02-03 注册动态对象**（f83484c）。**验收** 移动和移除后查询结果匹配。证据见主清单 BW-10-02 节。
+- [x] **BW-10-02-04 实现委托接口与实体映射**（beb597a）。**验收** 实体可定位对应场景对象。证据见主清单 BW-10-02 节。
+- [x] **BW-10-02-05 验证渲染与查询投影**（8824b4b）。**验收** 同一编译空间两种消费者均可加载。证据见主清单 BW-10-02 节。
 
 #### BW-10-03 地形与物理
 
@@ -3256,7 +3262,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **BW-14-01-02 运行账号登录及角色创建**。**验收** 回调与持久化状态吻合。（commit c68667c）
   - 证据：`crates/server-runtime/tests/fantasydemo_login.rs`（c68667c，5 测）——进程内走通「wire → billing → 回调机 → db::xml 持久化」全链，逐回调与落盘状态对账（参照 `loginapp.cpp:916-999`/`login_handler.cpp:69-508`/`xml_billing_system.cpp:35-113`/`xml_database.cpp:626`）：**既有账号** FantasyAccount/a 版本字节(subpatch,patch,minor,major)+LogOnParams 解析接受 → LogOnMapping 明文口令比对 Success{Account,2} → LoadByKey → 行投影（visit 序：base-only `character` 先、base+client `playerName` 后，非 def 文件序）→ check_out Granted → ReserveBaseMailbox → DispatchCreateEntity{db_id_slot=2}；角色接续 = 账户 `character` 属性按名解析 Avatar 行（FantasyHero→1，`createBaseFromDB` 面）；**重复登录** 见 holder → AlreadyLoggedOn（BW-06-02-04 重登路）+ storage Elsewhere 双证；**新账号**（accept+remember unknown）→ CreateEntity → putEntity pending → **dbID 3 = ++maxID_** → SetEntityKeyForAccount → 映射回查 Success → dispatch；重开存档逐项吻合（行 3 值/原行不动/LogOnMapping 逐字保真/`<databaseID> 3`）；**角色创建** 新 Avatar "FreshHero" → dbID 3 → 账户行原位改写（id/name 保全）→ 重开按名解析 = 3；**拒绝面** 错口令 "Invalid password."/未知用户 "Unknown user."（login_handler.cpp:182-229 文本逐字）存档字节不变、行数仍 2。**关键发现**：夹具 `Account.def` 无 `<Identifier>`（仅 Avatar.playerName 有）→ Account 只按 (type, entityID) 解析，`find_entity_by_name(Account)` 恒 None——与参考 `createBaseFromDB` 拒 identifier-less 类型（`entity_creator.cpp:794-801`）及 LogOnMapping 自带 entityID 的设计互证；已知偏差：db::xml 重写 def 属性行按投影序落盘（夹具原序不保真，db::xml 既有设计，round-trip 自幂等）。门禁：server-runtime 全套 1222+4+5+5 绿，test-support layering 绿（server-runtime dev-dep entitydef 合法下行边），clippy 零新增（5 处既有 server_app.rs 债），fmt 过。边界：多进程运行（`app::run` 角色运行时接线）不在本项，01-03..05/02-01 卡点仍在 trunk。
 - [ ] **BW-14-01-03 运行入场、移动和 AOI**。**验收** 同一轨迹的观察事件可比。
-  - 卡点（cell/场景运行时未全落地）：**chunk 解析已落地**（BW-10-01-01，`crates/chunk` 标识符/边界/portal）；仍缺 CellApp 创建与注册（BW-08-01-02 未勾）与 compiled space 解析（BW-10-02-01 未勾）；入场/移动/AOI 观测事件依赖 cell 角色实体模型，无 cell 运行时可驱动轨迹。
+  - 卡点（cell/场景运行时未全落地）：**chunk 解析已落地**（BW-10-01-01，`crates/chunk` 标识符/边界/portal）；CellApp 创建与注册已落地（BW-08-01-02，5752e77）；compiled space 解析已落地（BW-10-02-01..05，`crates/compiled-space`+`crates/scene`）；入场/移动/AOI 观测事件依赖 cell 角色实体模型，无 cell 运行时可驱动轨迹。
 - [ ] **BW-14-01-04 运行 Guard 和 Space 脚本**。**验收** 行为与基准相符。
   - 卡点（脚本宿主未接到服务角色）：Guard（cell+client 占位）与 Space（DefaultSpace bootstrap）的脚本 `scripts/cell/Guard.py`、`scripts/base/Space.py` 已随夹具跟踪（845831f）。pyscript **模块面**已合入——BW-03-03-01 模块清单/核对（b50a875）+ BW-03-03-02 数学对象/Provider + BW-03-03-03 定时器模块——但脚本宿主↔服务角色**接线**未落地：无 cell/base script app 把 `Guard.py`/`Space.py` 载入活解释器并驱动 `onCellEnter`/`onSpaceStart` 回调，该接线随 cell 运行时（BW-08）+ 服务端 script app（BW-03-03-04 资源访问后角色侧集成）落地，无宿主则本项不可运行。
 - [ ] **BW-14-01-05 验证退出重登**。**验收** 读回此前角色位置及属性。
