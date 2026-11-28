@@ -620,6 +620,7 @@ dependencies = [
  "db",
  "entitydef",
  "foundation",
+ "mercury",
  "postgres",
  "serde_json",
 ]
@@ -2046,6 +2047,7 @@ dependencies = [
  "flate2",
  "foundation",
  "libc",
+ "load",
  "md-5 0.10.6",
  "mercury",
  "physics",
